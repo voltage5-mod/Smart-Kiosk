@@ -43,7 +43,9 @@ except Exception:
     _spidev = None
 
 class HardwareGPIO:
-    def __init__(self, pinmap: Dict[str, Any]=None, mode: str='auto'):
+    def __init__(self, pinmap: Dict[str, Any]=None, mode: str='auto', relay_active_high: bool = False):
+        """relay_active_high: if True, GPIO.HIGH activates a relay; if False (default), GPIO.LOW activates (active-low modules).
+        """
         self.mode = mode
         if self.mode == 'auto':
             if _real_gpio and _spidev:
@@ -53,6 +55,8 @@ class HardwareGPIO:
         self.pinmap = pinmap or self._load_pinmap()
         self.spi = None
         self.gpio = _real_gpio if self.mode == 'real' else None
+        # assume many relay modules are active-low by default; allow override
+        self.relay_active_high = relay_active_high
         self._inited = False
         # per-slot calibration baseline (volts) and raw
         self._baseline = {}
@@ -71,17 +75,19 @@ class HardwareGPIO:
             GPIO.setmode(GPIO.BCM)
             # setup digital outputs (relays, tm1637 clk if used)
             # power relays
+            inactive_level = GPIO.LOW if self.relay_active_high else GPIO.HIGH
+            active_level = GPIO.HIGH if self.relay_active_high else GPIO.LOW
             for k, v in (self.pinmap.get('power_relay') or {}).items():
                 GPIO.setup(v, GPIO.OUT)
-                GPIO.output(v, GPIO.LOW)
+                GPIO.output(v, inactive_level)
             for k, v in (self.pinmap.get('lock_relay') or {}).items():
                 GPIO.setup(v, GPIO.OUT)
-                GPIO.output(v, GPIO.LOW)
+                GPIO.output(v, inactive_level)
             # other outputs (pump)
             pump = self.pinmap.get('pump_relay')
             if pump is not None:
                 GPIO.setup(pump, GPIO.OUT)
-                GPIO.output(pump, GPIO.LOW)
+                GPIO.output(pump, inactive_level)
             # setup SPI for MCP3008
             sp = spidev.SpiDev()
             sp.open(0, 0)  # bus 0, device 0 (CE0)
@@ -98,7 +104,8 @@ class HardwareGPIO:
             print('[HW] Unknown relay:', pin_or_name)
             return
         if self.mode == 'real':
-            GPIO.output(pin, GPIO.HIGH)
+            level = GPIO.HIGH if self.relay_active_high else GPIO.LOW
+            GPIO.output(pin, level)
         else:
             print(f'[HW_SIM] RELAY ON pin={pin} ({pin_or_name})')
 
@@ -108,7 +115,8 @@ class HardwareGPIO:
             print('[HW] Unknown relay:', pin_or_name)
             return
         if self.mode == 'real':
-            GPIO.output(pin, GPIO.LOW)
+            level = GPIO.LOW if self.relay_active_high else GPIO.HIGH
+            GPIO.output(pin, level)
         else:
             print(f'[HW_SIM] RELAY OFF pin={pin} ({pin_or_name})')
 
@@ -249,6 +257,42 @@ class HardwareGPIO:
             # create an instance bound to clk and dio for slot1 only (we'll support slot1 display)
             self.tm = TM1637Display(clk_pin=clk, dio_pin=dio_map.get('slot1'), gpio=self.gpio, mode=self.mode)
         return self.tm
+
+    def cleanup(self):
+        """Turn off relays, close SPI and cleanup GPIO."""
+        if self.mode == 'real' and self.gpio:
+            try:
+                inactive_level = self.gpio.LOW if self.relay_active_high else self.gpio.HIGH
+                for k, v in (self.pinmap.get('power_relay') or {}).items():
+                    try:
+                        self.gpio.output(v, inactive_level)
+                    except Exception:
+                        pass
+                for k, v in (self.pinmap.get('lock_relay') or {}).items():
+                    try:
+                        self.gpio.output(v, inactive_level)
+                    except Exception:
+                        pass
+                pump = self.pinmap.get('pump_relay')
+                if pump is not None:
+                    try:
+                        self.gpio.output(pump, inactive_level)
+                    except Exception:
+                        pass
+                # close SPI
+                try:
+                    if self.spi:
+                        self.spi.close()
+                except Exception:
+                    pass
+                try:
+                    self.gpio.cleanup()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        else:
+            print('[HW_SIM] cleanup()')
 
 
 class TM1637Display:

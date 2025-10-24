@@ -14,6 +14,7 @@ Be present and ready to cut power if something behaves unexpectedly.
 import time
 import json
 import os
+import argparse
 from hardware_gpio import HardwareGPIO
 
 BASE = os.path.dirname(__file__)
@@ -22,7 +23,12 @@ PINMAP = os.path.join(BASE, 'pinmap.json')
 with open(PINMAP, 'r', encoding='utf-8') as f:
     pinmap = json.load(f)
 
-hw = HardwareGPIO(pinmap=pinmap, mode='auto')
+# CLI: allow overriding relay active polarity if your relay module is active-HIGH
+parser = argparse.ArgumentParser(description='Test slot1 hardware (relays + ACS712 + TM1637)')
+parser.add_argument('--relay-active-high', action='store_true', help='Set if your relay module is activated by GPIO.HIGH (default: active-low)')
+args = parser.parse_args()
+
+hw = HardwareGPIO(pinmap=pinmap, mode='auto', relay_active_high=bool(args.relay_active_high))
 try:
     hw.setup()
     print('Hardware mode:', hw.mode)
@@ -53,6 +59,11 @@ try:
     tm = hw.tm1637_init()
 
     input('\nReady to monitor charging. Press Enter, then plug the device into slot1.\nThe script will wait for a charging event then start a 120s countdown on the TM1637. Press Ctrl+C to stop early.')
+
+    # Ensure the slot power is ON for the charging test
+    print('\nEnabling slot1 power relay for the charging test...')
+    hw.relay_on('slot1')
+    print('Slot1 power should now be ON. If your relay module is active-HIGH, re-run this script with --relay-active-high if the behavior is reversed.')
 
     # Wait for charging to start
     print('Waiting for charging start (threshold 0.3 A)...')

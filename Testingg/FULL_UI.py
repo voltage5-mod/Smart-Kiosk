@@ -104,10 +104,46 @@ class KioskApp(tk.Tk):
         super().__init__()
         self.title("Smart Kiosk - Prototype (v2)")
 
-        # start with 800x480 (7" typical) but allow resizing; keep a sensible minimum
-        self.geometry("800x480")
-        self.minsize(640, 360)
-        self.resizable(True, True)
+        # Try to start fullscreen on the Pi so UI fits the screen and buttons aren't cut off.
+        # Fallback to a sensible windowed size if fullscreen isn't available.
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            # set to fullscreen using window attributes
+            self.geometry(f"{sw}x{sh}")
+            try:
+                self.attributes("-fullscreen", True)
+            except Exception:
+                # on some platforms attributes may not be supported; try maximized state
+                try:
+                    self.state('zoomed')
+                except Exception:
+                    pass
+            self.minsize(640, 360)
+            self.resizable(True, True)
+            # allow exiting fullscreen with Escape for debugging
+            self.bind('<Escape>', lambda e: self._toggle_fullscreen())
+            self._is_fullscreen = True
+        except Exception:
+            # fallback windowed mode
+            self.geometry("800x480")
+            self.minsize(640, 360)
+            self.resizable(True, True)
+            self._is_fullscreen = False
+
+    def _toggle_fullscreen(self):
+        try:
+            self._is_fullscreen = not getattr(self, '_is_fullscreen', False)
+            self.attributes("-fullscreen", self._is_fullscreen)
+        except Exception:
+            try:
+                if getattr(self, '_is_fullscreen', False):
+                    self.state('normal')
+                else:
+                    self.state('zoomed')
+                self._is_fullscreen = not getattr(self, '_is_fullscreen', False)
+            except Exception:
+                pass
 
         # current session variables
         self.active_uid = None

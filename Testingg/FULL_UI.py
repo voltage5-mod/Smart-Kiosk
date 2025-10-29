@@ -781,6 +781,7 @@ class ChargingScreen(tk.Frame):
         self.tm = None
         self._wait_job = None
         self._hw_monitor_job = None
+        self._poll_timeout_job = None
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -863,8 +864,18 @@ class ChargingScreen(tk.Frame):
             messagebox.showwarning("No balance", "Please add coins to charging balance.")
             return
         slot = self.controller.active_slot
-        # mark charging requested in DB
-        write_user(uid, {"charging_status": "charging"})
+        # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
+        # the session must only start when current is detected. Mark 'pending' so
+        # other systems know the user requested charging. For non-hardware or fallback
+        # start immediately mark as 'charging'.
+        hw = getattr(self.controller, 'hw', None)
+        try:
+            if slot == 'slot1' and hw is not None:
+                write_user(uid, {"charging_status": "pending"})
+            else:
+                write_user(uid, {"charging_status": "charging"})
+        except Exception:
+            pass
         try:
             append_audit_log(actor=uid, action='start_charging', meta={'slot': slot})
         except Exception:
@@ -878,7 +889,7 @@ class ChargingScreen(tk.Frame):
         self.remaining = cb
         self.time_var.set(str(self.remaining))
 
-        hw = getattr(self.controller, 'hw', None)
+        # hw already assigned above; continue with hardware path
         if slot == 'slot1' and hw is not None:
             # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
             try:
@@ -934,6 +945,17 @@ class ChargingScreen(tk.Frame):
                         self._wait_job = self.after(1000, self._poll_for_charging_start)
                     except Exception:
                         self._wait_job = None
+                # start a 1-minute timeout: if no charging detected within 60s, end session
+                try:
+                    if self._poll_timeout_job is not None:
+                        try:
+                            self.after_cancel(self._poll_timeout_job)
+                        except Exception:
+                            pass
+                        self._poll_timeout_job = None
+                    self._poll_timeout_job = self.after(60000, self._poll_no_detect_timeout)
+                except Exception:
+                    self._poll_timeout_job = None
 
             try:
                 self.after(5000, _end_unlock_and_start_poll)
@@ -1054,6 +1076,16 @@ class ChargingScreen(tk.Frame):
                 self._charging_tick()
             if self._hw_monitor_job is None:
                 self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
+            # cancel poll timeout since device detected
+            try:
+                if self._poll_timeout_job is not None:
+                    try:
+                        self.after_cancel(self._poll_timeout_job)
+                    except Exception:
+                        pass
+                    self._poll_timeout_job = None
+            except Exception:
+                pass
             return
         # keep polling
         try:
@@ -1089,6 +1121,47 @@ class ChargingScreen(tk.Frame):
             self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
         except Exception:
             self._hw_monitor_job = None
+
+    def _poll_no_detect_timeout(self):
+        """Called when no device is detected within the allowed window after unlock."""
+        self._poll_timeout_job = None
+        uid = self.controller.active_uid
+        slot = self.controller.active_slot
+        try:
+            # ensure DB cleanup and notify user
+            write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
+        except Exception:
+            pass
+        if slot:
+            try:
+                write_slot(slot, {"status": "inactive", "current_user": "none"})
+            except Exception:
+                pass
+        try:
+            append_audit_log(actor=uid, action='charge_no_device_detected', meta={'slot': slot})
+        except Exception:
+            pass
+        try:
+            messagebox.showinfo("No device", "No device detected within the allowed time. Session ended.")
+        except Exception:
+            pass
+        # ensure hardware relays off
+        try:
+            hw = getattr(self.controller, 'hw', None)
+            if hw is not None:
+                try:
+                    hw.relay_off('slot1')
+                except Exception:
+                    pass
+                try:
+                    hw.lock_slot('slot1', lock=False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # clear UI state
+        self.controller.active_slot = None
+        self.controller.show_frame(MainScreen)
 
     def unlock_slot(self):
         uid = self.controller.active_uid
@@ -1181,6 +1254,16 @@ class ChargingScreen(tk.Frame):
                     self._hw_monitor_job = None
                 self.tm = None
                 self.unplug_time = None
+                # cancel poll timeout job if any
+                try:
+                    if self._poll_timeout_job is not None:
+                        try:
+                            self.after_cancel(self._poll_timeout_job)
+                        except Exception:
+                            pass
+                        self._poll_timeout_job = None
+                except Exception:
+                    pass
             except Exception:
                 pass
             try:

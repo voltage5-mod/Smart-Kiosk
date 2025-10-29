@@ -38,8 +38,13 @@ UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before terminat
 NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
 # Charging detection tuning
-CHARGE_DETECT_THRESHOLD = 0.25    # amps -- minimum sustained current to consider "charging"
-CHARGE_DETECT_CONSECUTIVE = 3     # number of consecutive samples above threshold required
+# Based on your test data (idle ~5.32, charging ~4.65), we treat a downward change
+# from the idle baseline as the indicator of a phone drawing current. Use a fixed
+# idle baseline (per your measurements) and a delta threshold so the same logic
+# works for every slot without per-slot calibration.
+BASELINE_IDLE_AMPS = 5.29         # nominal idle reading (no device plugged) from tests (mean ~5.291)
+CHARGE_DETECT_THRESHOLD = 0.40    # amps difference from baseline required to consider "charging"
+CHARGE_DETECT_CONSECUTIVE = 3     # number of consecutive samples meeting the delta required
 
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
@@ -1067,7 +1072,9 @@ class ChargingScreen(tk.Frame):
             amps = 0
         # detection logic: require a number of consecutive samples above threshold
         try:
-            if (amps or 0) >= CHARGE_DETECT_THRESHOLD:
+            # detect by comparing downward delta from the known idle baseline
+            delta = (float(BASELINE_IDLE_AMPS) - float(amps or 0))
+            if delta >= CHARGE_DETECT_THRESHOLD:
                 self._charge_consecutive = (getattr(self, '_charge_consecutive', 0) or 0) + 1
             else:
                 self._charge_consecutive = 0

@@ -1144,6 +1144,8 @@ class ChargingScreen(tk.Frame):
                     self._hw_monitor_job = None
                 self.tm = None
                 self.unplug_time = None
+            except Exception:
+                pass
             try:
                 append_audit_log(actor=uid, action='stop_charging', meta={'slot': slot})
             except Exception:

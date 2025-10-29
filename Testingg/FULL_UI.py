@@ -37,6 +37,10 @@ CHARGE_DB_WRITE_INTERVAL = 10      # write charge balance every 10 seconds
 UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before termination
 NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
+# Charging detection tuning
+CHARGE_DETECT_THRESHOLD = 0.25    # amps -- minimum sustained current to consider "charging"
+CHARGE_DETECT_CONSECUTIVE = 3     # number of consecutive samples above threshold required
+
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
 
@@ -783,8 +787,8 @@ class ChargingScreen(tk.Frame):
         self._wait_job = None
         self._hw_monitor_job = None
         self._poll_timeout_job = None
-        # small rolling sample buffer to avoid spurious single-sample triggers
-        self._charge_samples = []
+        # consecutive-sample counter to avoid spurious single-sample triggers
+        self._charge_consecutive = 0
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -943,8 +947,8 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 # start polling loop to detect charging start
-                # reset sample buffer and schedule the polling loop
-                self._charge_samples = []
+                # reset consecutive-sample counter and schedule the polling loop
+                self._charge_consecutive = 0
                 if self._wait_job is None:
                     try:
                         self._wait_job = self.after(1000, self._poll_for_charging_start)
@@ -1061,17 +1065,15 @@ class ChargingScreen(tk.Frame):
             amps = cur.get('amps', 0)
         except Exception:
             amps = 0
-        # start threshold (adjustable)
-        # require short running-average over several samples to avoid spurious single-sample triggers
+        # detection logic: require a number of consecutive samples above threshold
         try:
-            # append latest sample and keep last 3
-            self._charge_samples.append(float(amps or 0))
+            if (amps or 0) >= CHARGE_DETECT_THRESHOLD:
+                self._charge_consecutive = (getattr(self, '_charge_consecutive', 0) or 0) + 1
+            else:
+                self._charge_consecutive = 0
         except Exception:
-            self._charge_samples.append(0.0)
-        if len(self._charge_samples) > 3:
-            self._charge_samples = self._charge_samples[-3:]
-        avg_amps = sum(self._charge_samples) / max(1, len(self._charge_samples))
-        if avg_amps >= 0.2:
+            self._charge_consecutive = 0
+        if (getattr(self, '_charge_consecutive', 0) or 0) >= CHARGE_DETECT_CONSECUTIVE:
             # detected charging; start countdown
             write_user(uid, {"charging_status": "charging"})
             try:
@@ -1178,9 +1180,9 @@ class ChargingScreen(tk.Frame):
                     pass
         except Exception:
             pass
-        # clear any accumulated charge samples
+        # clear any accumulated consecutive-sample counter
         try:
-            self._charge_samples = []
+            self._charge_consecutive = 0
         except Exception:
             pass
         # clear UI state
@@ -1278,9 +1280,9 @@ class ChargingScreen(tk.Frame):
                     self._hw_monitor_job = None
                 self.tm = None
                 self.unplug_time = None
-                # clear charge samples when stopping
+                # clear consecutive-sample counter when stopping
                 try:
-                    self._charge_samples = []
+                    self._charge_consecutive = 0
                 except Exception:
                     pass
                 # cancel poll timeout job if any

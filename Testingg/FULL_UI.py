@@ -104,37 +104,10 @@ class KioskApp(tk.Tk):
         super().__init__()
         self.title("Smart Kiosk - Prototype (v2)")
 
-        # Start in a sensible windowed mode; enable fullscreen later after UI is built.
-        # This avoids an initial blank/white fullscreen window and preserves widget event handling.
-        try:
-            self.geometry("800x480")
-            self.minsize(640, 360)
-            self.resizable(True, True)
-        except Exception:
-            pass
-        # mark that we should enable fullscreen after creating the UI
-        self._pending_fullscreen = True
-        self._is_fullscreen = False
-
-    def _toggle_fullscreen(self):
-        try:
-            self._is_fullscreen = not getattr(self, '_is_fullscreen', False)
-            self.attributes("-fullscreen", self._is_fullscreen)
-        except Exception:
-            try:
-                if getattr(self, '_is_fullscreen', False):
-                    self.state('normal')
-                else:
-                    self.state('zoomed')
-                self._is_fullscreen = not getattr(self, '_is_fullscreen', False)
-            except Exception:
-                pass
-        # refresh current frame to restore focus/layout after toggling fullscreen
-        try:
-            if hasattr(self, '_current_frame') and self._current_frame in getattr(self, 'frames', {}):
-                self.show_frame(self._current_frame)
-        except Exception:
-            pass
+        # start with 800x480 (7" typical) but allow resizing; keep a sensible minimum
+        self.geometry("800x480")
+        self.minsize(640, 360)
+        self.resizable(True, True)
 
         # current session variables
         self.active_uid = None
@@ -164,19 +137,6 @@ class KioskApp(tk.Tk):
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
-        # persistent footer so navigation buttons are always visible on small screens
-        try:
-            self.footer = tk.Frame(self, bg="#222f3e", height=48)
-            self.footer.pack(side="bottom", fill="x")
-            self.back_btn = tk.Button(self.footer, text="Back", font=("Arial", 12, "bold"), bg="#95a5a6", fg="white",
-                                      command=lambda: self.show_frame(MainScreen))
-            self.back_btn.pack(side="left", padx=8, pady=6)
-            self.home_btn = tk.Button(self.footer, text="Home", font=("Arial", 12, "bold"), bg="#2980b9", fg="white",
-                                      command=lambda: self.show_frame(ScanScreen))
-            self.home_btn.pack(side="left", padx=8, pady=6)
-        except Exception:
-            pass
-
         # instantiate hardware interface (available on Pi). Store on controller for screens to use.
         try:
             if _pinmap:
@@ -198,74 +158,11 @@ class KioskApp(tk.Tk):
 
         self.show_frame(ScanScreen)
 
-        # UI built — now enable fullscreen if desired. Doing this after building widgets
-        # prevents a blank/white fullscreen window and keeps event bindings working.
-        try:
-            if getattr(self, '_pending_fullscreen', False):
-                sw = self.winfo_screenwidth()
-                sh = self.winfo_screenheight()
-                try:
-                    # set window to cover screen and enable fullscreen attribute
-                    self.geometry(f"{sw}x{sh}")
-                except Exception:
-                    pass
-                try:
-                    self.attributes("-fullscreen", True)
-                    self._is_fullscreen = True
-                except Exception:
-                    # fallback to maximized state if fullscreen attribute not supported
-                    try:
-                        self.state('zoomed')
-                        self._is_fullscreen = True
-                    except Exception:
-                        self._is_fullscreen = False
-                # bind Escape to toggle fullscreen
-                try:
-                    self.bind('<Escape>', lambda e: self._toggle_fullscreen())
-                except Exception:
-                    pass
-                # re-show current frame to restore focus/layout
-                try:
-                    if hasattr(self, '_current_frame'):
-                        self.show_frame(self._current_frame)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
     def show_frame(self, cls):
         frame = self.frames[cls]
         if hasattr(frame, "refresh"):
             frame.refresh()
         frame.tkraise()
-        # remember current frame for focus/restore after fullscreen toggles
-        try:
-            self._current_frame = cls
-        except Exception:
-            pass
-        # ensure entry widgets receive focus (useful when switching to fullscreen)
-        try:
-            # small delay so widgets are mapped before focusing
-            def _focus():
-                try:
-                    if hasattr(frame, 'uid_entry'):
-                        frame.uid_entry.focus_set()
-                        return
-                    # common names of entry widgets on other screens
-                    for candidate in ('name_entry', 'id_entry'):
-                        if hasattr(frame, candidate):
-                            getattr(frame, candidate).focus_set()
-                            return
-                    # fallback: focus the frame itself
-                    try:
-                        frame.focus_set()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            self.after(50, _focus)
-        except Exception:
-            pass
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):

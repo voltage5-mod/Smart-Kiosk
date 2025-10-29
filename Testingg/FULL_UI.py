@@ -144,6 +144,12 @@ class KioskApp(tk.Tk):
                 self._is_fullscreen = not getattr(self, '_is_fullscreen', False)
             except Exception:
                 pass
+        # refresh current frame to restore focus/layout after toggling fullscreen
+        try:
+            if hasattr(self, '_current_frame') and self._current_frame in getattr(self, 'frames', {}):
+                self.show_frame(self._current_frame)
+        except Exception:
+            pass
 
         # current session variables
         self.active_uid = None
@@ -212,6 +218,34 @@ class KioskApp(tk.Tk):
         if hasattr(frame, "refresh"):
             frame.refresh()
         frame.tkraise()
+        # remember current frame for focus/restore after fullscreen toggles
+        try:
+            self._current_frame = cls
+        except Exception:
+            pass
+        # ensure entry widgets receive focus (useful when switching to fullscreen)
+        try:
+            # small delay so widgets are mapped before focusing
+            def _focus():
+                try:
+                    if hasattr(frame, 'uid_entry'):
+                        frame.uid_entry.focus_set()
+                        return
+                    # common names of entry widgets on other screens
+                    for candidate in ('name_entry', 'id_entry'):
+                        if hasattr(frame, candidate):
+                            getattr(frame, candidate).focus_set()
+                            return
+                    # fallback: focus the frame itself
+                    try:
+                        frame.focus_set()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            self.after(50, _focus)
+        except Exception:
+            pass
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):

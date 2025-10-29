@@ -259,7 +259,7 @@ class HardwareGPIO:
             try:
                 import tm1637 as _tm1637_lib
                 disp = _tm1637_lib.TM1637(clk=clk, dio=dio_map.get('slot1'))
-                # wrap to expose show_time(seconds)
+                # wrap to expose show_time(seconds) and set_brightness(level)
                 class _Wrap:
                     def __init__(self, d):
                         self.d = d
@@ -276,7 +276,26 @@ class HardwareGPIO:
                                     self.d.show(s)
                         except Exception:
                             pass
+                    def set_brightness(self, level: int):
+                        # try common API names for brightness
+                        try:
+                            if hasattr(self.d, 'brightness'):
+                                self.d.brightness(level)
+                                return
+                            if hasattr(self.d, 'set_brightness'):
+                                self.d.set_brightness(level)
+                                return
+                            if hasattr(self.d, 'setLight'):
+                                self.d.setLight(level)
+                                return
+                        except Exception:
+                            pass
                 self.tm = _Wrap(disp)
+                # set a low default brightness to avoid very-bright LEDs
+                try:
+                    self.tm.set_brightness(1)
+                except Exception:
+                    pass
             except Exception:
                 self.tm = TM1637Display(clk_pin=clk, dio_pin=dio_map.get('slot1'), gpio=self.gpio, mode=self.mode)
         return self.tm
@@ -333,6 +352,8 @@ class TM1637Display:
         self.dio = dio_pin
         self.gpio = gpio
         self.mode = mode
+        # brightness level 0..7 (TM1637 displays typically support 0-7)
+        self.brightness_level = 1
         if self.mode == 'real' and self.gpio:
             self.gpio.setmode(self.gpio.BCM)
             self.gpio.setup(self.clk, self.gpio.OUT)
@@ -384,6 +405,13 @@ class TM1637Display:
         ss = seconds % 60
         s = f'{mm:02d}{ss:02d}'
         segs = [self.SEGMENTS.get(ch, 0x00) for ch in s]
+        # Turn on the colon / decimal point between minutes and seconds.
+        # Many TM1637 modules use the DP bit (0x80) on the second digit to show the colon.
+        # If your module uses a different position, change this index.
+        try:
+            segs[1] = segs[1] | 0x80
+        except Exception:
+            pass
         # send data to TM1637
         if self.mode == 'real':
             self._start()
@@ -394,12 +422,29 @@ class TM1637Display:
             for b in segs:
                 self._write_byte(b)
             self._stop()
-            # set display control (brightness max)
+            # set display control (brightness using brightness_level 0..7)
+            try:
+                level = int(self.brightness_level) & 0x07
+            except Exception:
+                level = 1
+            ctrl = 0x88 | (level & 0x07)
             self._start()
-            self._write_byte(0x8f)
+            self._write_byte(ctrl)
             self._stop()
         else:
             print(f'[TM_SIM] display {s[:2]}:{s[2:]}')
+
+    def set_brightness(self, level: int):
+        try:
+            lvl = int(level) & 0x07
+            self.brightness_level = lvl
+            if self.mode == 'real':
+                ctrl = 0x88 | (lvl & 0x07)
+                self._start()
+                self._write_byte(ctrl)
+                self._stop()
+        except Exception:
+            pass
 
     def cleanup(self):
         if self.mode == 'real' and self.gpio:

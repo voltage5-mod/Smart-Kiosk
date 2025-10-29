@@ -617,13 +617,14 @@ class SlotSelectScreen(tk.Frame):
         grid = tk.Frame(self, bg="#34495e")
         grid.pack(pady=8)
         for i in range(1, 6):
-            btn = tk.Button(grid, text=f"Slot {i}\n(Checking...)", font=("Arial", 16, "bold"),
-                            bg="#95a5a6", fg="black", width=16, height=3,
+            btn = tk.Button(grid, text=f"Slot {i}\n(Checking...)", font=("Arial", 14, "bold"),
+                            bg="#95a5a6", fg="black", width=14, height=2,
                             command=lambda s=i: self.select_slot(s))
             btn.grid(row=(i-1)//3, column=(i-1)%3, padx=10, pady=8)
             self.slot_buttons[f"slot{i}"] = btn
+        # move Back button up so it is visible on non-fullscreen displays
         tk.Button(self, text="Back", font=("Arial", 14, "bold"), bg="#c0392b", fg="white",
-                  command=lambda: controller.show_frame(MainScreen)).pack(pady=6)
+                  command=lambda: controller.show_frame(MainScreen)).pack(pady=6, anchor='nw', padx=8)
 
     def refresh(self):
         # refresh user info and slot statuses
@@ -782,6 +783,8 @@ class ChargingScreen(tk.Frame):
         self._wait_job = None
         self._hw_monitor_job = None
         self._poll_timeout_job = None
+        # small rolling sample buffer to avoid spurious single-sample triggers
+        self._charge_samples = []
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -940,6 +943,8 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 # start polling loop to detect charging start
+                # reset sample buffer and schedule the polling loop
+                self._charge_samples = []
                 if self._wait_job is None:
                     try:
                         self._wait_job = self.after(1000, self._poll_for_charging_start)
@@ -1057,7 +1062,16 @@ class ChargingScreen(tk.Frame):
         except Exception:
             amps = 0
         # start threshold (adjustable)
-        if amps and amps >= 0.2:
+        # require short running-average over several samples to avoid spurious single-sample triggers
+        try:
+            # append latest sample and keep last 3
+            self._charge_samples.append(float(amps or 0))
+        except Exception:
+            self._charge_samples.append(0.0)
+        if len(self._charge_samples) > 3:
+            self._charge_samples = self._charge_samples[-3:]
+        avg_amps = sum(self._charge_samples) / max(1, len(self._charge_samples))
+        if avg_amps >= 0.2:
             # detected charging; start countdown
             write_user(uid, {"charging_status": "charging"})
             try:
@@ -1069,6 +1083,11 @@ class ChargingScreen(tk.Frame):
             try:
                 user = read_user(uid)
                 self.remaining = user.get('charge_balance', self.remaining) or self.remaining
+            except Exception:
+                pass
+            # update UI to reflect charging started
+            try:
+                self.slot_lbl.config(text=f"{slot} - CHARGING")
             except Exception:
                 pass
             # start tick loop and hardware unplug monitor
@@ -1157,6 +1176,11 @@ class ChargingScreen(tk.Frame):
                     hw.lock_slot('slot1', lock=False)
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # clear any accumulated charge samples
+        try:
+            self._charge_samples = []
         except Exception:
             pass
         # clear UI state
@@ -1254,6 +1278,11 @@ class ChargingScreen(tk.Frame):
                     self._hw_monitor_job = None
                 self.tm = None
                 self.unplug_time = None
+                # clear charge samples when stopping
+                try:
+                    self._charge_samples = []
+                except Exception:
+                    pass
                 # cancel poll timeout job if any
                 try:
                     if self._poll_timeout_job is not None:

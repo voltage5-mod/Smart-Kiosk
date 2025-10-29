@@ -137,6 +137,19 @@ class KioskApp(tk.Tk):
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
+        # persistent footer so navigation buttons are always visible on small screens
+        try:
+            self.footer = tk.Frame(self, bg="#222f3e", height=48)
+            self.footer.pack(side="bottom", fill="x")
+            self.back_btn = tk.Button(self.footer, text="Back", font=("Arial", 12, "bold"), bg="#95a5a6", fg="white",
+                                      command=lambda: self.show_frame(MainScreen))
+            self.back_btn.pack(side="left", padx=8, pady=6)
+            self.home_btn = tk.Button(self.footer, text="Home", font=("Arial", 12, "bold"), bg="#2980b9", fg="white",
+                                      command=lambda: self.show_frame(ScanScreen))
+            self.home_btn.pack(side="left", padx=8, pady=6)
+        except Exception:
+            pass
+
         # instantiate hardware interface (available on Pi). Store on controller for screens to use.
         try:
             if _pinmap:

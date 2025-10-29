@@ -104,32 +104,17 @@ class KioskApp(tk.Tk):
         super().__init__()
         self.title("Smart Kiosk - Prototype (v2)")
 
-        # Try to start fullscreen on the Pi so UI fits the screen and buttons aren't cut off.
-        # Fallback to a sensible windowed size if fullscreen isn't available.
+        # Start in a sensible windowed mode; enable fullscreen later after UI is built.
+        # This avoids an initial blank/white fullscreen window and preserves widget event handling.
         try:
-            sw = self.winfo_screenwidth()
-            sh = self.winfo_screenheight()
-            # set to fullscreen using window attributes
-            self.geometry(f"{sw}x{sh}")
-            try:
-                self.attributes("-fullscreen", True)
-            except Exception:
-                # on some platforms attributes may not be supported; try maximized state
-                try:
-                    self.state('zoomed')
-                except Exception:
-                    pass
-            self.minsize(640, 360)
-            self.resizable(True, True)
-            # allow exiting fullscreen with Escape for debugging
-            self.bind('<Escape>', lambda e: self._toggle_fullscreen())
-            self._is_fullscreen = True
-        except Exception:
-            # fallback windowed mode
             self.geometry("800x480")
             self.minsize(640, 360)
             self.resizable(True, True)
-            self._is_fullscreen = False
+        except Exception:
+            pass
+        # mark that we should enable fullscreen after creating the UI
+        self._pending_fullscreen = True
+        self._is_fullscreen = False
 
     def _toggle_fullscreen(self):
         try:
@@ -212,6 +197,41 @@ class KioskApp(tk.Tk):
                 pass
 
         self.show_frame(ScanScreen)
+
+        # UI built — now enable fullscreen if desired. Doing this after building widgets
+        # prevents a blank/white fullscreen window and keeps event bindings working.
+        try:
+            if getattr(self, '_pending_fullscreen', False):
+                sw = self.winfo_screenwidth()
+                sh = self.winfo_screenheight()
+                try:
+                    # set window to cover screen and enable fullscreen attribute
+                    self.geometry(f"{sw}x{sh}")
+                except Exception:
+                    pass
+                try:
+                    self.attributes("-fullscreen", True)
+                    self._is_fullscreen = True
+                except Exception:
+                    # fallback to maximized state if fullscreen attribute not supported
+                    try:
+                        self.state('zoomed')
+                        self._is_fullscreen = True
+                    except Exception:
+                        self._is_fullscreen = False
+                # bind Escape to toggle fullscreen
+                try:
+                    self.bind('<Escape>', lambda e: self._toggle_fullscreen())
+                except Exception:
+                    pass
+                # re-show current frame to restore focus/layout
+                try:
+                    if hasattr(self, '_current_frame'):
+                        self.show_frame(self._current_frame)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def show_frame(self, cls):
         frame = self.frames[cls]

@@ -880,6 +880,19 @@ class ChargingScreen(tk.Frame):
 
         hw = getattr(self.controller, 'hw', None)
         if slot == 'slot1' and hw is not None:
+            # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
+            try:
+                if self._tick_job is not None:
+                    try:
+                        self.after_cancel(self._tick_job)
+                    except Exception:
+                        pass
+                    self._tick_job = None
+            except Exception:
+                pass
+            self.is_charging = False
+            self.unplug_time = None
+
             # power the slot so the user can plug in
             try:
                 hw.relay_on('slot1')
@@ -896,13 +909,37 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 self.tm = None
 
-            # show waiting message and start polling for charging start
+            # Unlock slot for a short window (5 seconds) to allow plugging
             try:
-                self.slot_lbl.config(text=f"{slot} - Waiting for device...")
+                hw.lock_slot('slot1', lock=True)
             except Exception:
                 pass
-            if self._wait_job is None:
-                self._wait_job = self.after(1000, self._poll_for_charging_start)
+            try:
+                self.slot_lbl.config(text=f"{slot} - UNLOCKED: please plug in (5s)")
+            except Exception:
+                pass
+
+            def _end_unlock_and_start_poll():
+                try:
+                    hw.lock_slot('slot1', lock=False)
+                except Exception:
+                    pass
+                try:
+                    self.slot_lbl.config(text=f"{slot} - Waiting for device...")
+                except Exception:
+                    pass
+                # start polling loop to detect charging start
+                if self._wait_job is None:
+                    try:
+                        self._wait_job = self.after(1000, self._poll_for_charging_start)
+                    except Exception:
+                        self._wait_job = None
+
+            try:
+                self.after(5000, _end_unlock_and_start_poll)
+            except Exception:
+                if self._wait_job is None:
+                    self._wait_job = self.after(1000, self._poll_for_charging_start)
             return
 
         # fallback: begin charging immediately (no hardware)
@@ -1196,10 +1233,15 @@ class WaterScreen(tk.Frame):
         self._water_nocup_job = None
         self._water_db_acc = 0
         self._water_remaining = 0
+        self._water_db_acc = 0
+        self._water_remaining = 0
 
     def refresh(self):
         # refresh user info header too
-        self.user_info.refresh()
+        try:
+            self.user_info.refresh()
+        except Exception:
+            pass
         uid = self.controller.active_uid
         if not uid:
             self.time_var.set("0")

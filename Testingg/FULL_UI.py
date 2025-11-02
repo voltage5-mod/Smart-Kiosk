@@ -934,6 +934,20 @@ class ChargingScreen(tk.Frame):
             self.unplug_time = None
 
             # power the slot so the user can plug in
+            # Ensure ACS712 baseline is calibrated (same behavior as test_slot1)
+            try:
+                if 'slot1' not in getattr(hw, '_baseline', {}):
+                    try:
+                        messagebox.showinfo('Calibrating', 'Calibrating current sensor for slot1. Ensure nothing is plugged into the port, then press OK.')
+                    except Exception:
+                        pass
+                    try:
+                        cal = hw.calibrate_zero('slot1', samples=30, delay=0.05)
+                        print('Calibration result:', cal)
+                    except Exception as e:
+                        print('Calibration failed:', e)
+            except Exception:
+                pass
             try:
                 hw.relay_on('slot1')
             except Exception:
@@ -1095,8 +1109,11 @@ class ChargingScreen(tk.Frame):
         except Exception:
             amps = 0
 
-        # Debug print: show raw sensed current and hit counts so operator can see live values
+        # Debug print similar to test_slot1: show IDLE read line and compact poll info
         try:
+            cur_raw = cur.get('raw') if isinstance(cur, dict) else None
+            volts = cur.get('volts') if isinstance(cur, dict) else None
+            print(f"IDLE read: raw={cur_raw} volts={(volts or 0):.3f} V amps={amps:.2f} A")
             print(f"[CHG POLL] t={time.time():.1f} slot={slot} amps={amps:.3f} plug_hits={len(self._plug_hits)} unplug_hits={len(self._unplug_hits)}")
         except Exception:
             pass

@@ -231,20 +231,37 @@ class HardwareGPIO:
         except Exception:
             return False
 
-    def wait_for_unplug(self, slot: str, threshold_amps: float = 0.3, grace_seconds: int = 3):
-        """Block until current falls below threshold for grace_seconds. Returns when unplug detected.
-        Non-blocking alternatives can poll `is_charging`.
+    def wait_for_unplug(self, slot: str, threshold_amps: float = 0.3, grace_seconds: int = 3, confirm_seconds: float = 1.0):
+        """Block until current falls below threshold for grace_seconds and then remains low for confirm_seconds.
+
+        This implements a two-stage confirmation to avoid treating short spikes/dips as an unplug event.
+        - grace_seconds: primary window of consecutive low samples required (e.g. 3s)
+        - confirm_seconds: additional short confirmation window (e.g. 1s) that must also be all below threshold
+
+        Returns True when unplug detected. Non-blocking alternatives can poll `is_charging`.
         """
         below_count = 0
         interval = 0.5
-        needed = int(grace_seconds / interval)
+        needed = max(1, int(grace_seconds / interval))
+        confirm_needed = max(1, int(confirm_seconds / interval))
         while True:
             cur = self.read_current(slot)
             amps = cur.get('amps', 0)
             if amps < threshold_amps:
                 below_count += 1
                 if below_count >= needed:
-                    return True
+                    # primary window satisfied; perform a short confirmation window
+                    conf_ok = True
+                    for _ in range(confirm_needed):
+                        time.sleep(interval)
+                        cur2 = self.read_current(slot)
+                        if cur2.get('amps', 0) >= threshold_amps:
+                            conf_ok = False
+                            break
+                    if conf_ok:
+                        return True
+                    # failed confirmation: reset and continue polling
+                    below_count = 0
             else:
                 below_count = 0
             time.sleep(interval)

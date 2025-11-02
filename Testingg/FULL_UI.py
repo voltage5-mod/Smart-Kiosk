@@ -1161,32 +1161,12 @@ class ChargingScreen(tk.Frame):
                     self.slot_lbl.config(text=f"{slot} - CHARGING")
                 except Exception:
                     pass
-                # start tick loop
+                # start tick loop and a non-blocking monitor that implements the 1-minute idle behavior
                 if self._tick_job is None:
                     self._charging_tick()
-                # start a background thread that blocks until unplug is confirmed (matches test_slot1 behaviour)
-                try:
-                    if not getattr(self, '_unplug_thread', None) or not self._unplug_thread.is_alive():
-                        def _wait_and_handle():
-                            try:
-                                # use hw.wait_for_unplug which performs a robust confirmation
-                                ok = hw.wait_for_unplug('slot1', threshold_amps=UNPLUG_THRESHOLD, grace_seconds=UNPLUG_CONFIRM_WINDOW, confirm_seconds=0.5)
-                                if ok:
-                                    try:
-                                        print(f"[CHG THREAD] unplug detected by background wait_for_unplug slot={slot}")
-                                    except Exception:
-                                        pass
-                                    try:
-                                        # schedule stop_session on the main Tk thread
-                                        self.after(0, self.stop_session)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                        self._unplug_thread = threading.Thread(target=_wait_and_handle, daemon=True)
-                        self._unplug_thread.start()
-                except Exception:
-                    pass
+                if self._hw_monitor_job is None:
+                    # sample unplug monitor at 500ms to allow detection and 1-minute idle handling
+                    self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
                 # cancel poll timeout since device detected
                 try:
                     if self._poll_timeout_job is not None:
@@ -1239,26 +1219,57 @@ class ChargingScreen(tk.Frame):
 
         now = time.time()
         try:
-            if amps < UNPLUG_THRESHOLD:
-                # record a low-current hit
-                self._unplug_hits.append(now)
-                # keep only recent hits within the confirmation window
-                self._unplug_hits = [t for t in self._unplug_hits if (now - t) <= UNPLUG_CONFIRM_WINDOW]
-                if len(self._unplug_hits) >= UNPLUG_CONFIRM_COUNT:
-                    # confirmed unplug
+            # If we're seeing current above the plug threshold, ensure charging continues
+            if amps >= PLUG_THRESHOLD:
+                # device drawing current -> clear idle timer and resume countdown if paused
+                self.unplug_time = None
+                # ensure tick loop is running
+                if not self.is_charging:
+                    self.is_charging = True
                     try:
-                        print(f"[CHG EVENT] unplug_confirmed slot={slot} amps={amps:.3f} unplug_hits={len(self._unplug_hits)}")
+                        # restart tick loop if not scheduled
+                        if self._tick_job is None:
+                            self._charging_tick()
                     except Exception:
                         pass
-                    self.stop_session()
-                    return
+                    try:
+                        write_user(uid, {"charging_status": "charging"})
+                    except Exception:
+                        pass
+                    try:
+                        append_audit_log(actor=uid, action='charging_resumed', meta={'slot': slot, 'amps': amps})
+                    except Exception:
+                        pass
             else:
-                # reset low-current hits as device is drawing current again
-                self._unplug_hits = []
+                # below threshold: start or continue idle timer
+                if not self.unplug_time:
+                    # first low reading: start the idle countdown (1 minute)
+                    self.unplug_time = now
+                    # pause tick loop so remaining doesn't decrease while unplugged
+                    self.is_charging = False
+                    if self._tick_job is not None:
+                        try:
+                            self.after_cancel(self._tick_job)
+                        except Exception:
+                            pass
+                        self._tick_job = None
+                    try:
+                        print(f"[CHG MON] no current detected, starting idle timer for {UNPLUG_GRACE_SECONDS}s")
+                    except Exception:
+                        pass
+                else:
+                    # check if idle timer expired
+                    if (now - self.unplug_time) >= UNPLUG_GRACE_SECONDS:
+                        try:
+                            print(f"[CHG EVENT] idle timeout expired, stopping session slot={slot} amps={amps:.3f}")
+                        except Exception:
+                            pass
+                        self.stop_session()
+                        return
         except Exception:
             # on error, reset and continue
             try:
-                self._unplug_hits = []
+                self.unplug_time = None
             except Exception:
                 pass
 

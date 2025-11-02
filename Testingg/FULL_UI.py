@@ -795,8 +795,8 @@ class ChargingScreen(tk.Frame):
         self._poll_timeout_job = None
         # consecutive-sample counter to avoid spurious single-sample triggers
         self._charge_consecutive = 0
-    # rolling sample buffer for averaged detection
-    self._charge_samples = []
+        # rolling sample buffer for averaged detection
+        self._charge_samples = []
 
     def refresh(self):
         uid = self.controller.active_uid

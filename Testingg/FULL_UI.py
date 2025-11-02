@@ -46,6 +46,15 @@ CHARGE_SAMPLE_WINDOW = 5          # how many recent samples to keep
 CHARGE_AVG_THRESHOLD = 0.20       # average amps threshold (avg of window) to consider charging
 CHARGE_COUNT_THRESHOLD = 3        # minimum number of samples in the window that must be >= AVG_THRESHOLD
 CHARGE_CONSECUTIVE_REQUIRED = 3   # fallback: require this many consecutive samples (kept for compatibility)
+# New stricter detection policy (user request):
+# - plug detected when >= PLUG_THRESHOLD for PLUG_CONFIRM_COUNT samples within PLUG_CONFIRM_WINDOW seconds
+# - unplug detected when < UNPLUG_THRESHOLD for UNPLUG_CONFIRM_COUNT samples within UNPLUG_CONFIRM_WINDOW seconds
+PLUG_THRESHOLD = 0.25
+PLUG_CONFIRM_COUNT = 4
+PLUG_CONFIRM_WINDOW = 2.0
+UNPLUG_THRESHOLD = 0.20
+UNPLUG_CONFIRM_COUNT = 4
+UNPLUG_CONFIRM_WINDOW = 2.0
 
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
@@ -795,8 +804,12 @@ class ChargingScreen(tk.Frame):
         self._poll_timeout_job = None
         # consecutive-sample counter to avoid spurious single-sample triggers
         self._charge_consecutive = 0
-        # rolling sample buffer for averaged detection
+        # rolling sample buffers / hit timestamps for threshold-based detection
         self._charge_samples = []
+        # timestamps when plug-threshold was observed
+        self._plug_hits = []
+        # timestamps when unplug (below threshold) was observed while charging
+        self._unplug_hits = []
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -959,11 +972,14 @@ class ChargingScreen(tk.Frame):
                 self._charge_consecutive = 0
                 try:
                     self._charge_samples = []
+                    self._plug_hits = []
+                    self._unplug_hits = []
                 except Exception:
                     pass
                 if self._wait_job is None:
                     try:
-                        self._wait_job = self.after(1000, self._poll_for_charging_start)
+                        # sample every 500ms so we can collect 4 samples within 2s as requested
+                        self._wait_job = self.after(500, self._poll_for_charging_start)
                     except Exception:
                         self._wait_job = None
                 # start a 1-minute timeout: if no charging detected within 60s, end session
@@ -1077,89 +1093,80 @@ class ChargingScreen(tk.Frame):
             amps = cur.get('amps', 0)
         except Exception:
             amps = 0
-        # detection logic: use a small rolling window and require both the
-        # window-average and a minimum count of samples above threshold before
-        # declaring charging. This reduces single-sample false positives.
-        try:
-            try:
-                sample = float(amps or 0.0)
-            except Exception:
-                sample = 0.0
-            # append and cap to window
-            self._charge_samples.append(sample)
-            if len(self._charge_samples) > CHARGE_SAMPLE_WINDOW:
-                self._charge_samples = self._charge_samples[-CHARGE_SAMPLE_WINDOW:]
 
-            # only evaluate once we have a few samples
-            if len(self._charge_samples) >= CHARGE_COUNT_THRESHOLD:
-                avg = sum(self._charge_samples) / len(self._charge_samples)
-                count_above = sum(1 for s in self._charge_samples if s >= CHARGE_AVG_THRESHOLD)
-                if avg >= CHARGE_AVG_THRESHOLD and count_above >= CHARGE_COUNT_THRESHOLD:
-                    # detected charging; start countdown
-                    write_user(uid, {"charging_status": "charging"})
-                    try:
-                        append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps, 'avg': avg})
-                    except Exception:
-                        pass
-                    # proceed to start charging below
-                else:
-                    # not enough evidence yet; keep polling
-                    try:
-                        self._wait_job = self.after(1000, self._poll_for_charging_start)
-                    except Exception:
-                        self._wait_job = None
-                    return
-            else:
-                # not enough samples yet; continue polling
-                try:
-                    self._wait_job = self.after(1000, self._poll_for_charging_start)
-                except Exception:
-                    self._wait_job = None
-                return
+        now = time.time()
+        try:
+            sample = float(amps or 0.0)
         except Exception:
-            # on error, reset samples and continue polling
+            sample = 0.0
+
+        # record plug-hits when sample >= PLUG_THRESHOLD
+        try:
+            if sample >= PLUG_THRESHOLD:
+                self._plug_hits.append(now)
+                # keep only recent hits within PLUG_CONFIRM_WINDOW
+                self._plug_hits = [t for t in self._plug_hits if (now - t) <= PLUG_CONFIRM_WINDOW]
+            else:
+                # optionally prune old entries even when below threshold
+                self._plug_hits = [t for t in self._plug_hits if (now - t) <= PLUG_CONFIRM_WINDOW]
+
+            # if enough plug hits within window, declare charging
+            if len(self._plug_hits) >= PLUG_CONFIRM_COUNT:
+                try:
+                    write_user(uid, {"charging_status": "charging"})
+                except Exception:
+                    pass
+                try:
+                    append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                except Exception:
+                    pass
+
+                # start charging state
+                self.is_charging = True
+                try:
+                    user = read_user(uid)
+                    self.remaining = user.get('charge_balance', self.remaining) or self.remaining
+                except Exception:
+                    pass
+                try:
+                    self.slot_lbl.config(text=f"{slot} - CHARGING")
+                except Exception:
+                    pass
+                # start tick loop and hardware unplug monitor
+                if self._tick_job is None:
+                    self._charging_tick()
+                if self._hw_monitor_job is None:
+                    # sample unplug monitor at 500ms as well
+                    self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
+                # cancel poll timeout since device detected
+                try:
+                    if self._poll_timeout_job is not None:
+                        try:
+                            self.after_cancel(self._poll_timeout_job)
+                        except Exception:
+                            pass
+                        self._poll_timeout_job = None
+                except Exception:
+                    pass
+                return
+
+            # not enough evidence yet; schedule next sample at 500ms
             try:
-                self._charge_samples = []
-            except Exception:
-                pass
-            try:
-                self._wait_job = self.after(1000, self._poll_for_charging_start)
+                self._wait_job = self.after(500, self._poll_for_charging_start)
             except Exception:
                 self._wait_job = None
             return
-            self.is_charging = True
-            # ensure remaining synced from DB
-            try:
-                user = read_user(uid)
-                self.remaining = user.get('charge_balance', self.remaining) or self.remaining
-            except Exception:
-                pass
-            # update UI to reflect charging started
-            try:
-                self.slot_lbl.config(text=f"{slot} - CHARGING")
-            except Exception:
-                pass
-            # start tick loop and hardware unplug monitor
-            if self._tick_job is None:
-                self._charging_tick()
-            if self._hw_monitor_job is None:
-                self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
-            # cancel poll timeout since device detected
-            try:
-                if self._poll_timeout_job is not None:
-                    try:
-                        self.after_cancel(self._poll_timeout_job)
-                    except Exception:
-                        pass
-                    self._poll_timeout_job = None
-            except Exception:
-                pass
-            return
-        # keep polling
-        try:
-            self._wait_job = self.after(1000, self._poll_for_charging_start)
         except Exception:
-            self._wait_job = None
+            # on error, reset plug_hits and continue polling
+            try:
+                self._plug_hits = []
+            except Exception:
+                pass
+            try:
+                self._wait_job = self.after(500, self._poll_for_charging_start)
+            except Exception:
+                self._wait_job = None
+            return
 
     def _hardware_unplug_monitor(self):
         """Monitor the ACS712 reading; if current falls below threshold for UNPLUG_GRACE_SECONDS, stop the session."""
@@ -1174,19 +1181,31 @@ class ChargingScreen(tk.Frame):
             amps = cur.get('amps', 0)
         except Exception:
             amps = 0
-        if amps < 0.15:
-            if not self.unplug_time:
-                self.unplug_time = time.time()
-            else:
-                if (time.time() - self.unplug_time) >= UNPLUG_GRACE_SECONDS:
-                    # treat as unplug event
+
+        now = time.time()
+        try:
+            if amps < UNPLUG_THRESHOLD:
+                # record a low-current hit
+                self._unplug_hits.append(now)
+                # keep only recent hits within the confirmation window
+                self._unplug_hits = [t for t in self._unplug_hits if (now - t) <= UNPLUG_CONFIRM_WINDOW]
+                if len(self._unplug_hits) >= UNPLUG_CONFIRM_COUNT:
+                    # confirmed unplug
                     self.stop_session()
                     return
-        else:
-            self.unplug_time = None
-        # reschedule
+            else:
+                # reset low-current hits as device is drawing current again
+                self._unplug_hits = []
+        except Exception:
+            # on error, reset and continue
+            try:
+                self._unplug_hits = []
+            except Exception:
+                pass
+
+        # reschedule monitor at 500ms to match detection window
         try:
-            self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
+            self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
         except Exception:
             self._hw_monitor_job = None
 

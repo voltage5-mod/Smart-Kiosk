@@ -1094,6 +1094,12 @@ class ChargingScreen(tk.Frame):
         except Exception:
             amps = 0
 
+        # Debug print: show raw sensed current and hit counts so operator can see live values
+        try:
+            print(f"[CHG POLL] t={time.time():.1f} slot={slot} amps={amps:.3f} plug_hits={len(self._plug_hits)} unplug_hits={len(self._unplug_hits)}")
+        except Exception:
+            pass
+
         now = time.time()
         try:
             sample = float(amps or 0.0)
@@ -1118,6 +1124,11 @@ class ChargingScreen(tk.Frame):
                     pass
                 try:
                     append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                except Exception:
+                    pass
+                # Debug: notify terminal that charging was detected
+                try:
+                    print(f"[CHG EVENT] charging_detected slot={slot} amps={amps:.3f} plug_hits={len(self._plug_hits)}")
                 except Exception:
                     pass
 
@@ -1182,6 +1193,12 @@ class ChargingScreen(tk.Frame):
         except Exception:
             amps = 0
 
+        # Debug print: show live monitor reading
+        try:
+            print(f"[CHG MON] t={time.time():.1f} slot={slot} amps={amps:.3f} unplug_hits={len(self._unplug_hits)}")
+        except Exception:
+            pass
+
         now = time.time()
         try:
             if amps < UNPLUG_THRESHOLD:
@@ -1191,6 +1208,10 @@ class ChargingScreen(tk.Frame):
                 self._unplug_hits = [t for t in self._unplug_hits if (now - t) <= UNPLUG_CONFIRM_WINDOW]
                 if len(self._unplug_hits) >= UNPLUG_CONFIRM_COUNT:
                     # confirmed unplug
+                    try:
+                        print(f"[CHG EVENT] unplug_confirmed slot={slot} amps={amps:.3f} unplug_hits={len(self._unplug_hits)}")
+                    except Exception:
+                        pass
                     self.stop_session()
                     return
             else:

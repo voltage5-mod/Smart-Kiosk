@@ -16,6 +16,7 @@ import os
 from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
 # hardware integration
 from hardware_gpio import HardwareGPIO
+import threading
 
 # load pinmap for hardware_gpio
 BASE = os.path.dirname(__file__)
@@ -1143,12 +1144,32 @@ class ChargingScreen(tk.Frame):
                     self.slot_lbl.config(text=f"{slot} - CHARGING")
                 except Exception:
                     pass
-                # start tick loop and hardware unplug monitor
+                # start tick loop
                 if self._tick_job is None:
                     self._charging_tick()
-                if self._hw_monitor_job is None:
-                    # sample unplug monitor at 500ms as well
-                    self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
+                # start a background thread that blocks until unplug is confirmed (matches test_slot1 behaviour)
+                try:
+                    if not getattr(self, '_unplug_thread', None) or not self._unplug_thread.is_alive():
+                        def _wait_and_handle():
+                            try:
+                                # use hw.wait_for_unplug which performs a robust confirmation
+                                ok = hw.wait_for_unplug('slot1', threshold_amps=UNPLUG_THRESHOLD, grace_seconds=UNPLUG_CONFIRM_WINDOW, confirm_seconds=0.5)
+                                if ok:
+                                    try:
+                                        print(f"[CHG THREAD] unplug detected by background wait_for_unplug slot={slot}")
+                                    except Exception:
+                                        pass
+                                    try:
+                                        # schedule stop_session on the main Tk thread
+                                        self.after(0, self.stop_session)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        self._unplug_thread = threading.Thread(target=_wait_and_handle, daemon=True)
+                        self._unplug_thread.start()
+                except Exception:
+                    pass
                 # cancel poll timeout since device detected
                 try:
                     if self._poll_timeout_job is not None:

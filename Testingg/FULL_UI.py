@@ -37,14 +37,15 @@ CHARGE_DB_WRITE_INTERVAL = 10      # write charge balance every 10 seconds
 UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before termination
 NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
-# Charging detection tuning
-# Based on your test data (idle ~5.32, charging ~4.65), we treat a downward change
-# from the idle baseline as the indicator of a phone drawing current. Use a fixed
-# idle baseline (per your measurements) and a delta threshold so the same logic
-# works for every slot without per-slot calibration.
-BASELINE_IDLE_AMPS = 5.29         # nominal idle reading (no device plugged) from tests (mean ~5.291)
-CHARGE_DETECT_THRESHOLD = 0.40    # amps difference from baseline required to consider "charging"
-CHARGE_DETECT_CONSECUTIVE = 3     # number of consecutive samples meeting the delta required
+# Charging detection tuning (updated - use averaged absolute-sample rule)
+# New approach: use a small rolling window of recent amps readings and require
+# both the window average and a minimum count of readings above a positive
+# threshold to confirm charging. This avoids single-sample spikes from
+# prematurely starting the timer.
+CHARGE_SAMPLE_WINDOW = 5          # how many recent samples to keep
+CHARGE_AVG_THRESHOLD = 0.20       # average amps threshold (avg of window) to consider charging
+CHARGE_COUNT_THRESHOLD = 3        # minimum number of samples in the window that must be >= AVG_THRESHOLD
+CHARGE_CONSECUTIVE_REQUIRED = 3   # fallback: require this many consecutive samples (kept for compatibility)
 
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
@@ -794,6 +795,8 @@ class ChargingScreen(tk.Frame):
         self._poll_timeout_job = None
         # consecutive-sample counter to avoid spurious single-sample triggers
         self._charge_consecutive = 0
+    # rolling sample buffer for averaged detection
+    self._charge_samples = []
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -952,8 +955,12 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 # start polling loop to detect charging start
-                # reset consecutive-sample counter and schedule the polling loop
+                # reset consecutive-sample counter and rolling sample buffer, then schedule the polling loop
                 self._charge_consecutive = 0
+                try:
+                    self._charge_samples = []
+                except Exception:
+                    pass
                 if self._wait_job is None:
                     try:
                         self._wait_job = self.after(1000, self._poll_for_charging_start)
@@ -1070,23 +1077,56 @@ class ChargingScreen(tk.Frame):
             amps = cur.get('amps', 0)
         except Exception:
             amps = 0
-        # detection logic: require a number of consecutive samples above threshold
+        # detection logic: use a small rolling window and require both the
+        # window-average and a minimum count of samples above threshold before
+        # declaring charging. This reduces single-sample false positives.
         try:
-            # detect by comparing downward delta from the known idle baseline
-            delta = (float(BASELINE_IDLE_AMPS) - float(amps or 0))
-            if delta >= CHARGE_DETECT_THRESHOLD:
-                self._charge_consecutive = (getattr(self, '_charge_consecutive', 0) or 0) + 1
-            else:
-                self._charge_consecutive = 0
-        except Exception:
-            self._charge_consecutive = 0
-        if (getattr(self, '_charge_consecutive', 0) or 0) >= CHARGE_DETECT_CONSECUTIVE:
-            # detected charging; start countdown
-            write_user(uid, {"charging_status": "charging"})
             try:
-                append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                sample = float(amps or 0.0)
+            except Exception:
+                sample = 0.0
+            # append and cap to window
+            self._charge_samples.append(sample)
+            if len(self._charge_samples) > CHARGE_SAMPLE_WINDOW:
+                self._charge_samples = self._charge_samples[-CHARGE_SAMPLE_WINDOW:]
+
+            # only evaluate once we have a few samples
+            if len(self._charge_samples) >= CHARGE_COUNT_THRESHOLD:
+                avg = sum(self._charge_samples) / len(self._charge_samples)
+                count_above = sum(1 for s in self._charge_samples if s >= CHARGE_AVG_THRESHOLD)
+                if avg >= CHARGE_AVG_THRESHOLD and count_above >= CHARGE_COUNT_THRESHOLD:
+                    # detected charging; start countdown
+                    write_user(uid, {"charging_status": "charging"})
+                    try:
+                        append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps, 'avg': avg})
+                    except Exception:
+                        pass
+                    # proceed to start charging below
+                else:
+                    # not enough evidence yet; keep polling
+                    try:
+                        self._wait_job = self.after(1000, self._poll_for_charging_start)
+                    except Exception:
+                        self._wait_job = None
+                    return
+            else:
+                # not enough samples yet; continue polling
+                try:
+                    self._wait_job = self.after(1000, self._poll_for_charging_start)
+                except Exception:
+                    self._wait_job = None
+                return
+        except Exception:
+            # on error, reset samples and continue polling
+            try:
+                self._charge_samples = []
             except Exception:
                 pass
+            try:
+                self._wait_job = self.after(1000, self._poll_for_charging_start)
+            except Exception:
+                self._wait_job = None
+            return
             self.is_charging = True
             # ensure remaining synced from DB
             try:

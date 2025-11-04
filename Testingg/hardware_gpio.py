@@ -27,6 +27,7 @@ import time
 import os
 from collections import deque
 import math
+import statistics
 
 PINMAP_PATH = os.path.join(os.path.dirname(__file__), 'pinmap.json')
 
@@ -66,8 +67,10 @@ class HardwareGPIO:
         self._ema = {}
         self._recent = {}
         # tuning: RMS window and EMA alpha
-        self._rms_window = 6
-        self._ema_alpha = 0.4
+        # increase RMS window to reduce sensitivity to single-sample spikes
+        self._rms_window = 10
+        # increase EMA alpha so EMA reacts reasonably fast but still smooths
+        self._ema_alpha = 0.6
         # TM1637 display helper (created on demand)
         self.tm = None
 
@@ -208,8 +211,14 @@ class HardwareGPIO:
         # compute RMS over recent window to reduce spikes
         if len(self._recent[slot]) > 0:
             rms = math.sqrt(sum((x or 0.0) ** 2 for x in self._recent[slot]) / len(self._recent[slot]))
+            # median provides robustness against a few spikes while preserving response
+            try:
+                med = float(statistics.median(list(self._recent[slot])))
+            except Exception:
+                med = rms
         else:
             rms = amps
+            med = amps
         # exponential moving average for another smoothing view
         prev_ema = self._ema.get(slot)
         if prev_ema is None:
@@ -219,7 +228,7 @@ class HardwareGPIO:
         self._ema[slot] = ema
 
         # Return both raw and smoothed values; keep 'amps' as the RMS for backward compatibility
-        return {'raw': adc, 'volts': volts, 'amps': rms, 'amps_raw': amps, 'amps_ema': ema}
+        return {'raw': adc, 'volts': volts, 'amps': rms, 'amps_raw': amps, 'amps_ema': ema, 'amps_med': med}
 
     def calibrate_zero(self, slot: str, samples: int = 20, delay: float = 0.05):
         """Calibrate zero-current baseline for a slot by averaging ADC readings.

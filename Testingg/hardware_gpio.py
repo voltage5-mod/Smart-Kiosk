@@ -25,6 +25,8 @@ from typing import Dict, Any
 import json
 import time
 import os
+from collections import deque
+import math
 
 PINMAP_PATH = os.path.join(os.path.dirname(__file__), 'pinmap.json')
 
@@ -60,6 +62,12 @@ class HardwareGPIO:
         self._inited = False
         # per-slot calibration baseline (volts) and raw
         self._baseline = {}
+        # smoothing helpers: exponential moving average and recent samples for RMS
+        self._ema = {}
+        self._recent = {}
+        # tuning: RMS window and EMA alpha
+        self._rms_window = 6
+        self._ema_alpha = 0.4
         # TM1637 display helper (created on demand)
         self.tm = None
 
@@ -193,7 +201,25 @@ class HardwareGPIO:
         # use calibrated baseline if available (volts at zero current)
         baseline_v = self._baseline.get(slot, (vref / 2))
         amps = (volts - baseline_v) / sensitivity
-        return {'raw': adc, 'volts': volts, 'amps': amps}
+        # maintain recent samples for RMS smoothing
+        if slot not in self._recent:
+            self._recent[slot] = deque(maxlen=self._rms_window)
+        self._recent[slot].append(amps)
+        # compute RMS over recent window to reduce spikes
+        if len(self._recent[slot]) > 0:
+            rms = math.sqrt(sum((x or 0.0) ** 2 for x in self._recent[slot]) / len(self._recent[slot]))
+        else:
+            rms = amps
+        # exponential moving average for another smoothing view
+        prev_ema = self._ema.get(slot)
+        if prev_ema is None:
+            ema = amps
+        else:
+            ema = (self._ema_alpha * amps) + ((1 - self._ema_alpha) * prev_ema)
+        self._ema[slot] = ema
+
+        # Return both raw and smoothed values; keep 'amps' as the RMS for backward compatibility
+        return {'raw': adc, 'volts': volts, 'amps': rms, 'amps_raw': amps, 'amps_ema': ema}
 
     def calibrate_zero(self, slot: str, samples: int = 20, delay: float = 0.05):
         """Calibrate zero-current baseline for a slot by averaging ADC readings.
@@ -213,6 +239,12 @@ class HardwareGPIO:
         vref = 3.3
         baseline_v = (avg / 1023.0) * vref
         self._baseline[slot] = baseline_v
+        # reset smoothing buffers for this slot so subsequent reads start clean
+        try:
+            self._ema[slot] = 0.0
+            self._recent[slot] = deque([0.0] * min(self._rms_window, samples), maxlen=self._rms_window)
+        except Exception:
+            pass
         if self.mode == 'sim':
             print(f'[HW_SIM] calibrated {slot}: raw_avg={avg:.1f} baseline_v={baseline_v:.3f} V')
         else:

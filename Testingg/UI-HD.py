@@ -775,7 +775,7 @@ class ChargingScreen(tk.Frame):
         # Large centered header that shows the active charging slot (e.g. "Charging Slot 4")
         self.slot_lbl = tk.Label(body, text="Charging Slot -", font=("Arial", 28, "bold"), fg="white", bg="#34495e")
         # place the header slightly above center and give breathing room before the time label
-        self.slot_lbl.pack(pady=(30, 8))
+        self.slot_lbl.pack(pady=(20, 12))
 
         # Time display (kept below the header)
         self.time_var = tk.StringVar(value="0")
@@ -786,19 +786,14 @@ class ChargingScreen(tk.Frame):
         btn_frame.pack(pady=8)
         # Back button: allow user to return to Main screen while charging continues
         tk.Button(btn_frame, text="Back", font=("Arial", 12, "bold"),
-                  bg="#95a5a6", fg="white", width=10,
-                  command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
-        # Start/Unlock controls (top row)
+                  bg="#95a5a6", fg="white", width=10, command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
+        # Start/Unlock/Stop controls: aligned in a single row for a clean layout
         tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
-                  bg="#2980b9", fg="white", width=14,
-                  command=self.start_charging).grid(row=0, column=1, padx=6)
+                  bg="#2980b9", fg="white", width=14, command=self.start_charging).grid(row=0, column=1, padx=6)
         tk.Button(btn_frame, text="Unlock Slot", font=("Arial", 14, "bold"),
-                  bg="#f39c12", fg="white", width=14,
-                  command=self.unlock_slot).grid(row=0, column=2, padx=6)
-        # Keep Stop Session in its original position (second row, column 2)
+                  bg="#f39c12", fg="white", width=14, command=self.unlock_slot).grid(row=0, column=2, padx=6)
         tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=14,
-                  command=self.stop_session).grid(row=1, column=2, padx=6, pady=8)
+                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=3, padx=6)
 
         # local countdown state
         self.db_acc = 0

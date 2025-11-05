@@ -782,18 +782,20 @@ class ChargingScreen(tk.Frame):
         tk.Label(body, text="Time Left (sec)", font=("Arial", 14), fg="white", bg="#34495e").pack(pady=(6, 2))
         tk.Label(body, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#34495e").pack(pady=(0, 12))
 
+        # Buttons: keep the original layout (Stop Session on its own row)
         btn_frame = tk.Frame(body, bg="#34495e")
         btn_frame.pack(pady=8)
         # Back button: allow user to return to Main screen while charging continues
         tk.Button(btn_frame, text="Back", font=("Arial", 12, "bold"),
                   bg="#95a5a6", fg="white", width=10, command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
-        # Start/Unlock/Stop controls: aligned in a single row for a clean layout
+        # Start/Unlock controls
         tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
                   bg="#2980b9", fg="white", width=14, command=self.start_charging).grid(row=0, column=1, padx=6)
         tk.Button(btn_frame, text="Unlock Slot", font=("Arial", 14, "bold"),
                   bg="#f39c12", fg="white", width=14, command=self.unlock_slot).grid(row=0, column=2, padx=6)
+        # Stop Session remains on its own row (original layout)
         tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=3, padx=6)
+                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=1, column=2, padx=6, pady=8)
 
         # local countdown state
         self.db_acc = 0

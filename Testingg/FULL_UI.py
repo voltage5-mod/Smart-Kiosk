@@ -124,10 +124,17 @@ class KioskApp(tk.Tk):
         super().__init__()
         self.title("Smart Kiosk - Prototype (v2)")
 
-        # start with 800x480 (7" typical) but allow resizing; keep a sensible minimum
+        # === FULLSCREEN MODE for Raspberry Pi ===
+        self.attributes("-fullscreen", True)     # fullscreen on boot
+        self.config(cursor="none")               # hide cursor (kiosk mode)
+        self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))  # ESC exit (debug)
+        self.bind("<F11>", lambda e: self.attributes("-fullscreen", True))      # F11 restore fullscreen
+
+        # Safe fallback geometry (for dev PC)
         self.geometry("800x480")
         self.minsize(640, 360)
         self.resizable(True, True)
+
 
         # current session variables
         self.active_uid = None

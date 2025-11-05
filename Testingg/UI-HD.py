@@ -783,25 +783,13 @@ class ChargingScreen(tk.Frame):
         # Back button: allow user to return to Main screen while charging continues
         tk.Button(btn_frame, text="Back", font=("Arial", 12, "bold"),
                   bg="#95a5a6", fg="white", width=10, command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
-        # Start/Unlock/Unplug/Stop controls
+        # Start/Unlock/Stop controls: aligned in a single row for a clean layout
         tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
                   bg="#2980b9", fg="white", width=14, command=self.start_charging).grid(row=0, column=1, padx=6)
         tk.Button(btn_frame, text="Unlock Slot", font=("Arial", 14, "bold"),
                   bg="#f39c12", fg="white", width=14, command=self.unlock_slot).grid(row=0, column=2, padx=6)
-    # Hardware integration: Simulate Unplug removed when hardware is present
         tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=1, column=2, padx=6, pady=8)
-
-        # coin area (for non-members or topping up)
-        coin_frame = tk.LabelFrame(body, text="Coinslot (simulate) - adds charging time", font=("Arial", 12, "bold"),
-                                   fg="white", bg="#34495e", bd=2, labelanchor="n")
-        coin_frame.pack(pady=10)
-        tk.Button(coin_frame, text="₱1", font=("Arial", 14, "bold"), bg="#f39c12", fg="white", width=8,
-                  command=lambda: self.insert_coin(1)).grid(row=0, column=0, padx=6, pady=6)
-        tk.Button(coin_frame, text="₱5", font=("Arial", 14, "bold"), bg="#e67e22", fg="white", width=8,
-                  command=lambda: self.insert_coin(5)).grid(row=0, column=1, padx=6, pady=6)
-        tk.Button(coin_frame, text="₱10", font=("Arial", 14, "bold"), bg="#d35400", fg="white", width=8,
-                  command=lambda: self.insert_coin(10)).grid(row=0, column=2, padx=6, pady=6)
+                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=3, padx=6)
 
         # local countdown state
         self.db_acc = 0
@@ -826,20 +814,9 @@ class ChargingScreen(tk.Frame):
     def refresh(self):
         uid = self.controller.active_uid
         slot = self.controller.active_slot or "none"
-        # Display slot status differently for the slot owner vs other users
-        display_text = f"Slot: {slot}"
-        display_bg = "#34495e"
-        if slot and slot != "none":
-            slot_info = read_slot(slot)
-            # If the current user is the owner of the slot, show it as In use (yellow)
-            if slot_info and slot_info.get("current_user") == uid:
-                display_text = f"{slot} In use"
-                # remove yellow highlight; use transparent/default background
-                display_bg = self.cget('bg')
-            else:
-                # other users see it as Occupied (red)
-                display_text = f"{slot} Occupied"
-                display_bg = "#e74c3c"  # red
+        # Display a concise charging label. Show "Charging Slot X" instead of 'In use' or 'Occupied'.
+        display_text = f"Charging Slot {slot[4:] if slot and slot.startswith('slot') else slot}"
+        display_bg = self.cget('bg')
         self.slot_lbl.config(text=display_text, bg=display_bg)
         # ensure top user details update when charging screen appears
         try:

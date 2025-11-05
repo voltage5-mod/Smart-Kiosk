@@ -772,15 +772,19 @@ class ChargingScreen(tk.Frame):
         # expand so the main content can be centered vertically between the user info above and buttons below
         body.pack(expand=True, fill='both', pady=12)
 
+        # Create a middle container to center the textual content vertically and horizontally
+        text_frame = tk.Frame(body, bg="#34495e")
+        text_frame.pack(expand=True, fill='both')
+
         # Large centered header that shows the active charging slot (e.g. "Charging Slot 4")
-        self.slot_lbl = tk.Label(body, text="Charging Slot -", font=("Arial", 28, "bold"), fg="white", bg="#34495e")
+        self.slot_lbl = tk.Label(text_frame, text="Charging Slot -", font=("Arial", 28, "bold"), fg="white", bg="#34495e")
         # place the header slightly above center and give breathing room before the time label
-        self.slot_lbl.pack(pady=(20, 12))
+        self.slot_lbl.pack(expand=True)
 
         # Time display (kept below the header)
         self.time_var = tk.StringVar(value="0")
-        tk.Label(body, text="Time Left (sec)", font=("Arial", 14), fg="white", bg="#34495e").pack(pady=(6, 2))
-        tk.Label(body, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#34495e").pack(pady=(0, 12))
+        tk.Label(text_frame, text="Time Left (sec)", font=("Arial", 14), fg="white", bg="#34495e").pack()
+        tk.Label(text_frame, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#34495e").pack()
 
         btn_frame = tk.Frame(body, bg="#34495e")
         btn_frame.pack(pady=8)

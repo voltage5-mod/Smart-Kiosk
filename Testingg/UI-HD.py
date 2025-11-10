@@ -431,6 +431,11 @@ class KioskApp(tk.Tk):
 
         # coin counters per-uid (list of inserted coin amounts)
         self.coin_counters = {}
+        # Ensure the initial visible screen is the ScanScreen (raise it above others)
+        try:
+            self.show_frame(ScanScreen)
+        except Exception:
+            pass
 
     def refresh_all_user_info(self):
         # iterate frames and refresh embedded UserInfoFrame instances

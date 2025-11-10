@@ -920,17 +920,20 @@ class SlotSelectScreen(tk.Frame):
                                             fg="white", bg="#34495e", bd=2, labelanchor="n")
         self.coin_frame_top.pack(pady=6)
         # status label to show recent coin inserts and expected time
+        # Use grid for children inside the coin frame to avoid mixing pack/grid
         self.coin_status_lbl = tk.Label(self.coin_frame_top, text="", fg="white", bg="#34495e")
-        self.coin_status_lbl.pack(pady=(4,0))
+        # place status on the first row spanning available columns
+        self.coin_status_lbl.grid(row=0, column=0, columnspan=3, pady=(4, 0))
         if not hw:
+            # place coin buttons on the second row
             tk.Button(self.coin_frame_top, text="₱1", font=("Arial", 12, "bold"), bg="#f39c12", fg="white", width=8,
-                      command=lambda: self.insert_coin(1)).grid(row=0, column=0, padx=6, pady=6)
+                      command=lambda: self.insert_coin(1)).grid(row=1, column=0, padx=6, pady=6)
             tk.Button(self.coin_frame_top, text="₱5", font=("Arial", 12, "bold"), bg="#e67e22", fg="white", width=8,
-                      command=lambda: self.insert_coin(5)).grid(row=0, column=1, padx=6, pady=6)
+                      command=lambda: self.insert_coin(5)).grid(row=1, column=1, padx=6, pady=6)
             tk.Button(self.coin_frame_top, text="₱10", font=("Arial", 12, "bold"), bg="#d35400", fg="white", width=8,
-                      command=lambda: self.insert_coin(10)).grid(row=0, column=2, padx=6, pady=6)
+                      command=lambda: self.insert_coin(10)).grid(row=1, column=2, padx=6, pady=6)
         else:
-            tk.Label(self.coin_frame_top, text="Hardware coin acceptor active — use physical coins/cards", fg="white", bg="#34495e").pack()
+            tk.Label(self.coin_frame_top, text="Hardware coin acceptor active — use physical coins/cards", fg="white", bg="#34495e").grid(row=1, column=0, columnspan=3, pady=6)
 
         self.slot_buttons = {}
         grid = tk.Frame(self, bg="#34495e")

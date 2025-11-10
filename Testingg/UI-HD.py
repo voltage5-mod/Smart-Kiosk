@@ -1148,6 +1148,10 @@ class ChargingScreen(tk.Frame):
         # session validity flag: if False, all background timers should stop immediately
         # This ensures old sessions stop even if timer callbacks are queued in the event loop
         self._session_valid = False
+        # unique session ID that increments on each session start
+        # Used to prevent old queued callbacks from updating display with stale data
+        self._session_id = 0
+        self._current_session_id = None
 
     def _get_session_uid(self):
         """Return the uid owning the active charging session.
@@ -1306,6 +1310,9 @@ class ChargingScreen(tk.Frame):
         self.charging_uid = uid
         # Mark session as VALID so timer callbacks will execute
         self._session_valid = True
+        # Generate new unique session ID to invalidate old queued callbacks
+        self._session_id += 1
+        self._current_session_id = self._session_id
         # bind this charging UI instance to the selected slot so subsequent timers/monitors
         # target the correct slot even if controller.active_slot changes while the session runs
         self.charging_slot = slot
@@ -1448,6 +1455,9 @@ class ChargingScreen(tk.Frame):
     def _charging_tick(self):
         # clear current job marker since we're running now
         self._tick_job = None
+        # CRITICAL: Capture the session ID at the START of this callback
+        # Old queued callbacks will have stale session IDs and will skip display updates
+        my_session_id = getattr(self, '_current_session_id', None)
         # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
             return
@@ -1512,6 +1522,10 @@ class ChargingScreen(tk.Frame):
                 self.controller.active_slot = None
             self.controller.show_frame(MainScreen)
             return
+        # CRITICAL: Only update display if this callback belongs to the CURRENT session
+        # Old queued callbacks will have stale session IDs and will exit here silently
+        if my_session_id != self._current_session_id:
+            return
         # decrement local remaining and update display
         self.remaining = max(0, t - 1)
         self.time_var.set(str(self.remaining))
@@ -1553,8 +1567,13 @@ class ChargingScreen(tk.Frame):
     def _poll_for_charging_start(self):
         """Poll current sensor on the active slot until device draws current, then start countdown."""
         self._wait_job = None
+        # Capture session ID at start; exit silently if stale
+        my_session_id = getattr(self, '_current_session_id', None)
         # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
+            return
+        # Only proceed if this callback belongs to current session
+        if my_session_id != self._current_session_id:
             return
         # ensure we use the slot captured at start_charging
         slot = self.charging_slot or self.controller.active_slot
@@ -1667,8 +1686,13 @@ class ChargingScreen(tk.Frame):
     def _hardware_unplug_monitor(self):
         """Monitor the ACS712 reading; if current falls below threshold for UNPLUG_GRACE_SECONDS, stop the session."""
         self._hw_monitor_job = None
+        # Capture session ID at start; exit silently if stale
+        my_session_id = getattr(self, '_current_session_id', None)
         # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
+            return
+        # Only proceed if this callback belongs to current session
+        if my_session_id != self._current_session_id:
             return
         # ensure we monitor the bound slot for this charging session
         slot = self.charging_slot or self.controller.active_slot
@@ -1761,8 +1785,13 @@ class ChargingScreen(tk.Frame):
     def _poll_no_detect_timeout(self):
         """Called when no device is detected within the allowed window after unlock."""
         self._poll_timeout_job = None
+        # Capture session ID at start; exit silently if stale
+        my_session_id = getattr(self, '_current_session_id', None)
         # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
+            return
+        # Only proceed if this callback belongs to current session
+        if my_session_id != self._current_session_id:
             return
         slot = self.charging_slot or self.controller.active_slot
         uid = self._get_session_uid()

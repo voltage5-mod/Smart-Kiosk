@@ -53,7 +53,7 @@ CHARGE_CONSECUTIVE_REQUIRED = 3   # fallback: require this many consecutive samp
 PLUG_THRESHOLD = 0.25
 PLUG_CONFIRM_COUNT = 4
 PLUG_CONFIRM_WINDOW = 2.0
-UNPLUG_THRESHOLD = 0.20
+UNPLUG_THRESHOLD = 0.18
 UNPLUG_CONFIRM_COUNT = 4
 UNPLUG_CONFIRM_WINDOW = 2.0
 
@@ -220,7 +220,11 @@ class ScanScreen(tk.Frame):
     def scan(self):
         uid = self.uid_entry.get().strip()
         if not uid:
-            messagebox.showwarning("Input required", "Please enter an RFID UID.")
+            # no popup: show inline message on this screen
+            try:
+                self.info.config(text="Please enter an RFID UID.")
+            except Exception:
+                print("WARN: Please enter an RFID UID.")
             return
 
         if not user_exists(uid):
@@ -267,7 +271,8 @@ class RegisterChoiceScreen(tk.Frame):
                   bg="#9b59b6", fg="white", width=12, command=self.request_subscription).grid(row=0, column=2, padx=10)
 
     def use_guest(self):
-        messagebox.showinfo("Guest", "Proceeding as Guest (non-member). Use coins inside services.")
+        # silent flow: proceed as guest without popup
+        print("INFO: Proceeding as Guest (non-member).")
         self.controller.show_frame(MainScreen)
 
     def request_subscription(self):
@@ -276,7 +281,7 @@ class RegisterChoiceScreen(tk.Frame):
         """
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No UID", "No UID in session. Scan first.")
+            print("WARN: No UID in session. Scan first.")
             return
         # ensure a minimal non-member row exists
         if not user_exists(uid):
@@ -294,9 +299,10 @@ class RegisterChoiceScreen(tk.Frame):
             append_audit_log(actor=uid, action='subscription_request', meta={'uid': uid, 'ts': ts})
         except Exception:
             pass
-        messagebox.showinfo("Requested", "Subscription request sent. Admin has been notified.")
-        # go to main screen (user can still use guest flows)
-        self.controller.show_frame(MainScreen)
+            # non-blocking notification
+            print("INFO: Subscription request sent. Admin has been notified.")
+            # go to main screen (user can still use guest flows)
+            self.controller.show_frame(MainScreen)
 
     def request_registration(self):
         """Called when a not-registered user taps Register on the kiosk.
@@ -305,7 +311,7 @@ class RegisterChoiceScreen(tk.Frame):
         """
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No UID", "No UID in session. Scan first.")
+            print("WARN: No UID in session. Scan first.")
             return
         # ensure a minimal non-member row exists
         if not user_exists(uid):
@@ -323,9 +329,9 @@ class RegisterChoiceScreen(tk.Frame):
             append_audit_log(actor=uid, action='registration_request', meta={'uid': uid, 'ts': ts})
         except Exception:
             pass
-        messagebox.showinfo("Requested", "Registration request sent. Admin has been notified.")
-        # return to main screen (user can still use guest flows)
-        self.controller.show_frame(MainScreen)
+            print("INFO: Registration request sent. Admin has been notified.")
+            # return to main screen (user can still use guest flows)
+            self.controller.show_frame(MainScreen)
 
     def refresh(self):
         pass
@@ -359,7 +365,10 @@ class RegisterScreen(tk.Frame):
         name = self.name_entry.get().strip()
         sid = self.id_entry.get().strip()
         if not name or not sid:
-            messagebox.showwarning("Input required", "Please provide name and student ID.")
+            try:
+                self.msg.config(text="Please provide name and student ID.")
+            except Exception:
+                print("WARN: Please provide name and student ID.")
             return
         # update DB -> member
         write_user(uid, {
@@ -376,8 +385,8 @@ class RegisterScreen(tk.Frame):
             append_audit_log(actor=uid, action='register_member', meta={'uid': uid, 'name': name, 'student_id': sid})
         except Exception:
             pass
-        messagebox.showinfo("Registered", "Registration successful. Welcome!")
-        self.controller.show_frame(MainScreen)
+            print("INFO: Registration successful.")
+            self.controller.show_frame(MainScreen)
 
     def cancel(self):
         # stay as nonmember and go to main
@@ -463,11 +472,11 @@ class MainScreen(tk.Frame):
     def goto_register(self):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         user = read_user(uid)
         if user and user.get("type") == "member":
-            messagebox.showinfo("Already a member", "This user is already a member.")
+            print("INFO: User is already a member.")
             return
         # Instead of opening a local registration UI, submit a registration request
         # to the admin dashboard via the Realtime Database so admins can approve.
@@ -475,7 +484,7 @@ class MainScreen(tk.Frame):
             req_ref = db.reference(f"registration_requests/{uid}")
             existing = req_ref.get()
             if existing and existing.get('status') == 'pending':
-                messagebox.showinfo("Request pending", "Registration request already submitted. Please wait for admin approval.")
+                print("INFO: Registration request already pending.")
                 return
             ts = int(time.time() * 1000)
             req_ref.set({
@@ -484,12 +493,12 @@ class MainScreen(tk.Frame):
             })
             # add an audit entry so admins get a clear log
             append_audit_log(actor=uid, action='registration_request', meta={'ts': ts, 'uid': uid})
-            messagebox.showinfo("Request submitted", "Registration request submitted. An admin will review it shortly.")
+            print("INFO: Registration request submitted. An admin will review it shortly.")
             # disable the button locally until admins process the request
             self.register_small.config(text='Registration Requested', state='disabled')
         except Exception as e:
             print('Error submitting registration request:', e)
-            messagebox.showerror('Error', 'Failed to submit registration request. Please try again later.')
+            print('ERROR: Failed to submit registration request. Please try again later.')
 
     def logout(self):
         # Only clear the active UID; keep any assigned/active slot so charging sessions
@@ -566,7 +575,7 @@ class MainScreen(tk.Frame):
         """
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         # attempt to call stop_session on the ChargingScreen instance so local timers are cancelled
         try:
@@ -585,7 +594,7 @@ class MainScreen(tk.Frame):
             write_slot(slot, {"status": "inactive", "current_user": "none"})
             users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         self.controller.active_slot = None
-        messagebox.showinfo("Stopped", "Charging session ended.")
+        print("INFO: Charging session ended.")
 
     def _unlock_my_slot(self):
         """Called when the logged-in user taps the Unlock Slot shortcut on MainScreen.
@@ -593,15 +602,15 @@ class MainScreen(tk.Frame):
         """
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         user = read_user(uid)
         if not user:
-            messagebox.showwarning("No user", "User record missing.")
+            print("WARN: User record missing.")
             return
         slot = user.get("occupied_slot", "none") or "none"
         if slot == "none":
-            messagebox.showinfo("No slot", "You don't have an assigned slot.")
+            print("INFO: No slot assigned to this user.")
             try:
                 self.unlock_my_slot.pack_forget()
             except Exception:
@@ -611,7 +620,7 @@ class MainScreen(tk.Frame):
         write_slot(slot, {"status": "inactive", "current_user": "none"})
         users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         write_user(uid, {"occupied_slot": "none"})
-        messagebox.showinfo("Unlocked", f"{slot} unlocked. You may unplug your device.")
+        print(f"INFO: {slot} unlocked. You may unplug your device.")
         # update controller and UI
         self.controller.active_slot = None
         try:
@@ -707,13 +716,13 @@ class SlotSelectScreen(tk.Frame):
     def select_slot(self, i):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first before selecting a slot.")
+            print("WARN: No user; scan first before selecting a slot.")
             return
         # require a positive charge balance before allowing slot assignment
         user = read_user(uid)
         cb = user.get("charge_balance", 0) if user else 0
         if (cb or 0) <= 0:
-            messagebox.showwarning("No balance", "Please insert coin(s) to add charging balance before selecting a slot.")
+            print("WARN: No charge balance; insert coins before selecting a slot.")
             return
         slot_key = f"slot{i}"
         slot = read_slot(slot_key)
@@ -722,10 +731,10 @@ class SlotSelectScreen(tk.Frame):
             cur = slot.get("current_user", "none")
             status = slot.get("status", "inactive")
             if cur != "none" and cur != uid:
-                messagebox.showwarning("Slot Taken", f"{slot_key} is already assigned to another user.")
+                print(f"WARN: {slot_key} is already assigned to another user.")
                 return
             if status == "active" and cur != uid:
-                messagebox.showwarning("In Use", f"{slot_key} is currently in use. Please choose another slot.")
+                print(f"WARN: {slot_key} is currently in use. Please choose another slot.")
                 return
         # assign slot to user (assigned, not active)
         write_user(uid, {"occupied_slot": slot_key})
@@ -741,14 +750,14 @@ class SlotSelectScreen(tk.Frame):
             self.coin_frame_top.pack_forget()
         except Exception:
             pass
-        messagebox.showinfo("Slot Assigned", f"You selected {slot_key}. Please plug your device and press Start Charging.")
+        print(f"INFO: You selected {slot_key}. Please plug your device and press Start Charging.")
         self.controller.show_frame(ChargingScreen)
 
     def insert_coin(self, amount):
         # helper so coin slot appears before selecting slot
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         add = COIN_MAP.get(amount, 0)
         user = read_user(uid)
@@ -758,7 +767,7 @@ class SlotSelectScreen(tk.Frame):
             append_audit_log(actor=uid, action='insert_coin', meta={'amount': amount, 'added_seconds': add, 'new_balance': newbal})
         except Exception:
             pass
-        messagebox.showinfo("Coin Added", f"₱{amount} added => {add} seconds to charging balance.")
+        print(f"INFO: ₱{amount} added => {add} seconds to charging balance.")
 
 
 # --------- Screen: Charging ----------
@@ -879,7 +888,7 @@ class ChargingScreen(tk.Frame):
     def insert_coin(self, amount):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         add = COIN_MAP.get(amount, 0)
         user = read_user(uid)
@@ -889,7 +898,7 @@ class ChargingScreen(tk.Frame):
             append_audit_log(actor=uid, action='insert_coin', meta={'amount': amount, 'added_seconds': add, 'new_balance': newbal})
         except Exception:
             pass
-        messagebox.showinfo("Coin Added", f"₱{amount} added => {add} seconds.")
+        print(f"INFO: ₱{amount} added => {add} seconds.")
         # if currently charging, also update the responsive remaining timer
         if self.is_charging:
             self.remaining += add
@@ -900,12 +909,12 @@ class ChargingScreen(tk.Frame):
     def start_charging(self):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         user = read_user(uid)
         cb = user.get("charge_balance", 0) or 0
         if cb <= 0:
-            messagebox.showwarning("No balance", "Please add coins to charging balance.")
+            print("WARN: No charge balance; please add coins to charging balance.")
             return
         slot = self.controller.active_slot
         # remember session owner so background timers continue even if UI user logs out
@@ -957,7 +966,8 @@ class ChargingScreen(tk.Frame):
             try:
                 if slot not in getattr(hw, '_baseline', {}):
                     try:
-                        messagebox.showinfo('Calibrating', f'Calibrating current sensor for {slot}. Ensure nothing is plugged into the port, then press OK.')
+                        # non-blocking calibration notice
+                        print(f"INFO: Calibrating current sensor for {slot}. Ensure nothing is plugged into the port.")
                     except Exception:
                         pass
                     try:
@@ -1058,21 +1068,43 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 self._tick_job = None
-            # ensure DB shows finished state
-            write_user(uid, {"charging_status": "idle"})
+            # ensure DB shows finished state and clear remaining balance/assignment
             try:
-                # set balance to 0 via transaction for safety
-                deduct_charge_balance_transactionally(users_ref, uid, t)
+                write_user(uid, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
             except Exception:
-                # fallback to direct write
-                write_user(uid, {"charge_balance": 0})
+                pass
             slot = self.controller.active_slot
+            # turn off hardware power and unlock slot where applicable
+            try:
+                hw = getattr(self.controller, 'hw', None)
+                if hw is not None and slot:
+                    try:
+                        hw.relay_off(slot)
+                    except Exception:
+                        pass
+                    try:
+                        hw.lock_slot(slot, lock=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             if slot:
-                users_ref.child(uid).child("slot_status").update({slot: "active"})
-                write_slot(slot, {"status": "active", "current_user": uid})
-            messagebox.showinfo("Time Up", "Charging time finished. Please unlock slot to remove your device.")
+                try:
+                    write_slot(slot, {"status": "inactive", "current_user": "none"})
+                    users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                except Exception:
+                    pass
+            try:
+                append_audit_log(actor=uid, action='charging_finished', meta={'slot': slot})
+            except Exception:
+                pass
+            print("INFO: Charging time finished; session ended.")
             self.is_charging = False
-            # clear active slot to return UI to initial state
+            try:
+                self.charging_uid = None
+            except Exception:
+                pass
+            # clear active slot and return to main screen
             self.controller.active_slot = None
             self.controller.show_frame(MainScreen)
             return
@@ -1341,7 +1373,7 @@ class ChargingScreen(tk.Frame):
         except Exception:
             pass
         try:
-            messagebox.showinfo("No device", "No device detected within the allowed time. Session ended.")
+            print("INFO: No device detected within the allowed time. Session ended.")
         except Exception:
             pass
         # ensure hardware relays off
@@ -1371,10 +1403,10 @@ class ChargingScreen(tk.Frame):
         uid = self._get_session_uid()
         slot = self.controller.active_slot
         if not uid or not slot:
-            messagebox.showwarning("No selection", "No slot assigned.")
+            print("WARN: No slot assigned.")
             return
         users_ref.child(uid).child("slot_status").update({slot: "inactive"})
-        messagebox.showinfo("Unlocked", f"{slot} unlocked. Please unplug your device when ready.")
+        print(f"INFO: {slot} unlocked. Please unplug your device when ready.")
         # update header info but do not stop charging; unlocking does not equal unplug
         try:
             self.user_info.refresh()
@@ -1401,7 +1433,7 @@ class ChargingScreen(tk.Frame):
             if slot:
                 users_ref.child(uid).child("slot_status").update({slot: "inactive"})
                 write_slot(slot, {"status": "inactive", "current_user": "none"})
-            messagebox.showinfo("Session Ended", "No device detected. Charging session terminated.")
+            print("INFO: No device detected. Charging session terminated.")
             # clear active slot so SlotSelectScreen will show coin top again
             self.controller.active_slot = None
             self.controller.show_frame(MainScreen)
@@ -1484,7 +1516,7 @@ class ChargingScreen(tk.Frame):
             self.charging_uid = None
         except Exception:
             pass
-        messagebox.showinfo("Stopped", "Charging session stopped.")
+        print("INFO: Charging session stopped.")
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
@@ -1573,7 +1605,7 @@ class WaterScreen(tk.Frame):
     def insert_coin_water(self, amount):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Scan first.")
+            print("WARN: No user; scan first.")
             return
         user = read_user(uid)
         add = COIN_MAP.get(amount, 0)
@@ -1585,7 +1617,7 @@ class WaterScreen(tk.Frame):
                 append_audit_log(actor=uid, action='insert_coin_water', meta={'amount': amount, 'added_seconds': add, 'new_water_balance': new})
             except Exception:
                 pass
-            messagebox.showinfo("Coin Added", f"₱{amount} added to water balance ({add} sec).")
+            print(f"INFO: ₱{amount} added to water balance ({add} sec).")
         else:
             # non-member: add to temp purchase time (persist to DB so it remains across screens)
             # read any existing persisted temp value
@@ -1597,19 +1629,19 @@ class WaterScreen(tk.Frame):
                 append_audit_log(actor=uid, action='purchase_water', meta={'amount': amount, 'added_seconds': add, 'new_temp': newtemp})
             except Exception:
                 pass
-            messagebox.showinfo("Coin Added", f"₱{amount} purchased => {add} seconds water (temporary).")
+            print(f"INFO: ₱{amount} purchased => {add} seconds water (temporary).")
         self.refresh()
 
     def place_cup(self):
         uid = self.controller.active_uid
         if not uid:
-            messagebox.showwarning("No user", "Please scan RFID first.")
+            print("WARN: No user; please scan RFID first.")
             return
         user = read_user(uid)
         if user.get("type") == "member":
             wb = user.get("water_balance", 0) or 0
             if wb <= 0:
-                messagebox.showwarning("No balance", "No water balance left. Ask admin.")
+                print("WARN: No water balance left. Ask admin.")
                 return
             # start local tick using a cached remaining value to avoid blocking DB calls
             self.cup_present = True
@@ -1629,7 +1661,7 @@ class WaterScreen(tk.Frame):
                 self._water_nocup_job = None
         else:
             if self.temp_water_time <= 0:
-                messagebox.showwarning("No purchase", "Please buy water with coins first.")
+                print("WARN: No purchased time; please buy water with coins first.")
                 return
             self.cup_present = True
             self.last_cup_time = time.time()
@@ -1756,7 +1788,7 @@ class WaterScreen(tk.Frame):
                     self.temp_water_time = 0
             except Exception:
                 pass
-            messagebox.showinfo("Session ended", "No cup detected. Water session ended.")
+            print("INFO: No cup detected. Water session ended.")
             self.controller.show_frame(MainScreen)
             return
         # re-schedule the check and store handle
@@ -1805,7 +1837,7 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             self._water_nocup_job = None
-        messagebox.showinfo("Stopped", "Water session stopped.")
+        print("INFO: Water session stopped.")
         self.controller.show_frame(MainScreen)
 
 # ----------------- Run App -----------------

@@ -93,8 +93,6 @@ class SessionManager:
             'tick_job': None,
             'poll_job': None,
             'monitor_job': None,
-            # accumulator to control DB write frequency
-            'db_acc': 0,
             'plug_hits': [],
             'unplug_time': None,
         }
@@ -196,34 +194,14 @@ class SessionManager:
             self._schedule_tick(slot)
             return
         sess['remaining'] = max(0, sess['remaining'] - 1)
-        # accumulate seconds and write to DB only every CHARGE_DB_WRITE_INTERVAL
+        # persist to DB periodically
         try:
-            sess['db_acc'] = (sess.get('db_acc', 0) or 0) + 1
+            users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
         except Exception:
-            sess['db_acc'] = 1
-
-        wrote_db = False
+            pass
+        # update any visible UI
         try:
-            if sess['db_acc'] >= CHARGE_DB_WRITE_INTERVAL:
-                # write current remaining to DB
-                users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
-                sess['db_acc'] = 0
-                wrote_db = True
-        except Exception:
-            # ignore DB write errors but keep accumulating
-            try:
-                sess['db_acc'] = 0
-            except Exception:
-                pass
-
-        # update UI only on DB write when the remaining seconds crossed a minute boundary
-        # or when session ends — this prevents frequent UI refreshes that can lag the Pi.
-        try:
-            if wrote_db and (sess['remaining'] % 60 == 0 or sess['remaining'] <= 0):
-                try:
-                    self.controller.refresh_all_user_info()
-                except Exception:
-                    pass
+            self.controller.refresh_all_user_info()
         except Exception:
             pass
         if sess['remaining'] <= 0:
@@ -710,12 +688,6 @@ class UserInfoFrame(tk.Frame):
         self.info_lbl.pack(anchor="w", padx=10)
         self.bal_lbl = tk.Label(self, text="Water: -    Charge: -", font=("Arial", 12), fg="white", bg="#222f3e")
         self.bal_lbl.pack(anchor="w", padx=10, pady=(0,6))
-        # Throttle updates to the balance label to avoid frequent UI updates on low-power devices.
-        # We only refresh the displayed balance when it has decreased by at least 60 seconds
-        # or at least 60 seconds have passed since the last UI update for this user.
-        self._last_balance_shown = None
-        self._last_balance_update_ts = 0
-        self._last_uid = None
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -738,42 +710,10 @@ class UserInfoFrame(tk.Frame):
             wbal = user.get("water_balance", None)
         else:
             wbal = user.get("temp_water_time", 0) or 0
-        cbal = user.get("charge_balance", 0) or 0
-        # Always update name and info immediately (these are cheap operations)
-        try:
-            self.name_lbl.config(text=f"Name: {name}")
-            self.info_lbl.config(text=f"UID: {uid}    Student ID: {sid if sid else '-'}")
-        except Exception:
-            pass
-
-        # Throttle balance label updates to once per minute or when balance reduced by >= 60s
-        now = time.time()
-        need_update = False
-        # If changed user, force update
-        if self._last_uid != uid:
-            need_update = True
-        # First-time show
-        elif self._last_balance_shown is None:
-            need_update = True
-        # Decreased by at least one minute
-        elif cbal <= (self._last_balance_shown - 60):
-            need_update = True
-        # Periodic refresh every 60 seconds to avoid staleness
-        elif (now - (self._last_balance_update_ts or 0)) >= 60:
-            need_update = True
-
-        if need_update:
-            try:
-                self.bal_lbl.config(text=f"Water: {water_seconds_to_liters(wbal)}    Charge: {seconds_to_min_display(cbal)}")
-            except Exception:
-                pass
-            # update cache
-            try:
-                self._last_balance_shown = cbal
-                self._last_balance_update_ts = now
-                self._last_uid = uid
-            except Exception:
-                pass
+        cbal = user.get("charge_balance", 0)
+        self.name_lbl.config(text=f"Name: {name}")
+        self.info_lbl.config(text=f"UID: {uid}    Student ID: {sid if sid else '-'}")
+        self.bal_lbl.config(text=f"Water: {water_seconds_to_liters(wbal)}    Charge: {seconds_to_min_display(cbal)}")
 
 # --------- Screen: Main / Balance & Options ----------
 class MainScreen(tk.Frame):
@@ -1327,29 +1267,6 @@ class ChargingScreen(tk.Frame):
         if slot:
             users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
-
-        # If a SessionManager is present, delegate session lifecycle to it so
-        # each slot has a dedicated session/timer (avoids duplicate local timers).
-        try:
-            sm = getattr(self.controller, 'session_manager', None)
-            if sm is not None and slot:
-                try:
-                    sm.start_session(uid, slot)
-                    # sync local UI state to the session managed values
-                    sess = sm.sessions.get(slot)
-                    if sess:
-                        self.charging_uid = uid
-                        self.remaining = sess.get('remaining', 0)
-                        try:
-                            self.time_var.set(str(self.remaining))
-                        except Exception:
-                            pass
-                    return
-                except Exception:
-                    # fall through to local behavior if session manager call fails
-                    pass
-        except Exception:
-            pass
 
         # prepare local state but if hardware available for slot1, enable power and wait for current
         self.db_acc = 0

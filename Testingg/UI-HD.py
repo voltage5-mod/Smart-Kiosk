@@ -1145,6 +1145,9 @@ class ChargingScreen(tk.Frame):
         # Set when start_charging() is called so timers/monitors act only on the
         # intended slot even if controller.active_slot changes while session runs.
         self.charging_slot = None
+        # session validity flag: if False, all background timers should stop immediately
+        # This ensures old sessions stop even if timer callbacks are queued in the event loop
+        self._session_valid = False
 
     def _get_session_uid(self):
         """Return the uid owning the active charging session.
@@ -1169,9 +1172,11 @@ class ChargingScreen(tk.Frame):
         slot = self.controller.active_slot or "none"
         
         # CRITICAL: If the active user has changed (different from the session owner),
-        # cancel all background timers and reset state to prevent showing the wrong session's timer
+        # IMMEDIATELY INVALIDATE THE SESSION to stop all background timers
         if uid and self.charging_uid and uid != self.charging_uid:
-            print(f"[CHARGING] User changed: was {self.charging_uid}, now {uid}. Resetting ChargingScreen state.")
+            print(f"[CHARGING] User changed: was {self.charging_uid}, now {uid}. Invalidating session and resetting ChargingScreen state.")
+            # Mark session as invalid so any running callbacks will exit immediately
+            self._session_valid = False
             # Cancel all running timers
             try:
                 if self._tick_job is not None:
@@ -1209,6 +1214,11 @@ class ChargingScreen(tk.Frame):
             self._charge_samples = []
             self._plug_hits = []
             self._unplug_hits = []
+            # CRITICAL: Immediately clear the time display to prevent showing old session's remaining time
+            try:
+                self.time_var.set("0")
+            except Exception:
+                pass
         
         # Display a concise charging label. Show "Charging Slot X" instead of 'In use' or 'Occupied'.
         display_text = f"Charging Slot {slot[4:] if slot and slot.startswith('slot') else slot}"
@@ -1228,6 +1238,7 @@ class ChargingScreen(tk.Frame):
             if user.get("charging_status") == "charging" and self.charging_uid == uid:
                 # if we are not currently running a local tick, start one so time continues while user navigates
                 if not self.is_charging:
+                    self._session_valid = True  # Mark session as valid before starting
                     self.is_charging = True
                     self.remaining = cb
                     self.db_acc = 0
@@ -1293,6 +1304,8 @@ class ChargingScreen(tk.Frame):
         slot = self.controller.active_slot
         # remember session owner so background timers continue even if UI user logs out
         self.charging_uid = uid
+        # Mark session as VALID so timer callbacks will execute
+        self._session_valid = True
         # bind this charging UI instance to the selected slot so subsequent timers/monitors
         # target the correct slot even if controller.active_slot changes while the session runs
         self.charging_slot = slot
@@ -1435,6 +1448,9 @@ class ChargingScreen(tk.Frame):
     def _charging_tick(self):
         # clear current job marker since we're running now
         self._tick_job = None
+        # SAFETY: If session has been invalidated (user changed), exit immediately
+        if not getattr(self, '_session_valid', False):
+            return
         if not self.is_charging:
             return
         uid = self._get_session_uid()
@@ -1537,6 +1553,9 @@ class ChargingScreen(tk.Frame):
     def _poll_for_charging_start(self):
         """Poll current sensor on the active slot until device draws current, then start countdown."""
         self._wait_job = None
+        # SAFETY: If session has been invalidated (user changed), exit immediately
+        if not getattr(self, '_session_valid', False):
+            return
         # ensure we use the slot captured at start_charging
         slot = self.charging_slot or self.controller.active_slot
         hw = getattr(self.controller, 'hw', None)
@@ -1648,6 +1667,9 @@ class ChargingScreen(tk.Frame):
     def _hardware_unplug_monitor(self):
         """Monitor the ACS712 reading; if current falls below threshold for UNPLUG_GRACE_SECONDS, stop the session."""
         self._hw_monitor_job = None
+        # SAFETY: If session has been invalidated (user changed), exit immediately
+        if not getattr(self, '_session_valid', False):
+            return
         # ensure we monitor the bound slot for this charging session
         slot = self.charging_slot or self.controller.active_slot
         hw = getattr(self.controller, 'hw', None)
@@ -1739,6 +1761,9 @@ class ChargingScreen(tk.Frame):
     def _poll_no_detect_timeout(self):
         """Called when no device is detected within the allowed window after unlock."""
         self._poll_timeout_job = None
+        # SAFETY: If session has been invalidated (user changed), exit immediately
+        if not getattr(self, '_session_valid', False):
+            return
         slot = self.charging_slot or self.controller.active_slot
         uid = self._get_session_uid()
         if not uid:
@@ -1923,6 +1948,11 @@ class ChargingScreen(tk.Frame):
         # also clear the bound charging slot so this screen is ready for the next session
         try:
             self.charging_slot = None
+        except Exception:
+            pass
+        # CRITICAL: Mark session as invalid to prevent any queued callbacks from executing
+        try:
+            self._session_valid = False
         except Exception:
             pass
         print("INFO: Charging session stopped.")

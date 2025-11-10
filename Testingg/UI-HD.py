@@ -50,10 +50,10 @@ CHARGE_CONSECUTIVE_REQUIRED = 3   # fallback: require this many consecutive samp
 # New stricter detection policy (user request):
 # - plug detected when >= PLUG_THRESHOLD for PLUG_CONFIRM_COUNT samples within PLUG_CONFIRM_WINDOW seconds
 # - unplug detected when < UNPLUG_THRESHOLD for UNPLUG_CONFIRM_COUNT samples within UNPLUG_CONFIRM_WINDOW seconds
-PLUG_THRESHOLD = 0.25
+PLUG_THRESHOLD = 0.22
 PLUG_CONFIRM_COUNT = 4
 PLUG_CONFIRM_WINDOW = 2.0
-UNPLUG_THRESHOLD = 0.18
+UNPLUG_THRESHOLD = 0.14
 UNPLUG_CONFIRM_COUNT = 4
 UNPLUG_CONFIRM_WINDOW = 2.0
 

@@ -1167,6 +1167,49 @@ class ChargingScreen(tk.Frame):
     def refresh(self):
         uid = self.controller.active_uid
         slot = self.controller.active_slot or "none"
+        
+        # CRITICAL: If the active user has changed (different from the session owner),
+        # cancel all background timers and reset state to prevent showing the wrong session's timer
+        if uid and self.charging_uid and uid != self.charging_uid:
+            print(f"[CHARGING] User changed: was {self.charging_uid}, now {uid}. Resetting ChargingScreen state.")
+            # Cancel all running timers
+            try:
+                if self._tick_job is not None:
+                    self.after_cancel(self._tick_job)
+                    self._tick_job = None
+            except Exception:
+                pass
+            try:
+                if self._wait_job is not None:
+                    self.after_cancel(self._wait_job)
+                    self._wait_job = None
+            except Exception:
+                pass
+            try:
+                if self._hw_monitor_job is not None:
+                    self.after_cancel(self._hw_monitor_job)
+                    self._hw_monitor_job = None
+            except Exception:
+                pass
+            try:
+                if self._poll_timeout_job is not None:
+                    self.after_cancel(self._poll_timeout_job)
+                    self._poll_timeout_job = None
+            except Exception:
+                pass
+            # Reset all state variables
+            self.is_charging = False
+            self.charging_uid = None
+            self.charging_slot = None
+            self.remaining = 0
+            self.db_acc = 0
+            self.unplug_time = None
+            self.tm = None
+            self._charge_consecutive = 0
+            self._charge_samples = []
+            self._plug_hits = []
+            self._unplug_hits = []
+        
         # Display a concise charging label. Show "Charging Slot X" instead of 'In use' or 'Occupied'.
         display_text = f"Charging Slot {slot[4:] if slot and slot.startswith('slot') else slot}"
         display_bg = self.cget('bg')
@@ -1180,9 +1223,24 @@ class ChargingScreen(tk.Frame):
             user = read_user(uid)
             cb = user.get("charge_balance", 0) or 0
             self.time_var.set(str(cb))
-            # DO NOT auto-start ticks here. SessionManager handles all running sessions independently.
-            # This prevents interference between concurrent sessions on different slots.
-            # Just sync the UI display with the DB balance.
+            # keep local remaining in sync when not actively charging
+            # If DB reports charging_status == 'charging' AND this is OUR session, ensure local tick loop is running
+            if user.get("charging_status") == "charging" and self.charging_uid == uid:
+                # if we are not currently running a local tick, start one so time continues while user navigates
+                if not self.is_charging:
+                    self.is_charging = True
+                    self.remaining = cb
+                    self.db_acc = 0
+                    if self._tick_job is None:
+                        self._charging_tick()
+                else:
+                    # already charging locally; keep remaining in sync when tick isn't running
+                    if self._tick_job is None:
+                        self.remaining = cb
+            else:
+                if not self.is_charging and self._tick_job is None:
+                    # sync remaining only if no active tick loop
+                    self.remaining = cb
         else:
             self.time_var.set("0")
         # do not change is_charging or unplug_time here; refresh should be safe to call
@@ -1233,25 +1291,15 @@ class ChargingScreen(tk.Frame):
             print("WARN: No charge balance; please add coins to charging balance.")
             return
         slot = self.controller.active_slot
-        
-        # Delegate session management to SessionManager for proper isolation
-        try:
-            sm = getattr(self.controller, 'session_manager', None)
-            if sm:
-                # SessionManager handles all concurrent sessions independently
-                sm.start_session(uid, slot)
-                # Remember the slot for UI display purposes
-                self.charging_slot = slot
-                self.charging_uid = uid
-                print(f"[SESSION] SessionManager started session for {uid} on {slot}")
-                return
-        except Exception as e:
-            print(f"[ERROR] SessionManager start_session failed: {e}")
-        
-        # Fallback to local (legacy) charging if SessionManager not available
-        print("[WARN] SessionManager not available; using legacy local charging (may have conflicts)")
+        # remember session owner so background timers continue even if UI user logs out
         self.charging_uid = uid
+        # bind this charging UI instance to the selected slot so subsequent timers/monitors
+        # target the correct slot even if controller.active_slot changes while the session runs
         self.charging_slot = slot
+        # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
+        # the session must only start when current is detected. Mark 'pending' so
+        # other systems know the user requested charging. For non-hardware or fallback
+        # start immediately mark as 'charging'.
 
         hw = getattr(self.controller, 'hw', None)
         try:
@@ -1385,25 +1433,311 @@ class ChargingScreen(tk.Frame):
             self._charging_tick()
 
     def _charging_tick(self):
-        """DEPRECATED: SessionManager handles all ticking now.
-        This method is kept for backward compatibility but should not be called.
-        """
-        print("[DEPRECATED] _charging_tick called - this should be handled by SessionManager")
+        # clear current job marker since we're running now
         self._tick_job = None
-        return
+        if not self.is_charging:
+            return
+        uid = self._get_session_uid()
+        if not uid:
+            return
+        # operate on local remaining for responsiveness; write back to DB periodically
+        t = self.remaining
+        if t <= 0:
+            # ensure DB shows finished state and cancel any scheduled tick
+            if self._tick_job is not None:
+                try:
+                    self.after_cancel(self._tick_job)
+                except Exception:
+                    pass
+                self._tick_job = None
+            # ensure DB shows finished state and clear remaining balance/assignment
+            try:
+                write_user(uid, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
+            except Exception:
+                pass
+            # operate on the slot bound at start_charging; fall back to controller.active_slot
+            slot = self.charging_slot or self.controller.active_slot
+            # turn off hardware power and unlock slot where applicable
+            try:
+                hw = getattr(self.controller, 'hw', None)
+                if hw is not None and slot:
+                    try:
+                        hw.relay_off(slot)
+                    except Exception:
+                        pass
+                    try:
+                        hw.lock_slot(slot, lock=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if slot:
+                try:
+                    write_slot(slot, {"status": "inactive", "current_user": "none"})
+                    users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                except Exception:
+                    pass
+            try:
+                append_audit_log(actor=uid, action='charging_finished', meta={'slot': slot})
+            except Exception:
+                pass
+            print("INFO: Charging time finished; session ended.")
+            self.is_charging = False
+            try:
+                self.charging_uid = None
+            except Exception:
+                pass
+            # clear active slot and return to main screen
+            try:
+                if self.controller.active_slot == slot:
+                    self.controller.active_slot = None
+            except Exception:
+                # fallback: clear anyway
+                self.controller.active_slot = None
+            self.controller.show_frame(MainScreen)
+            return
+        # decrement local remaining and update display
+        self.remaining = max(0, t - 1)
+        self.time_var.set(str(self.remaining))
+        # update TM1637 if present
+        try:
+            if getattr(self, 'tm', None) is not None:
+                try:
+                    self.tm.show_time(self.remaining)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.db_acc += 1
+        # periodic DB write
+        if self.db_acc >= CHARGE_DB_WRITE_INTERVAL:
+            try:
+                # deduct the accumulated seconds via transaction to avoid races
+                # calculate how many seconds were consumed since last write
+                # here we simply set the DB to remaining using transaction-guarded approach
+                # compute delta = previous_db_balance - remaining
+                # using transaction helper which reduces balance by delta
+                prev = read_user(uid).get('charge_balance', 0) or 0
+                delta = max(0, prev - self.remaining)
+                if delta > 0:
+                    deduct_charge_balance_transactionally(users_ref, uid, delta)
+                else:
+                    # edge: DB ahead; set to remaining
+                    users_ref.child(uid).update({'charge_balance': self.remaining})
+            except Exception:
+                # fallback
+                users_ref.child(uid).update({"charge_balance": self.remaining})
+            self.db_acc = 0
+        # schedule next tick and remember job id so we don't double-schedule
+        try:
+            self._tick_job = self.after(1000, self._charging_tick)
+        except Exception:
+            self._tick_job = None
 
     def _poll_for_charging_start(self):
-        """DEPRECATED: SessionManager._poll_for_start handles this now."""
+        """Poll current sensor on the active slot until device draws current, then start countdown."""
         self._wait_job = None
-        return
+        # ensure we use the slot captured at start_charging
+        slot = self.charging_slot or self.controller.active_slot
+        hw = getattr(self.controller, 'hw', None)
+        uid = self._get_session_uid()
+        if not slot or not hw:
+            return
+        if not uid:
+            try:
+                s = read_slot(slot)
+                uid = s.get('current_user') if s else None
+            except Exception:
+                uid = None
+        if not uid:
+            return
+        try:
+            cur = hw.read_current(slot)
+            amps = cur.get('amps', 0)
+        except Exception:
+            amps = 0
+
+        # Debug print similar to test_slot1: show IDLE read line and compact poll info
+        try:
+            cur_raw = cur.get('raw') if isinstance(cur, dict) else None
+            volts = cur.get('volts') if isinstance(cur, dict) else None
+            print(f"IDLE read: raw={cur_raw} volts={(volts or 0):.3f} V amps={amps:.2f} A")
+            print(f"[CHG POLL] t={time.time():.1f} slot={slot} amps={amps:.3f} plug_hits={len(self._plug_hits)} unplug_hits={len(self._unplug_hits)}")
+        except Exception:
+            pass
+
+        now = time.time()
+        try:
+            sample = float(amps or 0.0)
+        except Exception:
+            sample = 0.0
+
+        # record plug-hits when sample >= PLUG_THRESHOLD
+        try:
+            if sample >= PLUG_THRESHOLD:
+                self._plug_hits.append(now)
+                # keep only recent hits within PLUG_CONFIRM_WINDOW
+                self._plug_hits = [t for t in self._plug_hits if (now - t) <= PLUG_CONFIRM_WINDOW]
+            else:
+                # optionally prune old entries even when below threshold
+                self._plug_hits = [t for t in self._plug_hits if (now - t) <= PLUG_CONFIRM_WINDOW]
+
+            # if enough plug hits within window, declare charging
+            if len(self._plug_hits) >= PLUG_CONFIRM_COUNT:
+                try:
+                    write_user(uid, {"charging_status": "charging"})
+                except Exception:
+                    pass
+                try:
+                    append_audit_log(actor=uid, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                except Exception:
+                    pass
+                # Debug: notify terminal that charging was detected
+                try:
+                    print(f"[CHG EVENT] charging_detected slot={slot} amps={amps:.3f} plug_hits={len(self._plug_hits)}")
+                except Exception:
+                    pass
+
+                # start charging state
+                self.is_charging = True
+                try:
+                    user = read_user(uid)
+                    self.remaining = user.get('charge_balance', self.remaining) or self.remaining
+                except Exception:
+                    pass
+                try:
+                    self.slot_lbl.config(text=f"{slot} - CHARGING")
+                except Exception:
+                    pass
+                # start tick loop and a non-blocking monitor that implements the 1-minute idle behavior
+                if self._tick_job is None:
+                    self._charging_tick()
+                if self._hw_monitor_job is None:
+                    # sample unplug monitor at 500ms to allow detection and 1-minute idle handling
+                    self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
+                # cancel poll timeout since device detected
+                try:
+                    if self._poll_timeout_job is not None:
+                        try:
+                            self.after_cancel(self._poll_timeout_job)
+                        except Exception:
+                            pass
+                        self._poll_timeout_job = None
+                except Exception:
+                    pass
+                return
+
+            # not enough evidence yet; schedule next sample at 500ms
+            try:
+                self._wait_job = self.after(500, self._poll_for_charging_start)
+            except Exception:
+                self._wait_job = None
+            return
+        except Exception:
+            # on error, reset plug_hits and continue polling
+            try:
+                self._plug_hits = []
+            except Exception:
+                pass
+            try:
+                self._wait_job = self.after(500, self._poll_for_charging_start)
+            except Exception:
+                self._wait_job = None
+            return
 
     def _hardware_unplug_monitor(self):
-        """DEPRECATED: SessionManager._monitor_unplug handles this now."""
+        """Monitor the ACS712 reading; if current falls below threshold for UNPLUG_GRACE_SECONDS, stop the session."""
         self._hw_monitor_job = None
-        return
+        # ensure we monitor the bound slot for this charging session
+        slot = self.charging_slot or self.controller.active_slot
+        hw = getattr(self.controller, 'hw', None)
+        uid = self._get_session_uid()
+        if not slot or not hw:
+            return
+        if not uid:
+            try:
+                s = read_slot(slot)
+                uid = s.get('current_user') if s else None
+            except Exception:
+                uid = None
+        if not uid:
+            return
+        try:
+            cur = hw.read_current(slot)
+            amps = cur.get('amps', 0)
+        except Exception:
+            amps = 0
+
+        # Debug print: show live monitor reading
+        try:
+            print(f"[CHG MON] t={time.time():.1f} slot={slot} amps={amps:.3f} unplug_hits={len(self._unplug_hits)}")
+        except Exception:
+            pass
+
+        now = time.time()
+        try:
+            # If we're seeing current above the plug threshold, ensure charging continues
+            if amps >= PLUG_THRESHOLD:
+                # device drawing current -> clear idle timer and resume countdown if paused
+                self.unplug_time = None
+                # ensure tick loop is running
+                if not self.is_charging:
+                    self.is_charging = True
+                    try:
+                        # restart tick loop if not scheduled
+                        if self._tick_job is None:
+                            self._charging_tick()
+                    except Exception:
+                        pass
+                    try:
+                        write_user(uid, {"charging_status": "charging"})
+                    except Exception:
+                        pass
+                    try:
+                        append_audit_log(actor=uid, action='charging_resumed', meta={'slot': slot, 'amps': amps})
+                    except Exception:
+                        pass
+            else:
+                # below threshold: start or continue idle timer
+                if not self.unplug_time:
+                    # first low reading: start the idle countdown (1 minute)
+                    self.unplug_time = now
+                    # pause tick loop so remaining doesn't decrease while unplugged
+                    self.is_charging = False
+                    if self._tick_job is not None:
+                        try:
+                            self.after_cancel(self._tick_job)
+                        except Exception:
+                            pass
+                        self._tick_job = None
+                    try:
+                        print(f"[CHG MON] no current detected, starting idle timer for {UNPLUG_GRACE_SECONDS}s")
+                    except Exception:
+                        pass
+                else:
+                    # check if idle timer expired
+                    if (now - self.unplug_time) >= UNPLUG_GRACE_SECONDS:
+                        try:
+                            print(f"[CHG EVENT] idle timeout expired, stopping session slot={slot} amps={amps:.3f}")
+                        except Exception:
+                            pass
+                        self.stop_session()
+                        return
+        except Exception:
+            # on error, reset and continue
+            try:
+                self.unplug_time = None
+            except Exception:
+                pass
+
+        # reschedule monitor at 500ms to match detection window
+        try:
+            self._hw_monitor_job = self.after(500, self._hardware_unplug_monitor)
+        except Exception:
+            self._hw_monitor_job = None
 
     def _poll_no_detect_timeout(self):
-        """DEPRECATED: SessionManager handles timeout logic now."""
+        """Called when no device is detected within the allowed window after unlock."""
         self._poll_timeout_job = None
         slot = self.charging_slot or self.controller.active_slot
         uid = self._get_session_uid()
@@ -1515,23 +1849,6 @@ class ChargingScreen(tk.Frame):
     def stop_session(self):
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
-        
-        # Tell SessionManager to end this session (if it's managing it)
-        try:
-            sm = getattr(self.controller, 'session_manager', None)
-            if sm and slot in sm.sessions:
-                sm.end_session(slot, reason='manual')
-                print(f"[SESSION] SessionManager ended session for {uid} on {slot}")
-                # Clear local state
-                self.charging_uid = None
-                self.charging_slot = None
-                print("INFO: Charging session stopped.")
-                self.controller.show_frame(MainScreen)
-                return
-        except Exception as e:
-            print(f"[WARN] SessionManager end_session failed: {e}")
-        
-        # Fallback to local cleanup if SessionManager not available
         if uid:
             # cancel periodic tick if running
             if self._tick_job is not None:

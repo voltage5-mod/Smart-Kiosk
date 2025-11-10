@@ -688,6 +688,12 @@ class UserInfoFrame(tk.Frame):
         self.info_lbl.pack(anchor="w", padx=10)
         self.bal_lbl = tk.Label(self, text="Water: -    Charge: -", font=("Arial", 12), fg="white", bg="#222f3e")
         self.bal_lbl.pack(anchor="w", padx=10, pady=(0,6))
+        # Throttle updates to the balance label to avoid frequent UI updates on low-power devices.
+        # We only refresh the displayed balance when it has decreased by at least 60 seconds
+        # or at least 60 seconds have passed since the last UI update for this user.
+        self._last_balance_shown = None
+        self._last_balance_update_ts = 0
+        self._last_uid = None
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -710,10 +716,42 @@ class UserInfoFrame(tk.Frame):
             wbal = user.get("water_balance", None)
         else:
             wbal = user.get("temp_water_time", 0) or 0
-        cbal = user.get("charge_balance", 0)
-        self.name_lbl.config(text=f"Name: {name}")
-        self.info_lbl.config(text=f"UID: {uid}    Student ID: {sid if sid else '-'}")
-        self.bal_lbl.config(text=f"Water: {water_seconds_to_liters(wbal)}    Charge: {seconds_to_min_display(cbal)}")
+        cbal = user.get("charge_balance", 0) or 0
+        # Always update name and info immediately (these are cheap operations)
+        try:
+            self.name_lbl.config(text=f"Name: {name}")
+            self.info_lbl.config(text=f"UID: {uid}    Student ID: {sid if sid else '-'}")
+        except Exception:
+            pass
+
+        # Throttle balance label updates to once per minute or when balance reduced by >= 60s
+        now = time.time()
+        need_update = False
+        # If changed user, force update
+        if self._last_uid != uid:
+            need_update = True
+        # First-time show
+        elif self._last_balance_shown is None:
+            need_update = True
+        # Decreased by at least one minute
+        elif cbal <= (self._last_balance_shown - 60):
+            need_update = True
+        # Periodic refresh every 60 seconds to avoid staleness
+        elif (now - (self._last_balance_update_ts or 0)) >= 60:
+            need_update = True
+
+        if need_update:
+            try:
+                self.bal_lbl.config(text=f"Water: {water_seconds_to_liters(wbal)}    Charge: {seconds_to_min_display(cbal)}")
+            except Exception:
+                pass
+            # update cache
+            try:
+                self._last_balance_shown = cbal
+                self._last_balance_update_ts = now
+                self._last_uid = uid
+            except Exception:
+                pass
 
 # --------- Screen: Main / Balance & Options ----------
 class MainScreen(tk.Frame):

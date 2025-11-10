@@ -90,7 +90,12 @@ def sample_slot(hw: HardwareGPIO, slot: str, samples: int, interval: float, sett
             'amps_med': cur.get('amps_med')
         }
         rows.append(row)
-        print(f"{i+1}/{samples} t={ts:.2f} raw={row['raw']} V={row['volts']:.3f} A_rms={row['amps_rms']:.3f} A_raw={row['amps_raw']:.3f}")
+        # match the IDLE read output format used in other test scripts
+        try:
+            print(f"IDLE read: raw={row['raw']} volts={row['volts']:.3f} V amps={row['amps_rms']:.2f} A")
+        except Exception:
+            # fallback to a safer print if values missing
+            print(f"IDLE read: raw={row.get('raw')} volts={row.get('volts')} V amps={row.get('amps_rms')} A")
         time.sleep(interval)
 
     print(f"Power OFF {slot}")
@@ -109,7 +114,10 @@ def sample_slot(hw: HardwareGPIO, slot: str, samples: int, interval: float, sett
             'amps_med': cur.get('amps_med')
         }
         rows.append(row)
-        print(f"post-off {i+1}/4 t={ts:.2f} raw={row['raw']} V={row['volts']:.3f} A_rms={row['amps_rms']:.3f}")
+        try:
+            print(f"IDLE read: raw={row['raw']} volts={row['volts']:.3f} V amps={row['amps_rms']:.2f} A")
+        except Exception:
+            print(f"IDLE read: raw={row.get('raw')} volts={row.get('volts')} V amps={row.get('amps_rms')} A")
         time.sleep(interval)
 
     # write CSV

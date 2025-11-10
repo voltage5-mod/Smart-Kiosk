@@ -63,6 +63,9 @@ class HardwareGPIO:
         self._inited = False
         # per-slot calibration baseline (volts) and raw
         self._baseline = {}
+        # cache relay states to avoid re-toggling the same pin repeatedly (prevents clicking)
+        # key: resolved pin number -> bool (True = ON, False = OFF)
+        self._relay_state = {}
         # smoothing helpers: exponential moving average and recent samples for RMS
         self._ema = {}
         self._recent = {}
@@ -91,14 +94,18 @@ class HardwareGPIO:
             for k, v in (self.pinmap.get('power_relay') or {}).items():
                 GPIO.setup(v, GPIO.OUT)
                 GPIO.output(v, inactive_level)
+                # initialize state cache
+                self._relay_state[v] = False
             for k, v in (self.pinmap.get('lock_relay') or {}).items():
                 GPIO.setup(v, GPIO.OUT)
                 GPIO.output(v, inactive_level)
+                self._relay_state[v] = False
             # other outputs (pump)
             pump = self.pinmap.get('pump_relay')
             if pump is not None:
                 GPIO.setup(pump, GPIO.OUT)
                 GPIO.output(pump, inactive_level)
+                self._relay_state[pump] = False
             # setup SPI for MCP3008
             sp = spidev.SpiDev()
             sp.open(0, 0)  # bus 0, device 0 (CE0)
@@ -114,22 +121,51 @@ class HardwareGPIO:
         if pin is None:
             print('[HW] Unknown relay:', pin_or_name)
             return
+        # Avoid toggling the relay if it's already ON (prevents repeated clicks)
+        try:
+            if self._relay_state.get(pin):
+                # already on; no-op
+                return
+        except Exception:
+            pass
         if self.mode == 'real':
             level = GPIO.HIGH if self.relay_active_high else GPIO.LOW
             GPIO.output(pin, level)
+            try:
+                self._relay_state[pin] = True
+            except Exception:
+                pass
         else:
             print(f'[HW_SIM] RELAY ON pin={pin} ({pin_or_name})')
+            try:
+                self._relay_state[pin] = True
+            except Exception:
+                pass
 
     def relay_off(self, pin_or_name):
         pin = self._resolve_pin(pin_or_name)
         if pin is None:
             print('[HW] Unknown relay:', pin_or_name)
             return
+        # Avoid toggling the relay if it's already OFF
+        try:
+            if not self._relay_state.get(pin):
+                return
+        except Exception:
+            pass
         if self.mode == 'real':
             level = GPIO.LOW if self.relay_active_high else GPIO.HIGH
             GPIO.output(pin, level)
+            try:
+                self._relay_state[pin] = False
+            except Exception:
+                pass
         else:
             print(f'[HW_SIM] RELAY OFF pin={pin} ({pin_or_name})')
+            try:
+                self._relay_state[pin] = False
+            except Exception:
+                pass
 
     def lock_slot(self, slot: str, lock: bool=True):
         # slot like 'slot1' maps to lock_relay.slot1

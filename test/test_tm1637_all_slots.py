@@ -232,17 +232,18 @@ class MultiSlotTimerTest:
 
     def start_timer(self, slot: str):
         """Start countdown timer for a single slot."""
+        # Acquire lock briefly to update state, then schedule tick outside the lock
         with self._locks[slot]:
             if self.slots[slot]['running']:
                 print(f"⚠️  {slot}: Already running")
                 return
-            
+
             self.slots[slot]['running'] = True
             self.stats[slot]['started'] = time.time()
             print(f"▶️  {slot}: Timer started ({self.slots[slot]['remaining']}s)")
-            
-            # Schedule first tick
-            self._schedule_tick(slot)
+
+        # Schedule first tick outside the lock to avoid deadlock with _schedule_tick acquiring the same lock
+        self._schedule_tick(slot)
 
     def _schedule_tick(self, slot: str):
         """Schedule next timer tick."""

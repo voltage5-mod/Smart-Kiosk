@@ -66,6 +66,247 @@ DEFAULT_CHARGE_BAL = 1200 # 20 min
 
 # ------------------------------------------------
 
+
+class SessionManager:
+    """Manage charging sessions per-slot so each slot has its own timer/monitor.
+    Sessions are keyed by slot name (e.g. 'slot1'). This runs per-slot after() jobs
+    on the Tk root (controller) so multiple sessions can run concurrently.
+    """
+    def __init__(self, controller):
+        self.controller = controller
+        self.sessions = {}  # slot -> session dict
+
+    def start_session(self, uid, slot):
+        # avoid duplicate
+        if slot in self.sessions:
+            print(f"WARN: session already running for {slot}")
+            return
+        hw = getattr(self.controller, 'hw', None)
+        # read initial remaining from DB
+        user = read_user(uid) or {}
+        remaining = user.get('charge_balance', 0) or 0
+        sess = {
+            'uid': uid,
+            'slot': slot,
+            'remaining': remaining,
+            'is_charging': False,
+            'tick_job': None,
+            'poll_job': None,
+            'monitor_job': None,
+            'plug_hits': [],
+            'unplug_time': None,
+        }
+        self.sessions[slot] = sess
+        # mark pending in DB
+        try:
+            write_user(uid, {'charging_status': 'pending'})
+            users_ref.child(uid).child('slot_status').update({slot: 'active'})
+            write_slot(slot, {'status': 'active', 'current_user': uid})
+        except Exception:
+            pass
+        # power on
+        try:
+            if hw is not None:
+                hw.relay_on(slot)
+        except Exception:
+            pass
+        # begin poll for device draw (if hw present) otherwise start tick immediately
+        if hw is None:
+            self._begin_charging(sess)
+        else:
+            # schedule polling every 500ms
+            self._schedule_poll_start(slot, delay=500)
+
+    def _schedule_poll_start(self, slot, delay=500):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        try:
+            # use controller.after
+            sess['poll_job'] = self.controller.after(delay, lambda: self._poll_for_start(slot))
+        except Exception:
+            sess['poll_job'] = None
+
+    def _poll_for_start(self, slot):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        hw = getattr(self.controller, 'hw', None)
+        if not hw:
+            self._begin_charging(sess)
+            return
+        try:
+            cur = hw.read_current(slot)
+            amps = float(cur.get('amps', 0) or 0)
+        except Exception:
+            amps = 0.0
+        now = time.time()
+        if amps >= PLUG_THRESHOLD:
+            sess['plug_hits'].append(now)
+            # prune
+            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
+        else:
+            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
+        if len(sess['plug_hits']) >= PLUG_CONFIRM_COUNT:
+            # device detected -> begin charging
+            try:
+                write_user(sess['uid'], {'charging_status': 'charging'})
+            except Exception:
+                pass
+            try:
+                append_audit_log(actor=sess['uid'], action='charging_detected', meta={'slot': slot})
+            except Exception:
+                pass
+            self._begin_charging(sess)
+            return
+        # reschedule
+        self._schedule_poll_start(slot, delay=500)
+
+    def _begin_charging(self, sess):
+        slot = sess['slot']
+        uid = sess['uid']
+        sess['is_charging'] = True
+        sess['plug_hits'] = []
+        sess['unplug_time'] = None
+        # schedule tick loop
+        self._schedule_tick(slot)
+        # schedule unplug monitor
+        try:
+            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
+        except Exception:
+            sess['monitor_job'] = None
+
+    def _schedule_tick(self, slot, delay=1000):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        try:
+            sess['tick_job'] = self.controller.after(delay, lambda: self._tick(slot))
+        except Exception:
+            sess['tick_job'] = None
+
+    def _tick(self, slot):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        if not sess.get('is_charging'):
+            # do not decrement while paused
+            self._schedule_tick(slot)
+            return
+        sess['remaining'] = max(0, sess['remaining'] - 1)
+        # persist to DB periodically
+        try:
+            users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
+        except Exception:
+            pass
+        # update any visible UI
+        try:
+            self.controller.refresh_all_user_info()
+        except Exception:
+            pass
+        if sess['remaining'] <= 0:
+            self.end_session(slot, reason='time_up')
+            return
+        # schedule next tick
+        self._schedule_tick(slot, delay=1000)
+
+    def _monitor_unplug(self, slot):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        hw = getattr(self.controller, 'hw', None)
+        if not hw:
+            # no hardware to monitor
+            return
+        try:
+            cur = hw.read_current(slot)
+            amps = float(cur.get('amps', 0) or 0)
+        except Exception:
+            amps = 0.0
+        now = time.time()
+        if amps >= PLUG_THRESHOLD:
+            # device drawing current -> clear idle timer and ensure charging continues
+            sess['unplug_time'] = None
+            if not sess['is_charging']:
+                sess['is_charging'] = True
+                # restart tick loop
+                self._schedule_tick(slot)
+                try:
+                    write_user(sess['uid'], {'charging_status': 'charging'})
+                except Exception:
+                    pass
+        else:
+            if not sess['unplug_time']:
+                sess['unplug_time'] = now
+                sess['is_charging'] = False
+            else:
+                if (now - sess['unplug_time']) >= UNPLUG_GRACE_SECONDS:
+                    self.end_session(slot, reason='unplug_timeout')
+                    return
+        # reschedule monitor
+        try:
+            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
+        except Exception:
+            sess['monitor_job'] = None
+
+    def end_session(self, slot, reason='manual'):
+        sess = self.sessions.get(slot)
+        if not sess:
+            return
+        uid = sess['uid']
+        # cancel jobs
+        try:
+            if sess.get('tick_job') is not None:
+                self.controller.after_cancel(sess['tick_job'])
+        except Exception:
+            pass
+        try:
+            if sess.get('poll_job') is not None:
+                self.controller.after_cancel(sess['poll_job'])
+        except Exception:
+            pass
+        try:
+            if sess.get('monitor_job') is not None:
+                self.controller.after_cancel(sess['monitor_job'])
+        except Exception:
+            pass
+        # turn off hardware and unlock
+        try:
+            hw = getattr(self.controller, 'hw', None)
+            if hw is not None:
+                try:
+                    hw.relay_off(slot)
+                except Exception:
+                    pass
+                try:
+                    hw.lock_slot(slot, lock=False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # update DB
+        try:
+            write_user(uid, {'charging_status': 'idle', 'occupied_slot': 'none', 'charge_balance': 0})
+            write_slot(slot, {'status': 'inactive', 'current_user': 'none'})
+            users_ref.child(uid).child('slot_status').update({slot: 'inactive'})
+        except Exception:
+            pass
+        try:
+            append_audit_log(actor=uid, action='charging_finished', meta={'slot': slot, 'reason': reason})
+        except Exception:
+            pass
+        # cleanup
+        try:
+            del self.sessions[slot]
+        except Exception:
+            pass
+        # refresh UI
+        try:
+            self.controller.refresh_all_user_info()
+        except Exception:
+            pass
+
+
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
 firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
@@ -182,7 +423,40 @@ class KioskApp(tk.Tk):
                 self.hw.setup()
             except Exception:
                 pass
+        # session manager for per-slot sessions
+        try:
+            self.session_manager = SessionManager(self)
+        except Exception:
+            self.session_manager = None
 
+        # coin counters per-uid (list of inserted coin amounts)
+        self.coin_counters = {}
+
+    def refresh_all_user_info(self):
+        # iterate frames and refresh embedded UserInfoFrame instances
+        try:
+            for f in self.frames.values():
+                try:
+                    ui = getattr(f, 'user_info', None)
+                    if ui is not None:
+                        try:
+                            ui.refresh()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def record_coin_insert(self, uid, amount, seconds):
+        # track recent coin inserts for display
+        try:
+            rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0})
+            rec['coins'] += 1
+            rec['seconds'] += seconds
+            self.coin_counters[uid] = rec
+        except Exception:
+            pass
         self.show_frame(ScanScreen)
 
     def show_frame(self, cls):
@@ -645,6 +919,9 @@ class SlotSelectScreen(tk.Frame):
         self.coin_frame_top = tk.LabelFrame(self, text=("Coinslot - add charge before slot" if hw else "Coinslot (simulate) - add charge before slot"), font=("Arial", 12, "bold"),
                                             fg="white", bg="#34495e", bd=2, labelanchor="n")
         self.coin_frame_top.pack(pady=6)
+        # status label to show recent coin inserts and expected time
+        self.coin_status_lbl = tk.Label(self.coin_frame_top, text="", fg="white", bg="#34495e")
+        self.coin_status_lbl.pack(pady=(4,0))
         if not hw:
             tk.Button(self.coin_frame_top, text="₱1", font=("Arial", 12, "bold"), bg="#f39c12", fg="white", width=8,
                       command=lambda: self.insert_coin(1)).grid(row=0, column=0, padx=6, pady=6)
@@ -712,6 +989,19 @@ class SlotSelectScreen(tk.Frame):
                         text = f"Slot {i}\nFree"
                         color = "#2ecc71"
             self.slot_buttons[key].config(text=text, bg=color)
+        # show coin status for current user if any
+        try:
+            uid = self.controller.active_uid
+            if uid:
+                rec = self.controller.coin_counters.get(uid)
+                if rec:
+                    self.coin_status_lbl.config(text=f"Coins inserted: {rec.get('coins',0)} (≈ {rec.get('seconds',0)}s)")
+                else:
+                    self.coin_status_lbl.config(text="")
+            else:
+                self.coin_status_lbl.config(text="")
+        except Exception:
+            pass
 
     def select_slot(self, i):
         uid = self.controller.active_uid
@@ -768,6 +1058,21 @@ class SlotSelectScreen(tk.Frame):
         except Exception:
             pass
         print(f"INFO: ₱{amount} added => {add} seconds to charging balance.")
+        # record coin insert for UI/summary
+        try:
+            self.controller.record_coin_insert(uid, amount, add)
+        except Exception:
+            pass
+        try:
+            self.controller.refresh_all_user_info()
+        except Exception:
+            pass
+        try:
+            rec = self.controller.coin_counters.get(uid)
+            if rec:
+                self.coin_status_lbl.config(text=f"Coins inserted: {rec.get('coins',0)} (≈ {rec.get('seconds',0)}s)")
+        except Exception:
+            pass
 
 
 # --------- Screen: Charging ----------
@@ -903,8 +1208,22 @@ class ChargingScreen(tk.Frame):
         if self.is_charging:
             self.remaining += add
             self.time_var.set(str(self.remaining))
+            # if a session manager has the active slot, update session remaining too
+            try:
+                sm = getattr(self.controller, 'session_manager', None)
+                slot = self.controller.active_slot
+                if sm and slot and slot in sm.sessions:
+                    sm.sessions[slot]['remaining'] = sm.sessions[slot].get('remaining', 0) + add
+            except Exception:
+                pass
         else:
             self.refresh()
+        # record coin insert and refresh UI globally
+        try:
+            self.controller.record_coin_insert(uid, amount, add)
+            self.controller.refresh_all_user_info()
+        except Exception:
+            pass
 
     def start_charging(self):
         uid = self.controller.active_uid

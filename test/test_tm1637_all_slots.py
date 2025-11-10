@@ -44,6 +44,33 @@ except ImportError as e:
     print(f"ERROR: Could not import hardware_gpio: {e}")
     sys.exit(1)
 
+# Safe print helper: some terminals (or locales) can't print emoji/utf-8.
+# Replace global print with a wrapper that falls back to safe encoding.
+import builtins
+_orig_print = builtins.print
+
+def _safe_print(*args, **kwargs):
+    try:
+        _orig_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        try:
+            sep = kwargs.get('sep', ' ')
+            end = kwargs.get('end', '\n')
+            s = sep.join(str(a) for a in args) + end
+            enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+            # write bytes to buffer if available
+            try:
+                sys.stdout.buffer.write(s.encode(enc, errors='replace'))
+            except Exception:
+                # fallback: write decoded string (replace invalids)
+                _orig_print(s.encode('utf-8', errors='replace').decode('utf-8'))
+        except Exception:
+            # last resort: use original print without emojis
+            _orig_print(' '.join(str(a) for a in args))
+
+# Monkeypatch built-in print in this module
+builtins.print = _safe_print
+
 
 class MultiSlotTimerTest:
     """Manage 4 independent slot timer displays."""

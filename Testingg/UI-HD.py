@@ -1130,7 +1130,7 @@ class ChargingScreen(tk.Frame):
         self._wait_job = None
         self._hw_monitor_job = None
         self._poll_timeout_job = None
-    self._ui_job = None
+        self._ui_job = None
         # consecutive-sample counter to avoid spurious single-sample triggers
         self._charge_consecutive = 0
         # rolling sample buffers / hit timestamps for threshold-based detection

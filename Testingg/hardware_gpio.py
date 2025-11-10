@@ -345,54 +345,81 @@ class HardwareGPIO:
 
     # TM1637 minimal driver (bit-banged)
     def tm1637_init(self):
-        if self.tm is None:
-            clk = self.pinmap.get('tm1637', {}).get('clk')
-            dio_map = self.pinmap.get('tm1637', {}).get('dio', {})
-            # create an instance bound to clk and dio for slot1 only (we'll support slot1 display)
-            # Prefer using the `tm1637` library if available (better compatibility); fall back to local driver
+        """Initialize TM1637 display for slot1 (legacy/default)."""
+        return self.tm1637_init_slot('slot1')
+    
+    def tm1637_init_slot(self, slot: str = 'slot1'):
+        """Initialize TM1637 display for a specific slot.
+        
+        Args:
+            slot: slot name (e.g., 'slot1', 'slot2', 'slot3', 'slot4')
+        
+        Returns:
+            Display wrapper with show_time(seconds) and set_brightness(level) methods.
+        """
+        clk = self.pinmap.get('tm1637', {}).get('clk')
+        dio_map = self.pinmap.get('tm1637', {}).get('dio', {})
+        dio = dio_map.get(slot)
+        
+        if clk is None or dio is None:
+            # No valid pins for this slot
+            print(f'[HW] TM1637 pins not configured for {slot} (clk={clk}, dio={dio})')
+            return self._make_noop_display()
+        
+        # Prefer using the `tm1637` library if available (better compatibility); fall back to local driver
+        try:
+            import tm1637 as _tm1637_lib
+            disp = _tm1637_lib.TM1637(clk=clk, dio=dio)
+            # wrap to expose show_time(seconds) and set_brightness(level)
+            class _Wrap:
+                def __init__(self, d):
+                    self.d = d
+                def show_time(self, seconds: int):
+                    mm = seconds // 60
+                    ss = seconds % 60
+                    try:
+                        # some libraries have `numbers` helper
+                        if hasattr(self.d, 'numbers'):
+                            self.d.numbers(mm, ss)
+                        else:
+                            s = f"{mm:02d}{ss:02d}"
+                            if hasattr(self.d, 'show'):
+                                self.d.show(s)
+                    except Exception:
+                        pass
+                def set_brightness(self, level: int):
+                    # try common API names for brightness
+                    try:
+                        if hasattr(self.d, 'brightness'):
+                            self.d.brightness(level)
+                            return
+                        if hasattr(self.d, 'set_brightness'):
+                            self.d.set_brightness(level)
+                            return
+                        if hasattr(self.d, 'setLight'):
+                            self.d.setLight(level)
+                            return
+                    except Exception:
+                        pass
+            disp_wrapper = _Wrap(disp)
+            # set a low default brightness to avoid very-bright LEDs
             try:
-                import tm1637 as _tm1637_lib
-                disp = _tm1637_lib.TM1637(clk=clk, dio=dio_map.get('slot1'))
-                # wrap to expose show_time(seconds) and set_brightness(level)
-                class _Wrap:
-                    def __init__(self, d):
-                        self.d = d
-                    def show_time(self, seconds: int):
-                        mm = seconds // 60
-                        ss = seconds % 60
-                        try:
-                            # some libraries have `numbers` helper
-                            if hasattr(self.d, 'numbers'):
-                                self.d.numbers(mm, ss)
-                            else:
-                                s = f"{mm:02d}{ss:02d}"
-                                if hasattr(self.d, 'show'):
-                                    self.d.show(s)
-                        except Exception:
-                            pass
-                    def set_brightness(self, level: int):
-                        # try common API names for brightness
-                        try:
-                            if hasattr(self.d, 'brightness'):
-                                self.d.brightness(level)
-                                return
-                            if hasattr(self.d, 'set_brightness'):
-                                self.d.set_brightness(level)
-                                return
-                            if hasattr(self.d, 'setLight'):
-                                self.d.setLight(level)
-                                return
-                        except Exception:
-                            pass
-                self.tm = _Wrap(disp)
-                # set a low default brightness to avoid very-bright LEDs
-                try:
-                    self.tm.set_brightness(1)
-                except Exception:
-                    pass
+                disp_wrapper.set_brightness(1)
             except Exception:
-                self.tm = TM1637Display(clk_pin=clk, dio_pin=dio_map.get('slot1'), gpio=self.gpio, mode=self.mode)
-        return self.tm
+                pass
+            return disp_wrapper
+        except Exception:
+            # Fall back to internal TM1637Display
+            return TM1637Display(clk_pin=clk, dio_pin=dio, gpio=self.gpio, mode=self.mode)
+    
+    def _make_noop_display(self):
+        """Return a no-op display object for when hardware is not available."""
+        class NoopDisplay:
+            def show_time(self, seconds: int):
+                pass
+            def set_brightness(self, level: int):
+                pass
+        return NoopDisplay()
 
     def cleanup(self):
         """Turn off relays, close SPI and cleanup GPIO."""

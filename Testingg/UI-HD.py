@@ -1316,9 +1316,13 @@ class ChargingScreen(tk.Frame):
                 hw.relay_on(slot)
             except Exception:
                 pass
-            # init TM1637 display for countdown (if present)
+            # init TM1637 display for countdown (if present) - use the specific slot's display
             try:
-                self.tm = hw.tm1637_init()
+                if hasattr(hw, 'tm1637_init_slot'):
+                    self.tm = hw.tm1637_init_slot(slot)
+                else:
+                    # fallback for older hardware_gpio without per-slot init
+                    self.tm = hw.tm1637_init()
                 if hasattr(self.tm, 'set_brightness'):
                     try:
                         self.tm.set_brightness(1)

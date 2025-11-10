@@ -2,6 +2,8 @@ import time
 import threading
 import json
 import os
+import argparse
+import hardware_gpio as hwmod
 from hardware_gpio import HardwareGPIO
 
 BASE = os.path.dirname(__file__)
@@ -80,7 +82,22 @@ class SlotTimer:
 
 
 def main():
-    hw = HardwareGPIO(pinmap=pinmap, mode='sim')
+    # require explicit --real to avoid accidental simulation runs on a hardware test bench
+    parser = argparse.ArgumentParser(description='Test 4 slot timers (requires real GPIO and MCP3008).')
+    parser.add_argument('--real', action='store_true', help='Use real Raspberry Pi GPIO and SPI (required for hardware tests)')
+    args = parser.parse_args()
+
+    if not args.real:
+        print('This test script requires --real to run against actual hardware. Aborting to avoid simulation.')
+        return
+
+    # ensure the hardware drivers are available in the hardware_gpio module
+    if not getattr(hwmod, '_real_gpio', None) or not getattr(hwmod, '_spidev', None):
+        print('ERROR: Real GPIO or SPI libraries are not available in this Python environment.')
+        print('Make sure RPi.GPIO and spidev are installed and you are running on a Raspberry Pi.')
+        return
+
+    hw = HardwareGPIO(pinmap=pinmap, mode='real')
     hw.setup()
 
     # create four slot timers with short durations for quick test

@@ -1152,6 +1152,76 @@ class ChargingScreen(tk.Frame):
         # Used to prevent old queued callbacks from updating display with stale data
         self._session_id = 0
         self._current_session_id = None
+        # UI update job id for periodically refreshing the displayed remaining time
+        self._ui_update_job = None
+
+    def _start_ui_update_loop(self):
+        """Periodically update the displayed remaining time from SessionManager (if present).
+        This keeps the UI responsive while the authoritative session ticks run in SessionManager.
+        """
+        try:
+            # cancel any previous job
+            if self._ui_update_job is not None:
+                try:
+                    self.after_cancel(self._ui_update_job)
+                except Exception:
+                    pass
+                self._ui_update_job = None
+            # immediate update then schedule next
+            self._ui_update_once()
+        except Exception:
+            self._ui_update_job = None
+
+    def _stop_ui_update_loop(self):
+        try:
+            if self._ui_update_job is not None:
+                try:
+                    self.after_cancel(self._ui_update_job)
+                except Exception:
+                    pass
+                self._ui_update_job = None
+        except Exception:
+            pass
+
+    def _ui_update_once(self):
+        """Single UI update tick: read remaining seconds from SessionManager if available
+        or from user DB if not. Schedule next update in ~1s.
+        """
+        try:
+            slot = self.charging_slot or getattr(self.controller, 'active_slot', None)
+            sm = getattr(self.controller, 'session_manager', None)
+            if sm and slot and slot in sm.sessions:
+                try:
+                    rem = sm.sessions[slot].get('remaining', 0)
+                    self.time_var.set(str(rem))
+                    if getattr(self, 'tm', None) is not None:
+                        try:
+                            self.tm.show_time(rem)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            else:
+                # fallback: read DB for active uid
+                uid = getattr(self.controller, 'active_uid', None)
+                if uid:
+                    try:
+                        user = read_user(uid) or {}
+                        self.time_var.set(str(user.get('charge_balance', 0) or 0))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.time_var.set('0')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            # schedule next UI update
+            self._ui_update_job = self.after(1000, self._ui_update_once)
+        except Exception:
+            self._ui_update_job = None
 
     def _get_session_uid(self):
         """Return the uid owning the active charging session.
@@ -1175,6 +1245,8 @@ class ChargingScreen(tk.Frame):
         uid = self.controller.active_uid
         slot = self.controller.active_slot or "none"
         
+        print(f"[REFRESH] ChargingScreen.refresh() called. active_uid={uid}, charging_uid={self.charging_uid}, is_charging={self.is_charging}, remaining={self.remaining}")
+        
         # CRITICAL: If the active user has changed (different from the session owner),
         # IMMEDIATELY INVALIDATE THE SESSION to stop all background timers
         if uid and self.charging_uid and uid != self.charging_uid:
@@ -1184,27 +1256,35 @@ class ChargingScreen(tk.Frame):
             # Cancel all running timers
             try:
                 if self._tick_job is not None:
+                    print(f"[CHARGING] Cancelling _tick_job: {self._tick_job}")
                     self.after_cancel(self._tick_job)
                     self._tick_job = None
-            except Exception:
+            except Exception as e:
+                print(f"[CHARGING] Error cancelling _tick_job: {e}")
                 pass
             try:
                 if self._wait_job is not None:
+                    print(f"[CHARGING] Cancelling _wait_job: {self._wait_job}")
                     self.after_cancel(self._wait_job)
                     self._wait_job = None
-            except Exception:
+            except Exception as e:
+                print(f"[CHARGING] Error cancelling _wait_job: {e}")
                 pass
             try:
                 if self._hw_monitor_job is not None:
+                    print(f"[CHARGING] Cancelling _hw_monitor_job: {self._hw_monitor_job}")
                     self.after_cancel(self._hw_monitor_job)
                     self._hw_monitor_job = None
-            except Exception:
+            except Exception as e:
+                print(f"[CHARGING] Error cancelling _hw_monitor_job: {e}")
                 pass
             try:
                 if self._poll_timeout_job is not None:
+                    print(f"[CHARGING] Cancelling _poll_timeout_job: {self._poll_timeout_job}")
                     self.after_cancel(self._poll_timeout_job)
                     self._poll_timeout_job = None
-            except Exception:
+            except Exception as e:
+                print(f"[CHARGING] Error cancelling _poll_timeout_job: {e}")
                 pass
             # Reset all state variables
             self.is_charging = False
@@ -1220,8 +1300,10 @@ class ChargingScreen(tk.Frame):
             self._unplug_hits = []
             # CRITICAL: Immediately clear the time display to prevent showing old session's remaining time
             try:
+                print(f"[CHARGING] Setting time_var to '0'")
                 self.time_var.set("0")
-            except Exception:
+            except Exception as e:
+                print(f"[CHARGING] Error setting time_var: {e}")
                 pass
         
         # Display a concise charging label. Show "Charging Slot X" instead of 'In use' or 'Occupied'.
@@ -1237,6 +1319,18 @@ class ChargingScreen(tk.Frame):
             user = read_user(uid)
             cb = user.get("charge_balance", 0) or 0
             self.time_var.set(str(cb))
+            # If a SessionManager session exists for the active slot, bind to it and
+            # start the UI update loop so the view reflects the authoritative session state.
+            try:
+                sm = getattr(self.controller, 'session_manager', None)
+                if sm and slot and slot in sm.sessions:
+                    self.charging_slot = slot
+                    self.charging_uid = sm.sessions[slot].get('uid')
+                    self._session_valid = True
+                    if self._ui_update_job is None:
+                        self._start_ui_update_loop()
+            except Exception:
+                pass
             # keep local remaining in sync when not actively charging
             # If DB reports charging_status == 'charging' AND this is OUR session, ensure local tick loop is running
             if user.get("charging_status") == "charging" and self.charging_uid == uid:
@@ -1339,7 +1433,52 @@ class ChargingScreen(tk.Frame):
             users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
 
-        # prepare local state but if hardware available for slot1, enable power and wait for current
+        # Delegate session lifecycle to SessionManager when available.
+        # This centralizes per-slot timers so multiple sessions can run concurrently.
+        sm = getattr(self.controller, 'session_manager', None)
+        if sm:
+            try:
+                # cancel any local timers that might conflict
+                try:
+                    if self._tick_job is not None:
+                        self.after_cancel(self._tick_job)
+                except Exception:
+                    pass
+                try:
+                    if self._wait_job is not None:
+                        self.after_cancel(self._wait_job)
+                except Exception:
+                    pass
+                try:
+                    if self._hw_monitor_job is not None:
+                        self.after_cancel(self._hw_monitor_job)
+                except Exception:
+                    pass
+                try:
+                    if self._poll_timeout_job is not None:
+                        self.after_cancel(self._poll_timeout_job)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # start authoritative session manager which will handle ticks/monitoring
+            try:
+                sm.start_session(uid, slot)
+            except Exception:
+                pass
+            # update view binding so UI shows the session for this slot
+            self.charging_uid = uid
+            self.charging_slot = slot
+            self._session_valid = True
+            # begin UI update loop that reads remaining from SessionManager
+            try:
+                if self._ui_update_job is None:
+                    self._start_ui_update_loop()
+            except Exception:
+                pass
+            return
+
+        # Fallback: prepare local state but if hardware available for slot1, enable power and wait for current
         self.db_acc = 0
         self.remaining = cb
         self.time_var.set(str(self.remaining))
@@ -1460,12 +1599,16 @@ class ChargingScreen(tk.Frame):
         my_session_id = getattr(self, '_current_session_id', None)
         # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
+            print(f"[TICK] Exiting: _session_valid=False (my_session_id={my_session_id}, current={self._current_session_id})")
             return
         if not self.is_charging:
+            print(f"[TICK] Exiting: not charging")
             return
         uid = self._get_session_uid()
         if not uid:
+            print(f"[TICK] Exiting: no uid")
             return
+        print(f"[TICK] Running: uid={uid}, remaining={self.remaining}, my_session_id={my_session_id}, current={self._current_session_id}")
         # operate on local remaining for responsiveness; write back to DB periodically
         t = self.remaining
         if t <= 0:
@@ -1903,6 +2046,21 @@ class ChargingScreen(tk.Frame):
     def stop_session(self):
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
+        # If SessionManager is authoritative, ask it to end the session for this slot
+        try:
+            sm = getattr(self.controller, 'session_manager', None)
+            if sm and slot and slot in sm.sessions:
+                try:
+                    sm.end_session(slot, reason='manual')
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # stop UI update loop
+        try:
+            self._stop_ui_update_loop()
+        except Exception:
+            pass
         if uid:
             # cancel periodic tick if running
             if self._tick_job is not None:

@@ -72,8 +72,8 @@ firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
 users_ref = db.reference("users")
 slots_ref = db.reference("slots")
 
-# Ensure slots node exists (slot1..slot5)
-for i in range(1, 6):
+# Ensure slots node exists (slot1..slot4)
+for i in range(1, 5):
     slot_key = f"slot{i}"
     if slots_ref.child(slot_key).get() is None:
         slots_ref.child(slot_key).set({"status": "inactive", "current_user": "none"})
@@ -492,8 +492,10 @@ class MainScreen(tk.Frame):
             messagebox.showerror('Error', 'Failed to submit registration request. Please try again later.')
 
     def logout(self):
+        # Only clear the active UID; keep any assigned/active slot so charging sessions
+        # continue running even if the user logs out at the kiosk UI.
         self.controller.active_uid = None
-        self.controller.active_slot = None
+        # do not clear controller.active_slot here; background charging should continue
         self.controller.show_frame(ScanScreen)
 
     def refresh(self):
@@ -647,7 +649,7 @@ class SlotSelectScreen(tk.Frame):
         self.slot_buttons = {}
         grid = tk.Frame(self, bg="#34495e")
         grid.pack(pady=8)
-        for i in range(1, 6):
+        for i in range(1, 5):
             btn = tk.Button(grid, text=f"Slot {i}\n(Checking...)", font=("Arial", 14, "bold"),
                             bg="#95a5a6", fg="black", width=14, height=2,
                             command=lambda s=i: self.select_slot(s))
@@ -671,7 +673,7 @@ class SlotSelectScreen(tk.Frame):
                 self.coin_frame_top.pack(pady=6)
             except Exception:
                 pass
-        for i in range(1, 6):
+        for i in range(1, 5):
             key = f"slot{i}"
             slot = read_slot(key)
             if slot is None:
@@ -814,6 +816,27 @@ class ChargingScreen(tk.Frame):
         self._plug_hits = []
         # timestamps when unplug (below threshold) was observed while charging
         self._unplug_hits = []
+        # uid that started the charging session. Stored so background ticks/monitors
+        # continue even if the user logs out from the UI (controller.active_uid cleared).
+        self.charging_uid = None
+
+    def _get_session_uid(self):
+        """Return the uid owning the active charging session.
+        Priority: explicit charging_uid set at start_charging -> controller.active_uid -> slot.current_user in DB.
+        """
+        uid = getattr(self, 'charging_uid', None) or getattr(self.controller, 'active_uid', None)
+        if uid:
+            return uid
+        # try to infer from the assigned slot in the DB
+        slot = getattr(self.controller, 'active_slot', None)
+        if slot:
+            try:
+                s = read_slot(slot)
+                if s:
+                    return s.get('current_user')
+            except Exception:
+                pass
+        return None
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -885,6 +908,8 @@ class ChargingScreen(tk.Frame):
             messagebox.showwarning("No balance", "Please add coins to charging balance.")
             return
         slot = self.controller.active_slot
+        # remember session owner so background timers continue even if UI user logs out
+        self.charging_uid = uid
         # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
         # the session must only start when current is detected. Mark 'pending' so
         # other systems know the user requested charging. For non-hardware or fallback
@@ -1020,7 +1045,7 @@ class ChargingScreen(tk.Frame):
         self._tick_job = None
         if not self.is_charging:
             return
-        uid = self.controller.active_uid
+        uid = self._get_session_uid()
         if not uid:
             return
         # operate on local remaining for responsiveness; write back to DB periodically
@@ -1092,10 +1117,18 @@ class ChargingScreen(tk.Frame):
     def _poll_for_charging_start(self):
         """Poll current sensor on the active slot until device draws current, then start countdown."""
         self._wait_job = None
-        uid = self.controller.active_uid
         slot = self.controller.active_slot
         hw = getattr(self.controller, 'hw', None)
-        if not uid or not slot or not hw:
+        uid = self._get_session_uid()
+        if not slot or not hw:
+            return
+        if not uid:
+            try:
+                s = read_slot(slot)
+                uid = s.get('current_user') if s else None
+            except Exception:
+                uid = None
+        if not uid:
             return
         try:
             cur = hw.read_current(slot)
@@ -1194,10 +1227,18 @@ class ChargingScreen(tk.Frame):
     def _hardware_unplug_monitor(self):
         """Monitor the ACS712 reading; if current falls below threshold for UNPLUG_GRACE_SECONDS, stop the session."""
         self._hw_monitor_job = None
-        uid = self.controller.active_uid
         slot = self.controller.active_slot
         hw = getattr(self.controller, 'hw', None)
-        if not uid or not slot or not hw:
+        uid = self._get_session_uid()
+        if not slot or not hw:
+            return
+        if not uid:
+            try:
+                s = read_slot(slot)
+                uid = s.get('current_user') if s else None
+            except Exception:
+                uid = None
+        if not uid:
             return
         try:
             cur = hw.read_current(slot)
@@ -1276,11 +1317,18 @@ class ChargingScreen(tk.Frame):
     def _poll_no_detect_timeout(self):
         """Called when no device is detected within the allowed window after unlock."""
         self._poll_timeout_job = None
-        uid = self.controller.active_uid
         slot = self.controller.active_slot
+        uid = self._get_session_uid()
+        if not uid:
+            try:
+                s = read_slot(slot)
+                uid = s.get('current_user') if s else None
+            except Exception:
+                uid = None
         try:
             # ensure DB cleanup and notify user
-            write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
+            if uid:
+                write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
         except Exception:
             pass
         if slot:
@@ -1320,7 +1368,7 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def unlock_slot(self):
-        uid = self.controller.active_uid
+        uid = self._get_session_uid()
         slot = self.controller.active_slot
         if not uid or not slot:
             messagebox.showwarning("No selection", "No slot assigned.")
@@ -1336,7 +1384,7 @@ class ChargingScreen(tk.Frame):
     # simulate_unplug removed: hardware path monitors current and handles unplug
 
     def _check_unplug_grace(self):
-        uid = self.controller.active_uid
+        uid = self._get_session_uid()
         if not uid:
             return
         user = read_user(uid)
@@ -1363,7 +1411,7 @@ class ChargingScreen(tk.Frame):
         self.after(1000, self._check_unplug_grace)
 
     def stop_session(self):
-        uid = self.controller.active_uid
+        uid = self._get_session_uid()
         slot = self.controller.active_slot
         if uid:
             # cancel periodic tick if running
@@ -1431,6 +1479,11 @@ class ChargingScreen(tk.Frame):
                 append_audit_log(actor=uid, action='stop_charging', meta={'slot': slot})
             except Exception:
                 pass
+        # clear stored session uid so future ticks don't reference this session
+        try:
+            self.charging_uid = None
+        except Exception:
+            pass
         messagebox.showinfo("Stopped", "Charging session stopped.")
         self.controller.show_frame(MainScreen)
 

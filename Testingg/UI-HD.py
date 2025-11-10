@@ -1268,6 +1268,29 @@ class ChargingScreen(tk.Frame):
             users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
 
+        # If a SessionManager is present, delegate session lifecycle to it so
+        # each slot has a dedicated session/timer (avoids duplicate local timers).
+        try:
+            sm = getattr(self.controller, 'session_manager', None)
+            if sm is not None and slot:
+                try:
+                    sm.start_session(uid, slot)
+                    # sync local UI state to the session managed values
+                    sess = sm.sessions.get(slot)
+                    if sess:
+                        self.charging_uid = uid
+                        self.remaining = sess.get('remaining', 0)
+                        try:
+                            self.time_var.set(str(self.remaining))
+                        except Exception:
+                            pass
+                    return
+                except Exception:
+                    # fall through to local behavior if session manager call fails
+                    pass
+        except Exception:
+            pass
+
         # prepare local state but if hardware available for slot1, enable power and wait for current
         self.db_acc = 0
         self.remaining = cb

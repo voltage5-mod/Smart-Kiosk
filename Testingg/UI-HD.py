@@ -93,6 +93,8 @@ class SessionManager:
             'tick_job': None,
             'poll_job': None,
             'monitor_job': None,
+            # accumulator to control DB write frequency
+            'db_acc': 0,
             'plug_hits': [],
             'unplug_time': None,
         }
@@ -194,14 +196,34 @@ class SessionManager:
             self._schedule_tick(slot)
             return
         sess['remaining'] = max(0, sess['remaining'] - 1)
-        # persist to DB periodically
+        # accumulate seconds and write to DB only every CHARGE_DB_WRITE_INTERVAL
         try:
-            users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
+            sess['db_acc'] = (sess.get('db_acc', 0) or 0) + 1
         except Exception:
-            pass
-        # update any visible UI
+            sess['db_acc'] = 1
+
+        wrote_db = False
         try:
-            self.controller.refresh_all_user_info()
+            if sess['db_acc'] >= CHARGE_DB_WRITE_INTERVAL:
+                # write current remaining to DB
+                users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
+                sess['db_acc'] = 0
+                wrote_db = True
+        except Exception:
+            # ignore DB write errors but keep accumulating
+            try:
+                sess['db_acc'] = 0
+            except Exception:
+                pass
+
+        # update UI only on DB write when the remaining seconds crossed a minute boundary
+        # or when session ends — this prevents frequent UI refreshes that can lag the Pi.
+        try:
+            if wrote_db and (sess['remaining'] % 60 == 0 or sess['remaining'] <= 0):
+                try:
+                    self.controller.refresh_all_user_info()
+                except Exception:
+                    pass
         except Exception:
             pass
         if sess['remaining'] <= 0:

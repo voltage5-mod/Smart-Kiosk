@@ -33,10 +33,12 @@ def load_pinmap(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Continuously read all ACS712 channels and print values (no relays).')
+    parser = argparse.ArgumentParser(description='Continuously read all ACS712 channels and print values.')
     parser.add_argument('--interval', type=float, default=0.5, help='Seconds between samples (default 0.5)')
     parser.add_argument('--samples', type=int, default=0, help='Number of samples to take; 0 => run until Ctrl+C')
     parser.add_argument('--pinmap', type=str, default=PINMAP, help='Path to pinmap.json')
+    parser.add_argument('--no-power', action='store_true', help='Do not toggle power relays; only read sensors')
+    parser.add_argument('--power-settle', type=float, default=0.5, help='Seconds to wait after powering relays before first read')
     args = parser.parse_args()
 
     pinmap = load_pinmap(args.pinmap)
@@ -51,8 +53,22 @@ def main():
         hw.setup()
     except Exception as e:
         print('Warning: hw.setup() failed or running in sim mode:', e)
+    # Determine which slots have power relays mapped
+    power_map = pinmap.get('power_relay') or {}
+    slots_with_power = [s for s in slots if s in power_map]
 
     print('Reading sensors for slots:', ', '.join(slots))
+    if not args.no_power and slots_with_power:
+        print('Powering ON relays for slots:', ', '.join(slots_with_power))
+        for s in slots_with_power:
+            try:
+                hw.relay_on(s)
+            except Exception as e:
+                print(f'Failed to power {s}:', e)
+        # allow sensors to settle after powering
+        time.sleep(args.power_settle)
+    elif not slots_with_power:
+        print('No power_relay entries found for slots; running read-only.')
     count = 0
     try:
         while True:
@@ -73,6 +89,14 @@ def main():
     except KeyboardInterrupt:
         print('\nInterrupted by user.')
     finally:
+        # Turn off relays we powered earlier (do not touch locks)
+        if not args.no_power and slots_with_power:
+            print('Powering OFF relays for slots:', ', '.join(slots_with_power))
+            for s in slots_with_power:
+                try:
+                    hw.relay_off(s)
+                except Exception:
+                    pass
         try:
             hw.cleanup()
         except Exception:

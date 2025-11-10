@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--pinmap', type=str, default=PINMAP, help='Path to pinmap.json')
     parser.add_argument('--no-power', action='store_true', help='Do not toggle power relays; only read sensors')
     parser.add_argument('--power-settle', type=float, default=0.5, help='Seconds to wait after powering relays before first read')
+    parser.add_argument('--power-off', action='store_true', help='Power OFF the relays on exit; by default relays will be left ON')
     args = parser.parse_args()
 
     pinmap = load_pinmap(args.pinmap)
@@ -89,14 +90,17 @@ def main():
     except KeyboardInterrupt:
         print('\nInterrupted by user.')
     finally:
-        # Turn off relays we powered earlier (do not touch locks)
+        # Turn off relays only if user requested (--power-off). By default we leave them powered.
         if not args.no_power and slots_with_power:
-            print('Powering OFF relays for slots:', ', '.join(slots_with_power))
-            for s in slots_with_power:
-                try:
-                    hw.relay_off(s)
-                except Exception:
-                    pass
+            if args.power_off:
+                print('Powering OFF relays for slots:', ', '.join(slots_with_power))
+                for s in slots_with_power:
+                    try:
+                        hw.relay_off(s)
+                    except Exception:
+                        pass
+            else:
+                print('Leaving relays powered ON (use --power-off to turn them off at exit).')
         try:
             hw.cleanup()
         except Exception:

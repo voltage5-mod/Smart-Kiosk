@@ -445,6 +445,14 @@ class KioskApp(tk.Tk):
             print(f"WARN: Failed to initialize ArduinoListener: {e}")
             self.arduino_listener = None
         
+        # NOW that ArduinoListener is created, register WaterScreen callbacks
+        try:
+            water_screen = self.frames.get(WaterScreen, None)
+            if water_screen and self.arduino_listener:
+                water_screen._register_arduino_callbacks()
+        except Exception as e:
+            print(f"WARN: Failed to register WaterScreen callbacks: {e}")
+        
         # session manager for per-slot sessions
         try:
             self.session_manager = SessionManager(self)
@@ -2076,8 +2084,8 @@ class WaterScreen(tk.Frame):
         self._water_db_acc = 0
         self._water_remaining = 0
         
-        # Register for hardware events from ArduinoListener (if available)
-        self._register_arduino_callbacks()
+        # Note: Arduino callbacks will be registered by KioskApp.__init__() after ArduinoListener is created
+        # This avoids a timing issue where WaterScreen is initialized before ArduinoListener exists
 
     def refresh(self):
         # refresh user info header too

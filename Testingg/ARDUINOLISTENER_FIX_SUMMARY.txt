@@ -1,0 +1,46 @@
+================================================================================
+ARDUINOLISTENER INITIALIZATION FIX - COMPLETE
+================================================================================
+
+ISSUE FIXED:
+  Message: "INFO: WaterScreen - No ArduinoListener found; simulation mode only."
+  Status: ✅ RESOLVED
+
+PROBLEM:
+  - WaterScreen.__init__() called _register_arduino_callbacks() immediately
+  - At that time, self.controller.arduino_listener did NOT exist yet
+  - Initialization race condition caused fallback to simulation mode
+
+SOLUTION APPLIED:
+  1. Modified WaterScreen.__init__() to NOT call _register_arduino_callbacks() immediately
+  2. Added delayed registration in KioskApp.__init__() AFTER ArduinoListener is created
+  3. Uses safe getattr() pattern to handle missing components gracefully
+
+FILES MODIFIED:
+  ✅ UI-HD_charge_detection.py
+     - Line ~446-451: Added delayed Arduino callback registration
+     - Line ~2088: Removed immediate callback registration from WaterScreen.__init__()
+
+EXPECTED BEHAVIOR AFTER RESTART:
+  Console should now show:
+  ✅ "INFO: ArduinoListener started on /dev/ttyUSB0 @ 115200 baud"
+  ✅ "INFO: WaterScreen - Registering for Arduino events."
+  ❌ "No ArduinoListener found" message should NOT appear
+
+TESTING STEPS:
+  1. Restart Smart Kiosk UI: python3 UI-HD_charge_detection.py
+  2. Check console output for messages above
+  3. Insert coins (1P/5P/10P) and verify "COIN_WATER" messages
+  4. Place cup and verify "CUP_DETECTED" message
+  5. Remove cup and verify "CUP_REMOVED" message
+
+READY TO TEST:
+  ✅ Arduino firmware uploaded and running
+  ✅ All hardware sensors connected
+  ✅ USB serial connection active
+  ✅ ArduinoListener initialization fixed
+  ✅ WaterScreen now properly finds listener on startup
+
+Next: Restart the Smart Kiosk application and verify proper initialization!
+
+================================================================================

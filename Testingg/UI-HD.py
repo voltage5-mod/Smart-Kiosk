@@ -1307,6 +1307,25 @@ class ChargingScreen(tk.Frame):
                     except Exception:
                         pass
                     s['is_charging'] = True
+                    # cancel any poll-timeout or wait jobs (we detected device)
+                    try:
+                        if s.get('poll_timeout_job') is not None:
+                            try:
+                                self.after_cancel(s['poll_timeout_job'])
+                            except Exception:
+                                pass
+                            s['poll_timeout_job'] = None
+                    except Exception:
+                        pass
+                    try:
+                        if s.get('wait_job') is not None:
+                            try:
+                                self.after_cancel(s['wait_job'])
+                            except Exception:
+                                pass
+                            s['wait_job'] = None
+                    except Exception:
+                        pass
                     try:
                         u = read_user(uid_local)
                         s['remaining'] = u.get('charge_balance', s.get('remaining')) or s.get('remaining')

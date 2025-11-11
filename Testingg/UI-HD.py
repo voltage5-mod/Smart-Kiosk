@@ -52,6 +52,8 @@ UNPLUG_CONFIRM_WINDOW = 2.0
 # Grace period after unplug before ending session (seconds)
 UNPLUG_GRACE_SECONDS = 60
 WATER_SECONDS_PER_LITER = 10
+CHARGE_SAMPLE_WINDOW = 5
+CHARGE_AVG_THRESHOLD = PLUG_THRESHOLD
 WATER_DB_WRITE_INTERVAL = 2
 NO_CUP_TIMEOUT = 10
 # Unplug detection threshold (restored for charging detection)
@@ -1173,6 +1175,7 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 try:
+                    print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
                     del self._sessions[slot]
                 except Exception:
                     pass
@@ -1239,25 +1242,33 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
-                if sample >= PLUG_THRESHOLD:
-                    s['plug_hits'].append(now)
-                    s['plug_hits'] = [t for t in s['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
-                else:
-                    s['plug_hits'] = [t for t in s['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
-                if len(s['plug_hits']) >= PLUG_CONFIRM_COUNT:
+                # maintain a rolling window of raw samples for more robust detection
+                cs = s.get('charge_samples', [])
+                cs.append(sample)
+                if len(cs) > CHARGE_SAMPLE_WINDOW:
+                    cs = cs[-CHARGE_SAMPLE_WINDOW:]
+                s['charge_samples'] = cs
+                avg = sum(cs) / len(cs) if cs else 0.0
+                count_above = sum(1 for v in cs if v >= PLUG_THRESHOLD)
+                # Debug
+                try:
+                    print(f"[POLL {slot}] sample={sample:.3f} avg={avg:.3f} count_above={count_above}/{len(cs)}")
+                except Exception:
+                    pass
+                # require both a sufficient average and a minimum count within the window
+                if avg >= CHARGE_AVG_THRESHOLD and count_above >= PLUG_CONFIRM_COUNT:
                     try:
                         write_user(uid_local, {"charging_status": "charging"})
                     except Exception:
                         pass
                     try:
-                        append_audit_log(actor=uid_local, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                        append_audit_log(actor=uid_local, action='charging_detected', meta={'slot': slot, 'amps': amps, 'avg': avg})
                     except Exception:
                         pass
                     s['is_charging'] = True
                     try:
                         u = read_user(uid_local)
-                        s['remaining'] = u.get('charge_balance', s.get('remaining')) or s.get('remaining'
-                    )
+                        s['remaining'] = u.get('charge_balance', s.get('remaining')) or s.get('remaining')
                     except Exception:
                         pass
                     try:
@@ -1358,6 +1369,7 @@ class ChargingScreen(tk.Frame):
                             except Exception:
                                 pass
                             try:
+                                print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
                                 del self._sessions[slot]
                             except Exception:
                                 pass
@@ -1393,10 +1405,11 @@ class ChargingScreen(tk.Frame):
                 append_audit_log(actor=uid_local, action='charge_no_device_detected', meta={'slot': slot})
             except Exception:
                 pass
-            try:
-                del self._sessions[slot]
-            except Exception:
-                pass
+                try:
+                    print(f"[SESSION END] slot={slot} reason=no_device_detected uid={uid_local}")
+                    del self._sessions[slot]
+                except Exception:
+                    pass
 
         # Now start the appropriate flow: hardware path uses unlock + poll, otherwise start tick
         if hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):

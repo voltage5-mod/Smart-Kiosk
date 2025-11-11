@@ -897,6 +897,8 @@ class ChargingScreen(tk.Frame):
         # each entry keyed by slot name (e.g. 'slot1') contains its own session_id, uid,
         # remaining, db_acc, job ids and tm instance
         self._sessions = {}
+        # counter that increments with each new session for unique session_id assignment
+        self._session_id = 0
 
     def _cancel_session_jobs(self, s):
         """Cancel any scheduled Tkinter jobs stored in a session record and clear their ids."""

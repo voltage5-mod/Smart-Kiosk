@@ -56,6 +56,11 @@ WATER_DB_WRITE_INTERVAL = 2
 NO_CUP_TIMEOUT = 10
 # (no further overrides)
 
+# Debug: when True, print raw hw.read_current(slot) values in poll/monitor callbacks
+# Set DEBUG_AMPS_LOG = True and DEBUG_AMPS_SLOTS to the slots you want to trace (e.g. ['slot1'])
+DEBUG_AMPS_LOG = False
+DEBUG_AMPS_SLOTS = []
+
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
 firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
@@ -1233,6 +1238,12 @@ class ChargingScreen(tk.Frame):
                 amps = cur.get('amps', 0)
             except Exception:
                 amps = 0
+            # optional debug dump of raw readings
+            try:
+                if DEBUG_AMPS_LOG and (not DEBUG_AMPS_SLOTS or slot in DEBUG_AMPS_SLOTS):
+                    print(f"[DEBUG AMPS POLL] slot={slot} time={time.time():.3f} cur={cur} amps={amps}")
+            except Exception:
+                pass
             now = time.time()
             try:
                 sample = float(amps or 0.0)
@@ -1297,6 +1308,12 @@ class ChargingScreen(tk.Frame):
                 amps = cur.get('amps', 0)
             except Exception:
                 amps = 0
+            # optional debug dump of raw readings
+            try:
+                if DEBUG_AMPS_LOG and (not DEBUG_AMPS_SLOTS or slot in DEBUG_AMPS_SLOTS):
+                    print(f"[DEBUG AMPS MON] slot={slot} time={time.time():.3f} cur={cur} amps={amps}")
+            except Exception:
+                pass
             now = time.time()
             try:
                 sample = float(amps or 0.0)

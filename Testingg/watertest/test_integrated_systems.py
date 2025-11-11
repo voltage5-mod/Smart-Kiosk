@@ -30,9 +30,16 @@ except ImportError:
 try:
     import board
     import busio
-    import adafruit_mcp23017
+    # The Adafruit MCP23017 driver package is published as
+    # adafruit-circuitpython-mcp230xx (module name adafruit_mcp230xx).
+    # Older code or different installs may expose adafruit_mcp23017.
+    try:
+        import adafruit_mcp230xx as adafruit_mcp23017  # prefer new package name
+    except Exception:
+        # fallback to older import name if present
+        import adafruit_mcp23017
     I2C_AVAILABLE = True
-except ImportError:
+except Exception:
     print("WARNING: Adafruit MCP23017 library not available; skipping I2C tests")
     I2C_AVAILABLE = False
 

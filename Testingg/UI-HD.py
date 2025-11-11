@@ -46,6 +46,8 @@ UNPLUG_GRACE_SECONDS = 60
 WATER_SECONDS_PER_LITER = 10
 WATER_DB_WRITE_INTERVAL = 2
 NO_CUP_TIMEOUT = 10
+# Unplug detection threshold (restored for charging detection)
+UNPLUG_THRESHOLD = 0.20
 
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
@@ -1240,7 +1242,8 @@ class ChargingScreen(tk.Frame):
                     s['is_charging'] = True
                     try:
                         u = read_user(uid_local)
-                        s['remaining'] = u.get('charge_balance', s.get('remaining')) or s.get('remaining')
+                        s['remaining'] = u.get('charge_balance', s.get('remaining')) or s.get('remaining'
+                    )
                     except Exception:
                         pass
                     try:
@@ -1284,10 +1287,12 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
+                # Plug detection: sample >= PLUG_THRESHOLD
+                # Unplug detection: sample < UNPLUG_THRESHOLD
                 if sample >= PLUG_THRESHOLD:
                     # still charging; reset unplug hits
                     s['unplug_hits'] = []
-                else:
+                elif sample < UNPLUG_THRESHOLD:
                     s['unplug_hits'].append(now)
                     s['unplug_hits'] = [t for t in s['unplug_hits'] if (now - t) <= UNPLUG_GRACE_SECONDS]
                     if len(s['unplug_hits']) >= 1:
@@ -2075,9 +2080,6 @@ class WaterScreen(tk.Frame):
                 return
             self.cup_present = True
             self.last_cup_time = time.time()
-            self.status_lbl.config(text="Dispensing (Purchased time)...")
-            # start local tick for non-member purchased time
-            self._water_remaining = self.temp_water_time
             self.time_var.set(str(self._water_remaining))
             if self._water_job is None:
                 self._water_job = self.after(1000, self._water_tick_nonmember)

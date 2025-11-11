@@ -40,11 +40,11 @@ DEFAULT_CHARGE_BAL = 0
 # Timing and thresholds
 CHARGE_DB_WRITE_INTERVAL = 10
 # Detection thresholds (amps) - match UI-HD_charge_detection.py
-PLUG_THRESHOLD = 0.22
+PLUG_THRESHOLD = 0.14
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
 # Unplug detection parameters
-UNPLUG_THRESHOLD = 0.14
+UNPLUG_THRESHOLD = 0.06
 UNPLUG_CONFIRM_COUNT = 4
 UNPLUG_CONFIRM_WINDOW = 2.0
 # Grace period after unplug before ending session (seconds)
@@ -1178,33 +1178,80 @@ class ChargingScreen(tk.Frame):
             t = s.get('remaining', 0)
             print(f"[TICK {slot}] {uid_local}: {t}s")
             if t <= 0:
-                # finish session
+                # timer reached zero: cut power but do NOT necessarily free the slot
+                # If the user is currently present at the kiosk (controller.active_uid == uid_local)
+                # perform the normal full cleanup. If the user is NOT present, leave the
+                # DB mapping (occupied_slot/current_user) intact so the phone remains assigned
+                # to the slot and the slot shows the UID on the dashboard. We still cut power
+                # so the phone is no longer charging.
                 self._cancel_session_jobs(s)
+                # ensure hardware power is cut and lock the slot so phone remains inside
                 try:
-                    write_user(uid_local, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
+                    hw_local = getattr(self.controller, 'hw', None)
+                    if hw_local is not None and slot:
+                        try:
+                            hw_local.relay_off(slot)
+                        except Exception:
+                            pass
+                        try:
+                            # keep the slot locked so user must come back to unlock
+                            hw_local.lock_slot(slot, lock=True)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
+
                 try:
-                    write_slot(slot, {"status": "inactive", "current_user": "none"})
-                    users_ref.child(uid_local).child("slot_status").update({slot: "inactive"})
+                    # if the user is still at the kiosk, finish and free the slot
+                    if getattr(self.controller, 'active_uid', None) == uid_local:
+                        try:
+                            write_user(uid_local, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
+                        except Exception:
+                            pass
+                        try:
+                            write_slot(slot, {"status": "inactive", "current_user": "none"})
+                            users_ref.child(uid_local).child("slot_status").update({slot: "inactive"})
+                        except Exception:
+                            pass
+                        try:
+                            append_audit_log(actor=uid_local, action='charging_finished', meta={'slot': slot})
+                        except Exception:
+                            pass
+                        try:
+                            if self.controller.active_slot == slot:
+                                self.controller.active_slot = None
+                        except Exception:
+                            pass
+                        try:
+                            print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
+                            del self._sessions[slot]
+                        except Exception:
+                            pass
+                        return
+                    else:
+                        # user not present: keep DB occupied mapping but mark session expired
+                        try:
+                            # leave occupied_slot/current_user intact so dashboard shows UID
+                            write_user(uid_local, {"charging_status": "expired", "charge_balance": 0})
+                        except Exception:
+                            pass
+                        try:
+                            append_audit_log(actor=uid_local, action='charging_expired_no_user', meta={'slot': slot})
+                        except Exception:
+                            pass
+                        # mark session locally as expired/paused; do not delete session record
+                        try:
+                            s['is_charging'] = False
+                            s['expired'] = True
+                        except Exception:
+                            pass
+                        try:
+                            print(f"[SESSION PAUSED] slot={slot} reason=expired_no_user uid={uid_local}")
+                        except Exception:
+                            pass
+                        return
                 except Exception:
                     pass
-                try:
-                    append_audit_log(actor=uid_local, action='charging_finished', meta={'slot': slot})
-                except Exception:
-                    pass
-                # cleanup session
-                try:
-                    if self.controller.active_slot == slot:
-                        self.controller.active_slot = None
-                except Exception:
-                    pass
-                try:
-                    print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
-                    del self._sessions[slot]
-                except Exception:
-                    pass
-                return
             # decrement and update
             s['remaining'] = max(0, t - 1)
             # update UI only if currently viewing this slot

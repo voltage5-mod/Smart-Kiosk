@@ -423,6 +423,28 @@ class KioskApp(tk.Tk):
                 self.hw.setup()
             except Exception:
                 pass
+        
+        # Initialize ArduinoListener for water service hardware integration
+        try:
+            from arduino_listener import ArduinoListener
+            if _pinmap and _pinmap.get('arduino_usb'):
+                arduino_port = _pinmap.get('arduino_usb', '/dev/ttyUSB0')
+                arduino_baud = _pinmap.get('arduino_baud', 115200)
+                self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
+                self.arduino_listener.start()
+                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud")
+            else:
+                # Simulate mode if no pinmap or arduino_usb not configured
+                self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
+                self.arduino_listener.start()
+                print("INFO: ArduinoListener running in simulate mode")
+        except ImportError:
+            print("WARN: arduino_listener module not found; water service will use simulation buttons only")
+            self.arduino_listener = None
+        except Exception as e:
+            print(f"WARN: Failed to initialize ArduinoListener: {e}")
+            self.arduino_listener = None
+        
         # session manager for per-slot sessions
         try:
             self.session_manager = SessionManager(self)
@@ -469,6 +491,16 @@ class KioskApp(tk.Tk):
         if hasattr(frame, "refresh"):
             frame.refresh()
         frame.tkraise()
+    
+    def cleanup(self):
+        """Gracefully shutdown resources on app exit."""
+        try:
+            if hasattr(self, 'arduino_listener') and self.arduino_listener is not None:
+                self.arduino_listener.stop()
+                print("INFO: ArduinoListener stopped.")
+        except Exception as e:
+            print(f"WARN: Error stopping ArduinoListener: {e}")
+
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):
@@ -2004,41 +2036,48 @@ class WaterScreen(tk.Frame):
         tk.Label(body, text="Time (sec)", font=("Arial", 14), fg="white", bg="#2980b9").pack()
         tk.Label(body, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#2980b9").pack(pady=6)
 
-        # cup detection controls
+        # Hardware active indicator
         hw = getattr(self.controller, 'hw', None)
         hw_present = hw is not None
+        hw_label = tk.Label(body, 
+                           text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
+                           fg="#27ae60" if hw_present else "#f39c12", bg="#2980b9", font=("Arial", 12))
+        hw_label.pack(pady=4)
+
+        # Control buttons
         btn_frame = tk.Frame(body, bg="#2980b9")
         btn_frame.pack(pady=8)
-        if not hw_present:
-            # simulation buttons for desktop/testing when no hardware present
-            tk.Button(btn_frame, text="Simulate Place Cup (Start)", font=("Arial", 14, "bold"),
-                      bg="#27ae60", fg="white", width=18, command=self.place_cup).grid(row=0, column=0, padx=6)
-            tk.Button(btn_frame, text="Simulate Remove Cup", font=("Arial", 14, "bold"),
-                      bg="#f39c12", fg="white", width=18, command=self.remove_cup).grid(row=0, column=1, padx=6)
-        else:
-            # when hardware is present, hide simulation and show helpful hint
-            tk.Label(btn_frame, text="Hardware sensors active — use physical inputs", fg="white", bg="#2980b9", font=("Arial", 12)).pack()
         tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=18, command=self.stop_session).grid(row=1, column=0, columnspan=2, pady=8)
+                  bg="#c0392b", fg="white", width=20, command=self.stop_session).pack(pady=8)
 
-        # coin area for non-members (water purchase only) - only ₱1 allowed
-        coin_frame = tk.LabelFrame(body, text="Coinslot (simulate) - water (non-members only)", font=("Arial", 12, "bold"),
-                                   fg="white", bg="#2980b9", bd=2, labelanchor="n")
-        coin_frame.pack(pady=10)
-        tk.Button(coin_frame, text="₱1", font=("Arial", 14, "bold"), bg="#f39c12", fg="white", width=8,
-                  command=lambda: self.insert_coin_water(1)).grid(row=0, column=0, padx=6, pady=6)
+        # Coin area (for manual testing when no Arduino hardware)
+        if not hw_present:
+            coin_frame = tk.LabelFrame(body, text="Coinslot (simulation) - water (non-members only)", font=("Arial", 12, "bold"),
+                                       fg="white", bg="#2980b9", bd=2, labelanchor="n")
+            coin_frame.pack(pady=10)
+            tk.Button(coin_frame, text="₱1", font=("Arial", 14, "bold"), bg="#f39c12", fg="white", width=8,
+                      command=lambda: self.insert_coin_water(1)).grid(row=0, column=0, padx=6, pady=6)
+            
+            # Simulation cup buttons for testing without Arduino
+            cup_sim_frame = tk.LabelFrame(body, text="Cup Simulation (for testing)", font=("Arial", 12, "bold"),
+                                          fg="white", bg="#2980b9", bd=2, labelanchor="n")
+            cup_sim_frame.pack(pady=10)
+            tk.Button(cup_sim_frame, text="Simulate Place Cup", font=("Arial", 12, "bold"),
+                      bg="#27ae60", fg="white", width=18, command=self.place_cup).grid(row=0, column=0, padx=6, pady=6)
+            tk.Button(cup_sim_frame, text="Simulate Remove Cup", font=("Arial", 12, "bold"),
+                      bg="#f39c12", fg="white", width=18, command=self.remove_cup).grid(row=0, column=1, padx=6, pady=6)
 
         # state
         self.cup_present = False
         self.last_cup_time = None
-        self.water_db_acc = 0
         self.temp_water_time = 0  # for non-member purchased water time
         self._water_job = None
         self._water_nocup_job = None
         self._water_db_acc = 0
         self._water_remaining = 0
-        self._water_db_acc = 0
-        self._water_remaining = 0
+        
+        # Register for hardware events from ArduinoListener (if available)
+        self._register_arduino_callbacks()
 
     def refresh(self):
         # refresh user info header too
@@ -2069,6 +2108,45 @@ class WaterScreen(tk.Frame):
                 self.status_lbl.config(text="Non-member: buy water with coins")
             else:
                 self.status_lbl.config(text="Place cup to start (Purchased time)")
+
+    def _register_arduino_callbacks(self):
+        """Register for Arduino listener events (coin, cup detection)."""
+        listener = getattr(self.controller, 'arduino_listener', None)
+        if listener is None:
+            print("INFO: WaterScreen - No ArduinoListener found; simulation mode only.")
+            return
+        print("INFO: WaterScreen - Registering for Arduino events.")
+        listener.register_callback(self._on_arduino_event)
+
+    def _on_arduino_event(self, event):
+        """Handle Arduino events: COIN_INSERTED, CUP_DETECTED, CUP_REMOVED, DISPENSING_DONE."""
+        uid = self.controller.active_uid
+        if not uid:
+            return
+        
+        event_type = event.get("event")
+        print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
+        
+        if event_type == "COIN_INSERTED":
+            # Arduino detected coin insertion
+            volume_ml = event.get("volume_ml", 0)
+            # Assume ₱1 = 1 volume unit (or map as needed)
+            # For now, treat any coin as ₱1
+            self.insert_coin_water(1)
+        
+        elif event_type == "CUP_DETECTED":
+            # Physical cup placed on sensor
+            self.place_cup()
+        
+        elif event_type == "CUP_REMOVED":
+            # Physical cup removed
+            self.remove_cup()
+        
+        elif event_type == "DISPENSING_DONE":
+            # Optional: Arduino signaled dispensing complete
+            total_ml = event.get("total_ml", 0)
+            print(f"INFO: WaterScreen - Dispensing complete: {total_ml} ml")
+
 
     def insert_coin_water(self, amount):
         uid = self.controller.active_uid
@@ -2311,4 +2389,6 @@ class WaterScreen(tk.Frame):
 # ----------------- Run App -----------------
 if __name__ == "__main__":
     app = KioskApp()
+    app.protocol("WM_DELETE_WINDOW", lambda: (app.cleanup(), app.destroy()))
     app.mainloop()
+

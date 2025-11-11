@@ -97,15 +97,11 @@ class MultiSlotTimerTest:
         }
         
         # Thread safety
-        # Use re-entrant locks because some callers (e.g. _tick) may need to
-        # acquire the same slot lock recursively when updating displays.
-        # Using RLock prevents deadlocks when a function holding the lock
-        # calls _safe_display_update which also attempts to acquire the lock.
-        self._locks = {slot: threading.RLock() for slot in self.slots}
-
+        self._locks = {slot: threading.Lock() for slot in self.slots}
+        
         # Display instances per slot (lazy initialized)
         self.displays = {}
-
+        
         # Statistics
         self.stats = defaultdict(lambda: {'ticks': 0, 'started': None, 'ended': None})
 

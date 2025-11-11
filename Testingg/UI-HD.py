@@ -662,7 +662,7 @@ class MainScreen(tk.Frame):
             charging_frame = self.controller.frames.get(ChargingScreen)
             if charging_frame:
                 try:
-                    charging_frame.time_var.set("0")
+                    charging_frame.time_var.set("00:00")
                 except Exception:
                     pass
         except Exception:
@@ -1238,10 +1238,10 @@ class ChargingScreen(tk.Frame):
                         try:
                             print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
                             del self._sessions[slot]
-                            # if UI is currently showing this slot, reset the displayed timer to 0
+                            # if UI is currently showing this slot, clear the displayed timer
                             try:
                                 if self.controller.active_slot == slot:
-                                    self.time_var.set("0")
+                                    self.time_var.set("00:00")
                             except Exception:
                                 pass
                         except Exception:
@@ -1505,10 +1505,10 @@ class ChargingScreen(tk.Frame):
                             try:
                                 print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
                                 del self._sessions[slot]
-                                # reset displayed timer to 0 if UI is showing this slot
+                                # clear displayed timer if UI is showing this slot
                                 try:
                                     if self.controller.active_slot == slot:
-                                        self.time_var.set("0")
+                                        self.time_var.set("00:00")
                                 except Exception:
                                     pass
                             except Exception:
@@ -1550,7 +1550,7 @@ class ChargingScreen(tk.Frame):
                 del self._sessions[slot]
                 try:
                     if self.controller.active_slot == slot:
-                        self.time_var.set("0")
+                        self.time_var.set("00:00")
                 except Exception:
                     pass
             except Exception:
@@ -2161,21 +2161,8 @@ class ChargingScreen(tk.Frame):
             pass
         print("INFO: Charging session stopped.")
         try:
-            # reset displayed timer to 0 when session is stopped by user (shows 00:00 on display)
-            self.time_var.set("0")
-        except Exception:
-            pass
-        # remove any per-slot session record for the ended slot so UI doesn't show frozen timers
-        try:
-            if slot and slot in self._sessions:
-                try:
-                    self._cancel_session_jobs(self._sessions[slot])
-                except Exception:
-                    pass
-                try:
-                    del self._sessions[slot]
-                except Exception:
-                    pass
+            # clear displayed timer when session is stopped by user
+            self.time_var.set("00:00")
         except Exception:
             pass
         self.controller.show_frame(MainScreen)

@@ -40,11 +40,11 @@ DEFAULT_CHARGE_BAL = 0
 # Timing and thresholds
 CHARGE_DB_WRITE_INTERVAL = 10
 # Detection thresholds (amps) - match UI-HD_charge_detection.py
-PLUG_THRESHOLD = 0.14
+PLUG_THRESHOLD = 0.13
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
 # Unplug detection parameters
-UNPLUG_THRESHOLD = 0.04
+UNPLUG_THRESHOLD = 0.03
 UNPLUG_CONFIRM_COUNT = 4
 UNPLUG_CONFIRM_WINDOW = 2.0
 # Grace period after unplug before ending session (seconds)
@@ -657,6 +657,16 @@ class MainScreen(tk.Frame):
             users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         self.controller.active_slot = None
         print("INFO: Charging session ended.")
+        try:
+            # clear timer display if ChargingScreen is present
+            charging_frame = self.controller.frames.get(ChargingScreen)
+            if charging_frame:
+                try:
+                    charging_frame.time_var.set("")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _unlock_my_slot(self):
         """Called when the logged-in user taps the Unlock Slot shortcut on MainScreen.
@@ -1017,6 +1027,9 @@ class ChargingScreen(tk.Frame):
             if sess and sess.get('is_charging'):
                 # Show the per-slot session's remaining time
                 self.time_var.set(str(sess.get('remaining', 0)))
+            elif sess and sess.get('expired'):
+                # session expired while user away -> show 00:00
+                self.time_var.set("00:00")
             else:
                 # No active session on this slot; show user's charge balance
                 try:
@@ -1225,6 +1238,12 @@ class ChargingScreen(tk.Frame):
                         try:
                             print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
                             del self._sessions[slot]
+                            # if UI is currently showing this slot, clear the displayed timer
+                            try:
+                                if self.controller.active_slot == slot:
+                                    self.time_var.set("")
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                         return
@@ -1486,6 +1505,12 @@ class ChargingScreen(tk.Frame):
                             try:
                                 print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
                                 del self._sessions[slot]
+                                # clear displayed timer if UI is showing this slot
+                                try:
+                                    if self.controller.active_slot == slot:
+                                        self.time_var.set("")
+                                except Exception:
+                                    pass
                             except Exception:
                                 pass
                             return
@@ -1520,11 +1545,16 @@ class ChargingScreen(tk.Frame):
                 append_audit_log(actor=uid_local, action='charge_no_device_detected', meta={'slot': slot})
             except Exception:
                 pass
+            try:
+                print(f"[SESSION END] slot={slot} reason=no_device_detected uid={uid_local}")
+                del self._sessions[slot]
                 try:
-                    print(f"[SESSION END] slot={slot} reason=no_device_detected uid={uid_local}")
-                    del self._sessions[slot]
+                    if self.controller.active_slot == slot:
+                        self.time_var.set("")
                 except Exception:
                     pass
+            except Exception:
+                pass
 
         # Now start the appropriate flow: hardware path uses unlock + poll, otherwise start tick
         if hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
@@ -2130,6 +2160,11 @@ class ChargingScreen(tk.Frame):
         except Exception:
             pass
         print("INFO: Charging session stopped.")
+        try:
+            # clear displayed timer when session is stopped by user
+            self.time_var.set("")
+        except Exception:
+            pass
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------

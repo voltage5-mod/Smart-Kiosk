@@ -334,6 +334,73 @@ class TestIntegration:
                 pass
         print("\n[INTEGRATION TEST COMPLETE]\n")
 
+    def manual_water_relay_control(self):
+        """Interactive menu to manually control pump and solenoid valve."""
+        if not self.mcp:
+            print("[I2C] MCP23017 not available; cannot control relays")
+            return
+        
+        print("\n" + "="*60)
+        print("MANUAL RELAY CONTROL - Pump & Solenoid Valve")
+        print("="*60)
+        
+        water_relays = {
+            '1': {'name': 'pump_relay', 'pin': 8},      # GPB0 -> 8
+            '2': {'name': 'solenoid_valve', 'pin': 9}   # GPB1 -> 9
+        }
+        
+        while True:
+            print("\n[RELAY CONTROL MENU]")
+            print("  1 - Toggle Pump Relay")
+            print("  2 - Toggle Solenoid Valve")
+            print("  3 - Turn ON all relays")
+            print("  4 - Turn OFF all relays")
+            print("  Q - Exit manual control")
+            
+            choice = input("\nSelect option (1-4, Q to exit): ").strip().upper()
+            
+            if choice == 'Q':
+                print("Exiting manual control...")
+                break
+            
+            if choice in ['1', '2']:
+                relay = water_relays.get(choice)
+                if not relay:
+                    print("  [ERR] Invalid selection")
+                    continue
+                
+                try:
+                    pin = self.mcp.get_pin(relay['pin'])
+                    current_state = pin.value
+                    new_state = not current_state
+                    pin.value = new_state
+                    
+                    status = "ON" if new_state else "OFF"
+                    print(f"  [OK] {relay['name']} turned {status}")
+                except Exception as e:
+                    print(f"  [ERR] Failed to control {relay['name']}: {e}")
+            
+            elif choice == '3':
+                try:
+                    for relay in water_relays.values():
+                        pin = self.mcp.get_pin(relay['pin'])
+                        pin.value = True
+                        print(f"  [OK] {relay['name']} turned ON")
+                except Exception as e:
+                    print(f"  [ERR] Failed to turn on relays: {e}")
+            
+            elif choice == '4':
+                try:
+                    for relay in water_relays.values():
+                        pin = self.mcp.get_pin(relay['pin'])
+                        pin.value = False
+                        print(f"  [OK] {relay['name']} turned OFF")
+                except Exception as e:
+                    print(f"  [ERR] Failed to turn off relays: {e}")
+            
+            else:
+                print("  [ERR] Invalid option. Please select 1-4 or Q.")
+
 
 def main():
     tester = TestIntegration()
@@ -352,6 +419,13 @@ def main():
         tester.test_ultrasonic_sensor()
         tester.test_mcp23017_water_outputs()
         tester.test_mcp23017_water_inputs()
+        
+        # Offer manual relay control
+        if tester.mcp:
+            print("\n" + "="*60)
+            manual_control = input("Run manual relay control? (y/n): ").strip().lower()
+            if manual_control == 'y':
+                tester.manual_water_relay_control()
         
     except KeyboardInterrupt:
         print("\n[INTERRUPT] User stopped test")

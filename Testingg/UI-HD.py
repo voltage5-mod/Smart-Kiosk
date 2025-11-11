@@ -1238,6 +1238,19 @@ class ChargingScreen(tk.Frame):
                 amps = cur.get('amps', 0)
             except Exception:
                 amps = 0
+            # print monitor line matching the attached format
+            try:
+                print(f"[CHG MON] t={time.time():.1f} slot={slot} amps={(amps or 0):.3f} unplug_hits={len(s.get('unplug_hits', []))}")
+            except Exception:
+                pass
+            # print idle read and CHG POLL line matching the attached format
+            try:
+                cur_raw = cur.get('raw') if isinstance(cur, dict) else None
+                volts = cur.get('volts') if isinstance(cur, dict) else None
+                print(f"IDLE read: raw={cur_raw} volts={(volts or 0):.3f} V amps={(amps or 0):.2f} A")
+                print(f"[CHG POLL] t={time.time():.1f} slot={slot} amps={(amps or 0):.3f} plug_hits={len(s.get('plug_hits', []))} unplug_hits={len(s.get('unplug_hits', []))}")
+            except Exception:
+                pass
             # optional debug dump of raw readings
             try:
                 if DEBUG_AMPS_LOG and (not DEBUG_AMPS_SLOTS or slot in DEBUG_AMPS_SLOTS):
@@ -1265,6 +1278,11 @@ class ChargingScreen(tk.Frame):
                         pass
                     try:
                         append_audit_log(actor=uid_local, action='charging_detected', meta={'slot': slot, 'amps': amps})
+                    except Exception:
+                        pass
+                    # print CHG EVENT similar to attachment
+                    try:
+                        print(f"[CHG EVENT] charging_detected slot={slot} amps={(amps or 0):.3f} plug_hits={len(s.get('plug_hits', []))}")
                     except Exception:
                         pass
                     s['is_charging'] = True

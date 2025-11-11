@@ -39,9 +39,17 @@ DEFAULT_CHARGE_BAL = 0
 
 # Timing and thresholds
 CHARGE_DB_WRITE_INTERVAL = 10
-PLUG_THRESHOLD = 0.25
+# Detection thresholds (amps)
+# User requested: plug detection ~0.23 A and unplug threshold restored (assumed 0.14 A).
+# If you intended a different unplug scale (e.g. raw ADC value 14), tell me and I'll adjust.
+PLUG_THRESHOLD = 0.23
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
+# Unplug detection parameters
+UNPLUG_THRESHOLD = 0.14
+UNPLUG_CONFIRM_COUNT = 4
+UNPLUG_CONFIRM_WINDOW = 2.0
+# Grace period after unplug before ending session (seconds)
 UNPLUG_GRACE_SECONDS = 60
 WATER_SECONDS_PER_LITER = 10
 WATER_DB_WRITE_INTERVAL = 2
@@ -1071,6 +1079,7 @@ class ChargingScreen(tk.Frame):
             'tm': None,
             'plug_hits': [],
             'unplug_hits': [],
+            'unplug_time': None,
             'charge_samples': [],
             'charge_consecutive': 0,
         }
@@ -1094,6 +1103,11 @@ class ChargingScreen(tk.Frame):
         try:
             users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
+            try:
+                # mark this user as occupying the slot in their user record
+                write_user(uid, {"occupied_slot": slot})
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1290,34 +1304,70 @@ class ChargingScreen(tk.Frame):
                 # Plug detection: sample >= PLUG_THRESHOLD
                 # Unplug detection: sample < UNPLUG_THRESHOLD
                 if sample >= PLUG_THRESHOLD:
-                    # still charging; reset unplug hits
-                    s['unplug_hits'] = []
-                elif sample < UNPLUG_THRESHOLD:
-                    s['unplug_hits'].append(now)
-                    s['unplug_hits'] = [t for t in s['unplug_hits'] if (now - t) <= UNPLUG_GRACE_SECONDS]
-                    if len(s['unplug_hits']) >= 1:
-                        # treat as unplug and stop
+                    # device drawing current -> clear any unplug timer and resume countdown
+                    s['unplug_time'] = None
+                    if not s.get('is_charging'):
+                        s['is_charging'] = True
+                        # restart tick loop if not scheduled
+                        if s.get('tick_job') is None:
+                            _charging_tick_slot()
                         try:
-                            append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
-                        except Exception:
-                            pass
-                        # finish session cleanup similar to tick finishing
-                        self._cancel_session_jobs(s)
-                        try:
-                            write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
+                            write_user(uid_local, {"charging_status": "charging"})
                         except Exception:
                             pass
                         try:
-                            write_slot(slot, {"status": "inactive", "current_user": "none"})
+                            append_audit_log(actor=uid_local, action='charging_resumed', meta={'slot': slot, 'amps': amps})
                         except Exception:
                             pass
+                else:
+                    # below threshold: start or continue idle timer for this session
+                    if not s.get('unplug_time'):
+                        # first low reading: start the grace countdown
+                        s['unplug_time'] = now
+                        # pause tick loop so remaining doesn't decrease while unplugged
+                        s['is_charging'] = False
+                        if s.get('tick_job') is not None:
+                            try:
+                                self.after_cancel(s['tick_job'])
+                            except Exception:
+                                pass
+                            s['tick_job'] = None
                         try:
-                            del self._sessions[slot]
+                            print(f"[CHG MON SLOT] no current detected for {slot}, starting idle timer for {UNPLUG_GRACE_SECONDS}s")
                         except Exception:
                             pass
-                        return
+                    else:
+                        # check if idle timer expired for this session
+                        if (now - s.get('unplug_time', now)) >= UNPLUG_GRACE_SECONDS:
+                            try:
+                                print(f"[CHG EVENT] idle timeout expired, stopping session slot={slot} amps={amps:.3f}")
+                            except Exception:
+                                pass
+                            try:
+                                append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
+                            except Exception:
+                                pass
+                            # finish session cleanup similar to tick finishing
+                            self._cancel_session_jobs(s)
+                            try:
+                                write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
+                            except Exception:
+                                pass
+                            try:
+                                write_slot(slot, {"status": "inactive", "current_user": "none"})
+                            except Exception:
+                                pass
+                            try:
+                                del self._sessions[slot]
+                            except Exception:
+                                pass
+                            return
             except Exception:
-                pass
+                # on error reset unplug_time and continue
+                try:
+                    s['unplug_time'] = None
+                except Exception:
+                    pass
             # reschedule
             try:
                 s['hw_monitor_job'] = self.after(500, _hardware_unplug_monitor_slot)

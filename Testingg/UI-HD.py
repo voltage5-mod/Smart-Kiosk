@@ -796,6 +796,7 @@ class SlotSelectScreen(tk.Frame):
 
     def select_slot(self, i):
         uid = self.controller.active_uid
+        print(f"[SELECT_SLOT] attempt: i={i} active_uid={uid} active_slot={self.controller.active_slot}")
         if not uid:
             print("WARN: No user; scan first before selecting a slot.")
             return
@@ -807,15 +808,16 @@ class SlotSelectScreen(tk.Frame):
             return
         slot_key = f"slot{i}"
         slot = read_slot(slot_key)
+        print(f"[SELECT_SLOT] read_slot {slot_key} => {slot}")
         # if the slot is already active or assigned to someone else, prevent selection
         if slot is not None:
             cur = slot.get("current_user", "none")
             status = slot.get("status", "inactive")
             if cur != "none" and cur != uid:
-                print(f"WARN: {slot_key} is already assigned to another user.")
+                print(f"WARN: {slot_key} is already assigned to another user. current_user={cur} uid={uid}")
                 return
             if status == "active" and cur != uid:
-                print(f"WARN: {slot_key} is currently in use. Please choose another slot.")
+                print(f"WARN: {slot_key} is currently in use. Please choose another slot. status={status} current_user={cur}")
                 return
         # assign slot to user (assigned, not active)
         write_user(uid, {"occupied_slot": slot_key})

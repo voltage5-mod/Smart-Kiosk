@@ -44,7 +44,7 @@ PLUG_THRESHOLD = 0.14
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
 # Unplug detection parameters
-UNPLUG_THRESHOLD = 0.06
+UNPLUG_THRESHOLD = 0.04
 UNPLUG_CONFIRM_COUNT = 4
 UNPLUG_CONFIRM_WINDOW = 2.0
 # Grace period after unplug before ending session (seconds)

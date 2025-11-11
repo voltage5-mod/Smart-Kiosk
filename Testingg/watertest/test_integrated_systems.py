@@ -128,9 +128,9 @@ class TestIntegration:
                     time.sleep(0.1)
                     self.gpio.output(clk, self.gpio.LOW)
                     self.gpio.output(dio, self.gpio.LOW)
-                    print(f"    ✓ {slot_name} GPIO pins respond")
+                    print(f"    [OK] {slot_name} GPIO pins respond")
                 except Exception as e:
-                    print(f"    ✗ {slot_name} error: {e}")
+                    print(f"    [ERR] {slot_name} error: {e}")
             else:
                 print(f"    [SIM] {slot_name} display test (no hardware)")
 
@@ -148,9 +148,9 @@ class TestIntegration:
                     time.sleep(0.5)
                     self.gpio.output(pin, self.gpio.LOW)
                     time.sleep(0.5)
-                    print(f"    ✓ {relay_name} relay pulsed")
+                    print(f"    [OK] {relay_name} relay pulsed")
                 except Exception as e:
-                    print(f"    ✗ {relay_name} error: {e}")
+                    print(f"    [ERR] {relay_name} error: {e}")
             else:
                 print(f"    [SIM] {relay_name} relay pulse (no hardware)")
 
@@ -175,7 +175,7 @@ class TestIntegration:
                 amps = (adc_volts - 2.5) / 0.185
                 print(f"    ADC={adc_raw:3d}  Volts={adc_volts:.2f}V  Amps≈{amps:.2f}A")
             except Exception as e:
-                print(f"    ✗ {slot_name} error: {e}")
+                print(f"    [ERR] {slot_name} error: {e}")
 
     def test_coin_acceptor(self):
         """Test coin acceptor pulse input on Pi GPIO."""
@@ -188,10 +188,10 @@ class TestIntegration:
         if self.mode == "real":
             try:
                 self.gpio.setup(coin_pin, self.gpio.IN, pull_up_down=self.gpio.PUD_DOWN)
-                print(f"    ✓ GPIO {coin_pin} configured as INPUT (pulled DOWN)")
+                print(f"    [OK] GPIO {coin_pin} configured as INPUT (pulled DOWN)")
                 print(f"    Monitor this pin for coin pulses (normally LOW, HIGH on coin)")
             except Exception as e:
-                print(f"    ✗ Error: {e}")
+                print(f"    [ERR] Error: {e}")
         else:
             print(f"    [SIM] Coin acceptor test (no hardware)")
 
@@ -229,13 +229,13 @@ class TestIntegration:
                             pulse_width = pulse_end - pulse_start
                             # distance in cm = (pulse_width * 34300) / 2
                             distance = (pulse_width * 34300) / 2
-                            print(f"    ✓ Ultrasonic pulse width: {pulse_width*1e6:.0f} µs")
+                            print(f"    [OK] Ultrasonic pulse width: {pulse_width*1e6:.0f} µs")
                             print(f"    Estimated distance: {distance:.1f} cm")
                             break
                 else:
-                    print(f"    ✗ No echo pulse received (sensor may not be connected)")
+                    print(f"    [ERR] No echo pulse received (sensor may not be connected)")
             except Exception as e:
-                print(f"    ✗ Error: {e}")
+                print(f"    [ERR] Error: {e}")
         else:
             print(f"    [SIM] Ultrasonic sensor test (no hardware)")
 
@@ -258,9 +258,9 @@ class TestIntegration:
                     pin.value = True
                     time.sleep(0.5)
                     pin.value = False
-                    print(f"    ✓ {pin_name} pulsed (0.5s ON, then OFF)")
+                    print(f"    [OK] {pin_name} pulsed (0.5s ON, then OFF)")
                 except Exception as e:
-                    print(f"    ✗ {pin_name} error: {e}")
+                    print(f"    [ERR] {pin_name} error: {e}")
 
     def test_mcp23017_water_inputs(self):
         """Test MCP23017 water subsystem inputs (flow sensor, tank levels)."""
@@ -280,7 +280,7 @@ class TestIntegration:
                     state = pin.value
                     print(f"    {pin_name} ({func}): {state} (HIGH={state}, LOW=not {state})")
                 except Exception as e:
-                    print(f"    ✗ {pin_name} error: {e}")
+                    print(f"    [ERR] {pin_name} error: {e}")
 
     def cleanup(self):
         """Cleanup GPIO and SPI."""

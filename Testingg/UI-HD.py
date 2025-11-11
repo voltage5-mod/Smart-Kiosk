@@ -1439,6 +1439,26 @@ class ChargingScreen(tk.Frame):
 
         # Now start the appropriate flow: hardware path uses unlock + poll, otherwise start tick
         if hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
+            # Ensure ACS712 baseline is calibrated (match attachment behavior)
+            try:
+                if slot not in getattr(hw, '_baseline', {}):
+                    try:
+                        print(f"INFO: Calibrating current sensor for {slot}. Ensure nothing is plugged into the port.")
+                    except Exception:
+                        pass
+                    try:
+                        cal = hw.calibrate_zero(slot, samples=30, delay=0.05)
+                        try:
+                            print('Calibration result:', cal)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        try:
+                            print('Calibration failed:', e)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             try:
                 hw.relay_on(slot)
             except Exception:

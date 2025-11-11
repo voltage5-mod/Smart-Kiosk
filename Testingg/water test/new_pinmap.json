@@ -1,0 +1,150 @@
+{
+  "system": {
+    "controller": "Raspberry Pi 4 Model B",
+    "language": "Python 3",
+    "expander": "MCP23017 (I2C, 0x20)",
+    "adc": "MCP3008 (SPI)",
+    "notes": "Ultrasonic sensor fully on Pi GPIO; water subsystem on MCP23017; coin slot on Pi."
+  },
+
+  "raspberry_pi": {
+    "i2c": {
+      "SDA": 2,
+      "SCL": 3
+    },
+    "spi": {
+      "MISO": 9,
+      "MOSI": 10,
+      "SCLK": 11,
+      "CE0": 8
+    },
+    "tm1637_displays": {
+      "slot_1": { "CLK": 5, "DIO": 16 },
+      "slot_2": { "CLK": 5, "DIO": 21 },
+      "slot_3": { "CLK": 5, "DIO": 20 },
+      "slot_4": { "CLK": 5, "DIO": 4 }
+    },
+    "relays": {
+      "slot_1_power": 17,
+      "slot_1_lock": 27,
+      "slot_2_power": 22,
+      "slot_2_lock": 23,
+      "slot_3_power": 24,
+      "slot_3_lock": 25,
+      "slot_4_power": 26,
+      "slot_4_lock": 19
+    },
+    "sensors_adc": {
+      "acs712_slot_1": "CH0",
+      "acs712_slot_2": "CH1",
+      "acs712_slot_3": "CH2",
+      "acs712_slot_4": "CH3"
+    },
+    "coin_acceptor": {
+      "signal": 7,
+      "voltage": "12V",
+      "type": "ALLAN Coin Acceptor (Pulse Output)"
+    },
+    "ultrasonic_sensor": {
+      "trig": 13,
+      "echo": 12,
+      "voltage": "5V"
+    }
+  },
+
+  "mcp23017_expander": {
+    "address": "0x20",
+    "i2c_bus": 1,
+    "pins": {
+      "GPA0": {
+        "function": "flow_sensor_signal",
+        "direction": "input",
+        "description": "Reads pulses from YF-S201 flow sensor"
+      },
+      "GPA1": {
+        "function": "tank_level_low",
+        "direction": "input",
+        "description": "Detects low water level (active LOW)"
+      },
+      "GPA2": {
+        "function": "tank_level_high",
+        "direction": "input",
+        "description": "Detects high/full tank level (active LOW)"
+      },
+      "GPA3": {
+        "function": "spare_input",
+        "direction": "input"
+      },
+      "GPA4": {
+        "function": "spare_input",
+        "direction": "input"
+      },
+      "GPA5": {
+        "function": "spare_input",
+        "direction": "input"
+      },
+      "GPA6": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPA7": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB0": {
+        "function": "pump_relay",
+        "direction": "output",
+        "description": "Activates 12V pump via 5V relay module"
+      },
+      "GPB1": {
+        "function": "solenoid_valve_relay",
+        "direction": "output",
+        "description": "Activates 12V solenoid valve relay"
+      },
+      "GPB2": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB3": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB4": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB5": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB6": {
+        "function": "spare_output",
+        "direction": "output"
+      },
+      "GPB7": {
+        "function": "spare_output",
+        "direction": "output"
+      }
+    }
+  },
+
+  "power": {
+    "main_dc_supply": {
+      "voltage": "12V 20A",
+      "outputs_used": 2,
+      "description": "Provides power to buck converters for 5V systems and 12V devices"
+    },
+    "buck_converters": [
+      {
+        "input": "12V",
+        "output": "5V 5A",
+        "used_for": ["Raspberry Pi", "Relays", "TM1637 displays", "Sensors"]
+      },
+      {
+        "input": "12V",
+        "output": "5V 5A",
+        "used_for": ["Slot USB ports"]
+      }
+    ]
+  }
+}

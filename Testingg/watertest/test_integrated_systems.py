@@ -257,27 +257,45 @@ class TestIntegration:
             print(f"    [SIM] Ultrasonic sensor test (no hardware)")
 
     def test_mcp23017_water_outputs(self):
-        """Test MCP23017 water subsystem outputs (pump, solenoid)."""
-        print("\n[MCP23017 WATER OUTPUTS TEST]")
+        """Test MCP23017 water subsystem outputs (pump and solenoid valve - 1 sec ON / OFF each)."""
+        print("\n[MCP23017 WATER OUTPUTS TEST - Pump & Solenoid Valve]")
         if not self.mcp:
             print("  [I2C] MCP23017 not available; skipping")
             return
+        
         mcp_config = PINMAP.get('mcp23017_expander', {})
         gpb_pins = mcp_config.get('gpb', {})
-        for pin_name, pin_info in gpb_pins.items():
-            if pin_info.get('direction') == 'output':
-                func = pin_info.get('function')
-                pin_num = int(pin_name[3:]) + 8  # GPB0 -> 8
-                print(f"  {pin_name} ({func}): pin {pin_num}")
-                try:
-                    pin = self.mcp.get_pin(pin_num)
-                    # pulse the relay
-                    pin.value = True
-                    time.sleep(0.5)
-                    pin.value = False
-                    print(f"    [OK] {pin_name} pulsed (0.5s ON, then OFF)")
-                except Exception as e:
-                    print(f"    [ERR] {pin_name} error: {e}")
+        
+        # Test only pump and solenoid (GPB0 and GPB1)
+        water_relays = {
+            'GPB0': gpb_pins.get('GPB0', {}),
+            'GPB1': gpb_pins.get('GPB1', {})
+        }
+        
+        for pin_name, pin_info in water_relays.items():
+            if not pin_info:
+                continue
+            
+            func = pin_info.get('function', 'unknown')
+            pin_num = int(pin_name[3:]) + 8  # GPB0 -> 8, GPB1 -> 9
+            print(f"  Testing {pin_name} ({func}): GPIO {pin_num}...")
+            
+            try:
+                pin = self.mcp.get_pin(pin_num)
+                
+                # ON for 1 second
+                pin.value = True
+                print(f"    [ON]  {pin_name} ({func}) - 1.0 sec")
+                time.sleep(1.0)
+                
+                # OFF for 1 second
+                pin.value = False
+                print(f"    [OFF] {pin_name} ({func}) - 1.0 sec")
+                time.sleep(1.0)
+                
+                print(f"    [OK]  {pin_name} test complete")
+            except Exception as e:
+                print(f"    [ERR] {pin_name} error: {e}")
 
     def test_mcp23017_water_inputs(self):
         """Test MCP23017 water subsystem inputs (flow sensor, tank levels)."""

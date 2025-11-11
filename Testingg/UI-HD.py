@@ -39,7 +39,7 @@ DEFAULT_CHARGE_BAL = 0
 
 # Timing and thresholds
 CHARGE_DB_WRITE_INTERVAL = 10
-# Detection thresholds (amps) - use the proven settings from UI-HD_charge_detection.py
+# Detection thresholds (amps) - match UI-HD_charge_detection.py
 PLUG_THRESHOLD = 0.22
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
@@ -51,10 +51,10 @@ UNPLUG_CONFIRM_WINDOW = 2.0
 UNPLUG_GRACE_SECONDS = 60
 WATER_SECONDS_PER_LITER = 10
 CHARGE_SAMPLE_WINDOW = 5
-CHARGE_AVG_THRESHOLD = 0.20
+CHARGE_AVG_THRESHOLD = PLUG_THRESHOLD
 WATER_DB_WRITE_INTERVAL = 2
 NO_CUP_TIMEOUT = 10
-# (No duplicate overrides) keep UNPLUG_THRESHOLD from above
+# (no further overrides)
 
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
@@ -1303,11 +1303,11 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
-                # Simple threshold-based unplug detection: use plug threshold to resume and
-                # count low samples within UNPLUG_CONFIRM_WINDOW to confirm unplug.
+                # Use the original unplug-grace approach: pause on first low reading and
+                # only end session after UNPLUG_GRACE_SECONDS of continued low current.
                 if sample >= PLUG_THRESHOLD:
-                    # device drawing current -> clear any unplug hits and resume countdown
-                    s['unplug_hits'] = []
+                    # device drawing current -> clear any unplug timer and resume countdown
+                    s['unplug_time'] = None
                     if not s.get('is_charging'):
                         s['is_charging'] = True
                         # restart tick loop if not scheduled
@@ -1322,38 +1322,49 @@ class ChargingScreen(tk.Frame):
                         except Exception:
                             pass
                 else:
-                    # below plug threshold: record an unplug hit and prune by confirm window
-                    s['unplug_hits'].append(now)
-                    s['unplug_hits'] = [t for t in s['unplug_hits'] if (now - t) <= UNPLUG_CONFIRM_WINDOW]
-                    try:
-                        print(f"[CHG MON SLOT] low current sample for {slot} amps={sample:.3f} unplug_hits={len(s['unplug_hits'])}/{UNPLUG_CONFIRM_COUNT}")
-                    except Exception:
-                        pass
-                    if len(s['unplug_hits']) >= UNPLUG_CONFIRM_COUNT:
+                    # below threshold: start or continue idle timer for this session
+                    if not s.get('unplug_time'):
+                        # first low reading: start the grace countdown
+                        s['unplug_time'] = now
+                        # pause tick loop so remaining doesn't decrease while unplugged
+                        s['is_charging'] = False
+                        if s.get('tick_job') is not None:
+                            try:
+                                self.after_cancel(s['tick_job'])
+                            except Exception:
+                                pass
+                            s['tick_job'] = None
                         try:
-                            print(f"[CHG EVENT] unplug confirmed, stopping session slot={slot} amps={amps:.3f}")
+                            print(f"[CHG MON SLOT] no current detected for {slot}, starting idle timer for {UNPLUG_GRACE_SECONDS}s")
                         except Exception:
                             pass
-                        try:
-                            append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
-                        except Exception:
-                            pass
-                        # finish session cleanup similar to tick finishing
-                        self._cancel_session_jobs(s)
-                        try:
-                            write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
-                        except Exception:
-                            pass
-                        try:
-                            write_slot(slot, {"status": "inactive", "current_user": "none"})
-                        except Exception:
-                            pass
-                        try:
-                            print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
-                            del self._sessions[slot]
-                        except Exception:
-                            pass
-                        return
+                    else:
+                        # check if idle timer expired for this session
+                        if (now - s.get('unplug_time', now)) >= UNPLUG_GRACE_SECONDS:
+                            try:
+                                print(f"[CHG EVENT] idle timeout expired, stopping session slot={slot} amps={amps:.3f}")
+                            except Exception:
+                                pass
+                            try:
+                                append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
+                            except Exception:
+                                pass
+                            # finish session cleanup similar to tick finishing
+                            self._cancel_session_jobs(s)
+                            try:
+                                write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
+                            except Exception:
+                                pass
+                            try:
+                                write_slot(slot, {"status": "inactive", "current_user": "none"})
+                            except Exception:
+                                pass
+                            try:
+                                print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
+                                del self._sessions[slot]
+                            except Exception:
+                                pass
+                            return
             except Exception:
                 # on error reset unplug_time and continue
                 try:

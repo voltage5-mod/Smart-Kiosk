@@ -1237,6 +1237,16 @@ class ChargingScreen(tk.Frame):
                             pass
                         try:
                             print(f"[SESSION END] slot={slot} reason=finished_time uid={uid_local}")
+                            # reset physical TM1637 display for this session if present
+                            try:
+                                tm_dev = s.get('tm')
+                                if tm_dev is not None:
+                                    try:
+                                        tm_dev.show_time(0)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
                             del self._sessions[slot]
                             # if UI is currently showing this slot, clear the displayed timer
                             try:
@@ -1262,6 +1272,16 @@ class ChargingScreen(tk.Frame):
                         try:
                             s['is_charging'] = False
                             s['expired'] = True
+                        except Exception:
+                            pass
+                        try:
+                            # reset physical TM display to 00:00 for expired session
+                            tm_dev = s.get('tm')
+                            if tm_dev is not None:
+                                try:
+                                    tm_dev.show_time(0)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                         try:
@@ -1504,6 +1524,16 @@ class ChargingScreen(tk.Frame):
                                 pass
                             try:
                                 print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
+                                # reset physical TM1637 display for this session if present
+                                try:
+                                    tm_dev = s.get('tm')
+                                    if tm_dev is not None:
+                                        try:
+                                            tm_dev.show_time(0)
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
                                 del self._sessions[slot]
                                 # clear displayed timer if UI is showing this slot
                                 try:
@@ -1547,6 +1577,16 @@ class ChargingScreen(tk.Frame):
                 pass
             try:
                 print(f"[SESSION END] slot={slot} reason=no_device_detected uid={uid_local}")
+                # reset physical TM1637 display for this session if present
+                try:
+                    tm_dev = s.get('tm')
+                    if tm_dev is not None:
+                        try:
+                            tm_dev.show_time(0)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 del self._sessions[slot]
                 try:
                     if self.controller.active_slot == slot:
@@ -2147,6 +2187,33 @@ class ChargingScreen(tk.Frame):
                 pass
             try:
                 append_audit_log(actor=uid, action='stop_charging', meta={'slot': slot})
+            except Exception:
+                pass
+            # also cleanup any per-slot session record for this slot (reset TM and cancel jobs)
+            try:
+                s = None
+                try:
+                    s = self._sessions.get(slot)
+                except Exception:
+                    s = None
+                if s:
+                    try:
+                        self._cancel_session_jobs(s)
+                    except Exception:
+                        pass
+                    try:
+                        tm_dev = s.get('tm')
+                        if tm_dev is not None:
+                            try:
+                                tm_dev.show_time(0)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    try:
+                        del self._sessions[slot]
+                    except Exception:
+                        pass
             except Exception:
                 pass
         # clear stored session uid so future ticks don't reference this session

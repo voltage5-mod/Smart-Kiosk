@@ -10,6 +10,6 @@
   "pump_relay": 13,
   "ultrasonic": { "trig": 6, "echo": 12 },
   "rfid": "USB",
-  "arduino_usb": "/dev/ttyUSB0",
+  "arduino_usb": "/dev/ttyACM0",
   "free_gpio": [15, 18]
 }

@@ -427,17 +427,42 @@ class KioskApp(tk.Tk):
         # Initialize ArduinoListener for water service hardware integration
         try:
             from arduino_listener import ArduinoListener
-            if _pinmap and _pinmap.get('arduino_usb'):
+            # Priority: environment variable ARDUINO_PORT -> pinmap.json arduino_usb -> fallback -> simulate
+            env_port = os.getenv('ARDUINO_PORT', None)
+            if env_port:
+                arduino_port = env_port
+                arduino_baud = int(os.getenv('ARDUINO_BAUD', '115200'))
+                self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
+                self.arduino_listener.start()
+                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from ARDUINO_PORT env)")
+            elif _pinmap and _pinmap.get('arduino_usb'):
                 arduino_port = _pinmap.get('arduino_usb', '/dev/ttyUSB0')
                 arduino_baud = _pinmap.get('arduino_baud', 115200)
                 self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
                 self.arduino_listener.start()
-                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud")
+                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from pinmap)")
             else:
-                # Simulate mode if no pinmap or arduino_usb not configured
-                self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
-                self.arduino_listener.start()
-                print("INFO: ArduinoListener running in simulate mode")
+                # Try common device names before falling back to simulation
+                guessed = None
+                for p in ['/dev/ttyACM0', '/dev/ttyUSB0']:
+                    try:
+                        # don't attempt to open here, just check existence
+                        if os.path.exists(p):
+                            guessed = p
+                            break
+                    except Exception:
+                        pass
+                if guessed:
+                    arduino_port = guessed
+                    arduino_baud = 115200
+                    self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
+                    self.arduino_listener.start()
+                    print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (auto-detected)")
+                else:
+                    # Simulate mode if no pinmap or arduino_usb not configured
+                    self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
+                    self.arduino_listener.start()
+                    print("INFO: ArduinoListener running in simulate mode")
         except ImportError:
             print("WARN: arduino_listener module not found; water service will use simulation buttons only")
             self.arduino_listener = None

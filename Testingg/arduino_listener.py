@@ -26,7 +26,7 @@ try:
 except Exception:
     serial = None
 
-DEFAULT_PORT = '/dev/ttyUSB0'
+DEFAULT_PORT = '/dev/ttyACM0'
 DEFAULT_BAUD = 115200
 
 

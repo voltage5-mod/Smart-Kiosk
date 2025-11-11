@@ -2165,6 +2165,19 @@ class ChargingScreen(tk.Frame):
             self.time_var.set("")
         except Exception:
             pass
+        # remove any per-slot session record for the ended slot so UI doesn't show frozen timers
+        try:
+            if slot and slot in self._sessions:
+                try:
+                    self._cancel_session_jobs(self._sessions[slot])
+                except Exception:
+                    pass
+                try:
+                    del self._sessions[slot]
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------

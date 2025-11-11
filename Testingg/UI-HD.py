@@ -17,7 +17,7 @@ from firebase_helpers import append_audit_log, deduct_charge_balance_transaction
 # hardware integration
 from hardware_gpio import HardwareGPIO
 import threading
-            pass
+        pass
         # power on
         try:
             if hw is not None:

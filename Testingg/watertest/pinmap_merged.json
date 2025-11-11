@@ -1,0 +1,247 @@
+{
+  "system": {
+    "controller": "Raspberry Pi 4 Model B",
+    "language": "Python 3",
+    "expanders": [
+      {
+        "name": "MCP23017 (Water subsystem)",
+        "protocol": "I2C",
+        "address": "0x20",
+        "bus": 1
+      }
+    ],
+    "adc": "MCP3008 (SPI)",
+    "notes": "Charging subsystem uses Pi GPIO directly. Water subsystem uses MCP23017 I2C expander. TM1637 displays are per-slot on Pi GPIO."
+  },
+
+  "raspberry_pi": {
+    "i2c": {
+      "SDA": 2,
+      "SCL": 3,
+      "devices": [
+        {
+          "address": "0x20",
+          "name": "MCP23017 Expander (Water)",
+          "bus": 1
+        }
+      ]
+    },
+
+    "spi": {
+      "MISO": 9,
+      "MOSI": 10,
+      "SCLK": 11,
+      "CS": 8,
+      "devices": [
+        {
+          "name": "MCP3008 ADC (Current sensors)",
+          "cs": 8
+        }
+      ]
+    },
+
+    "tm1637_displays": {
+      "shared_clk": 5,
+      "displays": {
+        "slot1": { "CLK": 5, "DIO": 16 },
+        "slot2": { "CLK": 5, "DIO": 21 },
+        "slot3": { "CLK": 5, "DIO": 20 },
+        "slot4": { "CLK": 5, "DIO": 4 }
+      }
+    },
+
+    "charging_relays": {
+      "slot1_power": 17,
+      "slot1_lock": 27,
+      "slot2_power": 22,
+      "slot2_lock": 23,
+      "slot3_power": 24,
+      "slot3_lock": 25,
+      "slot4_power": 26,
+      "slot4_lock": 19
+    },
+
+    "charging_sensors_adc": {
+      "acs712_slot1": 0,
+      "acs712_slot2": 1,
+      "acs712_slot3": 2,
+      "acs712_slot4": 3
+    },
+
+    "coin_acceptor": {
+      "signal": 7,
+      "voltage": "12V",
+      "type": "ALLAN Coin Acceptor (Pulse Output)"
+    },
+
+    "ultrasonic_sensor": {
+      "trig": 13,
+      "echo": 12,
+      "voltage": "5V",
+      "type": "HC-SR04"
+    }
+  },
+
+  "mcp23017_expander": {
+    "address": "0x20",
+    "i2c_bus": 1,
+    "description": "Water subsystem control and monitoring via I2C",
+    "pins": {
+      "GPIOA": {
+        "GPA0": {
+          "function": "water_flow_sensor",
+          "direction": "input",
+          "description": "Reads pulses from YF-S201 flow meter"
+        },
+        "GPA1": {
+          "function": "water_tank_level_low",
+          "direction": "input",
+          "description": "Low level sensor (active LOW, pulls GPIO LOW when water low)"
+        },
+        "GPA2": {
+          "function": "water_tank_level_high",
+          "direction": "input",
+          "description": "High/full level sensor (active LOW, pulls GPIO LOW when water full)"
+        },
+        "GPA3": {
+          "function": "spare_input_a3",
+          "direction": "input"
+        },
+        "GPA4": {
+          "function": "spare_input_a4",
+          "direction": "input"
+        },
+        "GPA5": {
+          "function": "spare_input_a5",
+          "direction": "input"
+        },
+        "GPA6": {
+          "function": "spare_output_a6",
+          "direction": "output"
+        },
+        "GPA7": {
+          "function": "spare_output_a7",
+          "direction": "output"
+        }
+      },
+      "GPIOB": {
+        "GPB0": {
+          "function": "pump_relay",
+          "direction": "output",
+          "description": "Controls 12V pump via relay (active HIGH)"
+        },
+        "GPB1": {
+          "function": "solenoid_valve_relay",
+          "direction": "output",
+          "description": "Controls 12V solenoid valve via relay (active HIGH)"
+        },
+        "GPB2": {
+          "function": "spare_output_b2",
+          "direction": "output"
+        },
+        "GPB3": {
+          "function": "spare_output_b3",
+          "direction": "output"
+        },
+        "GPB4": {
+          "function": "spare_output_b4",
+          "direction": "output"
+        },
+        "GPB5": {
+          "function": "spare_output_b5",
+          "direction": "output"
+        },
+        "GPB6": {
+          "function": "spare_output_b6",
+          "direction": "output"
+        },
+        "GPB7": {
+          "function": "spare_output_b7",
+          "direction": "output"
+        }
+      }
+    }
+  },
+
+  "power_distribution": {
+    "main_12v_supply": {
+      "voltage": "12V 20A",
+      "description": "Main power input for all subsystems"
+    },
+    "buck_converters": [
+      {
+        "name": "Buck 1",
+        "input": "12V",
+        "output": "5V 5A",
+        "powers": [
+          "Raspberry Pi 4",
+          "MCP3008 ADC",
+          "MCP23017 Expander",
+          "TM1637 displays"
+        ]
+      },
+      {
+        "name": "Buck 2",
+        "input": "12V",
+        "output": "5V 5A",
+        "powers": [
+          "Relay modules (logic side)",
+          "Coin acceptor logic",
+          "Ultrasonic sensor logic"
+        ]
+      },
+      {
+        "name": "12V Direct",
+        "voltage": "12V",
+        "powers": [
+          "Charging slot relays",
+          "Pump relay",
+          "Solenoid valve relay",
+          "Flow meter sensor (logic)"
+        ]
+      }
+    ]
+  },
+
+  "legacy_compatibility": {
+    "tm1637": {
+      "clk": 5,
+      "dio": {
+        "slot1": 16,
+        "slot2": 21,
+        "slot3": 20,
+        "slot4": 4
+      }
+    },
+    "power_relay": {
+      "slot1": 17,
+      "slot2": 22,
+      "slot3": 24,
+      "slot4": 26
+    },
+    "lock_relay": {
+      "slot1": 27,
+      "slot2": 23,
+      "slot3": 25,
+      "slot4": 19
+    },
+    "acs712_channels": {
+      "slot1": 0,
+      "slot2": 1,
+      "slot3": 2,
+      "slot4": 3
+    },
+    "coin_acceptor": 7,
+    "tank_level": {
+      "tank1": 2,
+      "tank2": 3
+    },
+    "water_flow": 14,
+    "pump_relay": 13,
+    "ultrasonic": {
+      "trig": 6,
+      "echo": 12
+    },
+    "rfid": "USB"
+  }
+}

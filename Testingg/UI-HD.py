@@ -94,13 +94,34 @@ def read_user(uid):
     return users_ref.child(uid).get()
 
 def write_user(uid, data: dict):
-    users_ref.child(uid).update(data)
+    try:
+        users_ref.child(uid).update(data)
+    finally:
+        # debug: log writes that affect charging/session state so we can trace premature endings
+        try:
+            import traceback, time
+            if any(k in data for k in ("charging_status", "occupied_slot", "charge_balance")):
+                print(f"[DB WRITE] t={time.time():.1f} uid={uid} data={data}")
+                stack = ''.join(traceback.format_stack(limit=6))
+                print(f"[DB WRITE STACK] {stack}")
+        except Exception:
+            pass
 
 def read_slot(slot):
     return slots_ref.child(slot).get()
 
 def write_slot(slot, data: dict):
-    slots_ref.child(slot).update(data)
+    try:
+        slots_ref.child(slot).update(data)
+    finally:
+        try:
+            import traceback, time
+            if any(k in data for k in ("status", "current_user")):
+                print(f"[DB WRITE] t={time.time():.1f} slot={slot} data={data}")
+                stack = ''.join(traceback.format_stack(limit=6))
+                print(f"[DB WRITE STACK] {stack}")
+        except Exception:
+            pass
 
 def seconds_to_min_display(sec):
     if sec is None:

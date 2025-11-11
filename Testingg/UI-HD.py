@@ -39,10 +39,8 @@ DEFAULT_CHARGE_BAL = 0
 
 # Timing and thresholds
 CHARGE_DB_WRITE_INTERVAL = 10
-# Detection thresholds (amps)
-# User requested: plug detection ~0.23 A and unplug threshold restored (assumed 0.14 A).
-# If you intended a different unplug scale (e.g. raw ADC value 14), tell me and I'll adjust.
-PLUG_THRESHOLD = 0.23
+# Detection thresholds (amps) - use the proven settings from UI-HD_charge_detection.py
+PLUG_THRESHOLD = 0.22
 PLUG_CONFIRM_WINDOW = 2.0
 PLUG_CONFIRM_COUNT = 4
 # Unplug detection parameters
@@ -53,11 +51,10 @@ UNPLUG_CONFIRM_WINDOW = 2.0
 UNPLUG_GRACE_SECONDS = 60
 WATER_SECONDS_PER_LITER = 10
 CHARGE_SAMPLE_WINDOW = 5
-CHARGE_AVG_THRESHOLD = PLUG_THRESHOLD
+CHARGE_AVG_THRESHOLD = 0.20
 WATER_DB_WRITE_INTERVAL = 2
 NO_CUP_TIMEOUT = 10
-# Unplug detection threshold (restored for charging detection)
-UNPLUG_THRESHOLD = 0.20
+# (No duplicate overrides) keep UNPLUG_THRESHOLD from above
 
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
@@ -1306,8 +1303,9 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
-                # Simple threshold-based unplug detection: count consecutive low samples in a short window
-                if sample >= UNPLUG_THRESHOLD:
+                # Simple threshold-based unplug detection: use plug threshold to resume and
+                # count low samples within UNPLUG_CONFIRM_WINDOW to confirm unplug.
+                if sample >= PLUG_THRESHOLD:
                     # device drawing current -> clear any unplug hits and resume countdown
                     s['unplug_hits'] = []
                     if not s.get('is_charging'):
@@ -1324,7 +1322,7 @@ class ChargingScreen(tk.Frame):
                         except Exception:
                             pass
                 else:
-                    # below threshold: record an unplug hit and prune by confirm window
+                    # below plug threshold: record an unplug hit and prune by confirm window
                     s['unplug_hits'].append(now)
                     s['unplug_hits'] = [t for t in s['unplug_hits'] if (now - t) <= UNPLUG_CONFIRM_WINDOW]
                     try:

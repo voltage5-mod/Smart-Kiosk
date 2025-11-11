@@ -32,6 +32,7 @@ try:
     import busio
     # ✅ Correct import path for modern Adafruit library
     from adafruit_mcp230xx.mcp23017 import MCP23017
+    from adafruit_mcp230xx import Direction
     I2C_AVAILABLE = True
 except Exception as e:
     print(f"WARNING: Failed to load MCP23017 library: {e}")
@@ -76,7 +77,7 @@ class TestIntegration:
             return
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
-            self.mcp = adafruit_mcp23017.MCP23017(i2c, address=0x20)
+            self.mcp = MCP23017(i2c, address=0x20)
             print("[I2C] MCP23017 initialized at address 0x20")
             # configure water subsystem pins
             mcp_config = PINMAP.get('mcp23017_expander', {})
@@ -86,13 +87,13 @@ class TestIntegration:
             for pin_name, pin_info in gpa_pins.items():
                 if pin_info.get('direction') == 'input':
                     pin_num = int(pin_name[3:])  # GPA0 -> 0
-                    self.mcp.get_pin(pin_num).direction = adafruit_mcp23017.Direction.INPUT
+                    self.mcp.get_pin(pin_num).direction = Direction.INPUT
                     print(f"  [MCP] {pin_name} configured as INPUT")
             # setup GPB as outputs (pump, solenoid)
             for pin_name, pin_info in gpb_pins.items():
                 if pin_info.get('direction') == 'output':
                     pin_num = int(pin_name[3:]) + 8  # GPB0 -> 8
-                    self.mcp.get_pin(pin_num).direction = adafruit_mcp23017.Direction.OUTPUT
+                    self.mcp.get_pin(pin_num).direction = Direction.OUTPUT
                     self.mcp.get_pin(pin_num).value = False
                     print(f"  [MCP] {pin_name} configured as OUTPUT")
         except Exception as e:

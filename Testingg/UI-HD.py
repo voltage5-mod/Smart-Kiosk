@@ -17,209 +17,35 @@ from firebase_helpers import append_audit_log, deduct_charge_balance_transaction
 # hardware integration
 from hardware_gpio import HardwareGPIO
 import threading
-        pass
-        # power on
-        try:
-            if hw is not None:
-                hw.relay_on(slot)
-        except Exception:
-            pass
-        # begin poll for device draw (if hw present) otherwise start tick immediately
-        if hw is None:
-            self._begin_charging(sess)
-        else:
-            # schedule polling every 500ms
-            self._schedule_poll_start(slot, delay=500)
+# load pinmap for hardware_gpio (optional)
+BASE = os.path.dirname(__file__)
+PINMAP_PATH = os.path.join(BASE, 'pinmap.json')
+try:
+    with open(PINMAP_PATH, 'r', encoding='utf-8') as _f:
+        _pinmap = json.load(_f)
+except Exception:
+    _pinmap = None
+# --- Defaults / constants (fallbacks) ---
+# Service key and DB URL (override via env or copy firebase-key.json)
+SERVICE_KEY = os.environ.get('SERVICE_KEY', 'firebase-key.json')
+DATABASE_URL = os.environ.get('DATABASE_URL', 'https://kiosk-testing-22bf4-default-rtdb.firebaseio.com/')
 
-    def _schedule_poll_start(self, slot, delay=500):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        try:
-            # use controller.after
-            sess['poll_job'] = self.controller.after(delay, lambda: self._poll_for_start(slot))
-        except Exception:
-            sess['poll_job'] = None
+# Coin mapping (seconds per coin)
+COIN_MAP = {1: 60, 5: 300, 10: 600}
 
-    def _poll_for_start(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        hw = getattr(self.controller, 'hw', None)
-        if not hw:
-            self._begin_charging(sess)
-            return
-        try:
-            cur = hw.read_current(slot)
-            amps = float(cur.get('amps', 0) or 0)
-        except Exception:
-            amps = 0.0
-        now = time.time()
-        if amps >= PLUG_THRESHOLD:
-            sess['plug_hits'].append(now)
-            # prune
-            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
-        else:
-            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
-        if len(sess['plug_hits']) >= PLUG_CONFIRM_COUNT:
-            # device detected -> begin charging
-            try:
-                write_user(sess['uid'], {'charging_status': 'charging'})
-            except Exception:
-                pass
-            try:
-                append_audit_log(actor=sess['uid'], action='charging_detected', meta={'slot': slot})
-            except Exception:
-                pass
-            self._begin_charging(sess)
-            return
-        # reschedule
-        self._schedule_poll_start(slot, delay=500)
+# Default balances
+DEFAULT_WATER_BAL = 0
+DEFAULT_CHARGE_BAL = 0
 
-    def _begin_charging(self, sess):
-        slot = sess['slot']
-        uid = sess['uid']
-        sess['is_charging'] = True
-        sess['plug_hits'] = []
-        sess['unplug_time'] = None
-        # schedule tick loop
-        self._schedule_tick(slot)
-        # schedule unplug monitor
-        try:
-            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
-        except Exception:
-            sess['monitor_job'] = None
-
-    def _schedule_tick(self, slot, delay=1000):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        try:
-            sess['tick_job'] = self.controller.after(delay, lambda: self._tick(slot))
-        except Exception:
-            sess['tick_job'] = None
-
-    def _tick(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        if not sess.get('is_charging'):
-            # do not decrement while paused
-            self._schedule_tick(slot)
-            return
-        sess['remaining'] = max(0, sess['remaining'] - 1)
-        # persist to DB periodically
-        try:
-            users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
-        except Exception:
-            pass
-        # update any visible UI
-        try:
-            self.controller.refresh_all_user_info()
-        except Exception:
-            pass
-        if sess['remaining'] <= 0:
-            self.end_session(slot, reason='time_up')
-            return
-        # schedule next tick
-        self._schedule_tick(slot, delay=1000)
-
-    def _monitor_unplug(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        hw = getattr(self.controller, 'hw', None)
-        if not hw:
-            # no hardware to monitor
-            return
-        try:
-            cur = hw.read_current(slot)
-            amps = float(cur.get('amps', 0) or 0)
-        except Exception:
-            amps = 0.0
-        now = time.time()
-        if amps >= PLUG_THRESHOLD:
-            # device drawing current -> clear idle timer and ensure charging continues
-            sess['unplug_time'] = None
-            if not sess['is_charging']:
-                sess['is_charging'] = True
-                # restart tick loop
-                self._schedule_tick(slot)
-                try:
-                    write_user(sess['uid'], {'charging_status': 'charging'})
-                except Exception:
-                    pass
-        else:
-            if not sess['unplug_time']:
-                sess['unplug_time'] = now
-                sess['is_charging'] = False
-            else:
-                if (now - sess['unplug_time']) >= UNPLUG_GRACE_SECONDS:
-                    self.end_session(slot, reason='unplug_timeout')
-                    return
-        # reschedule monitor
-        try:
-            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
-        except Exception:
-            sess['monitor_job'] = None
-
-    def end_session(self, slot, reason='manual'):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        uid = sess['uid']
-        # cancel jobs
-        try:
-            if sess.get('tick_job') is not None:
-                self.controller.after_cancel(sess['tick_job'])
-        except Exception:
-            pass
-        try:
-            if sess.get('poll_job') is not None:
-                self.controller.after_cancel(sess['poll_job'])
-        except Exception:
-            pass
-        try:
-            if sess.get('monitor_job') is not None:
-                self.controller.after_cancel(sess['monitor_job'])
-        except Exception:
-            pass
-        # turn off hardware and unlock
-        try:
-            hw = getattr(self.controller, 'hw', None)
-            if hw is not None:
-                try:
-                    hw.relay_off(slot)
-                except Exception:
-                    pass
-                try:
-                    hw.lock_slot(slot, lock=False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # update DB
-        try:
-            write_user(uid, {'charging_status': 'idle', 'occupied_slot': 'none', 'charge_balance': 0})
-            write_slot(slot, {'status': 'inactive', 'current_user': 'none'})
-            users_ref.child(uid).child('slot_status').update({slot: 'inactive'})
-        except Exception:
-            pass
-        try:
-            append_audit_log(actor=uid, action='charging_finished', meta={'slot': slot, 'reason': reason})
-        except Exception:
-            pass
-        # cleanup
-        try:
-            del self.sessions[slot]
-        except Exception:
-            pass
-        # refresh UI
-        try:
-            self.controller.refresh_all_user_info()
-        except Exception:
-            pass
-
+# Timing and thresholds
+CHARGE_DB_WRITE_INTERVAL = 10
+PLUG_THRESHOLD = 0.25
+PLUG_CONFIRM_WINDOW = 2.0
+PLUG_CONFIRM_COUNT = 4
+UNPLUG_GRACE_SECONDS = 60
+WATER_SECONDS_PER_LITER = 10
+WATER_DB_WRITE_INTERVAL = 2
+NO_CUP_TIMEOUT = 10
 
 # Initialize Firebase Admin
 cred = credentials.Certificate(SERVICE_KEY)
@@ -274,6 +100,14 @@ def water_seconds_to_liters(sec):
     return f"{liters:.1f} L"
 
 # ----------------- Tkinter UI -----------------
+
+# Minimal SessionManager stub so callers can be created safely during refactor.
+class SessionManager:
+    def __init__(self, controller):
+        self.controller = controller
+        # sessions mapped by slot name -> session record
+        self.sessions = {}
+
 class KioskApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1071,6 +905,45 @@ class ChargingScreen(tk.Frame):
         # remaining, db_acc, job ids and tm instance
         self._sessions = {}
 
+    def _cancel_session_jobs(self, s):
+        """Cancel any scheduled Tkinter jobs stored in a session record and clear their ids."""
+        try:
+            if s.get('tick_job') is not None:
+                try:
+                    self.after_cancel(s['tick_job'])
+                except Exception:
+                    pass
+                s['tick_job'] = None
+        except Exception:
+            pass
+        try:
+            if s.get('wait_job') is not None:
+                try:
+                    self.after_cancel(s['wait_job'])
+                except Exception:
+                    pass
+                s['wait_job'] = None
+        except Exception:
+            pass
+        try:
+            if s.get('hw_monitor_job') is not None:
+                try:
+                    self.after_cancel(s['hw_monitor_job'])
+                except Exception:
+                    pass
+                s['hw_monitor_job'] = None
+        except Exception:
+            pass
+        try:
+            if s.get('poll_timeout_job') is not None:
+                try:
+                    self.after_cancel(s['poll_timeout_job'])
+                except Exception:
+                    pass
+                s['poll_timeout_job'] = None
+        except Exception:
+            pass
+
     def _get_session_uid(self):
         """Return the uid owning the active charging session.
         Priority: explicit charging_uid set at start_charging -> controller.active_uid -> slot.current_user in DB.
@@ -1258,6 +1131,8 @@ class ChargingScreen(tk.Frame):
             'charge_consecutive': 0,
         }
         self._sessions[slot] = sess
+        # alias used by existing nested callbacks in this refactor
+        s = sess
 
         # mark DB and audit
         try:
@@ -1300,30 +1175,6 @@ class ChargingScreen(tk.Frame):
         except Exception:
             pass
 
-        # helper: cancel session jobs
-        def _cancel_session_jobs(s):
-            try:
-                if s.get('tick_job') is not None:
-                    self.after_cancel(s['tick_job'])
-            except Exception:
-                pass
-            try:
-                if s.get('wait_job') is not None:
-                    self.after_cancel(s['wait_job'])
-            except Exception:
-                pass
-            try:
-                if s.get('hw_monitor_job') is not None:
-                    self.after_cancel(s['hw_monitor_job'])
-            except Exception:
-                pass
-            try:
-                if s.get('poll_timeout_job') is not None:
-                    self.after_cancel(s['poll_timeout_job'])
-            except Exception:
-                pass
-            s['tick_job'] = s['wait_job'] = s['hw_monitor_job'] = s['poll_timeout_job'] = None
-
         # per-session callbacks (closures capture slot and session_id)
         def _charging_tick_slot():
             s = self._sessions.get(slot)
@@ -1338,7 +1189,7 @@ class ChargingScreen(tk.Frame):
             t = s.get('remaining', 0)
             if t <= 0:
                 # finish session
-                _cancel_session_jobs(s)
+                self._cancel_session_jobs(s)
                 try:
                     write_user(uid_local, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
                 except Exception:
@@ -1499,7 +1350,7 @@ class ChargingScreen(tk.Frame):
                         except Exception:
                             pass
                         # finish session cleanup similar to tick finishing
-                        _cancel_session_jobs(s)
+                        self._cancel_session_jobs(s)
                         try:
                             write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
                         except Exception:

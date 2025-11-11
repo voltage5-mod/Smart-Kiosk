@@ -1242,27 +1242,21 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
-                # maintain a rolling window of raw samples for more robust detection
-                cs = s.get('charge_samples', [])
-                cs.append(sample)
-                if len(cs) > CHARGE_SAMPLE_WINDOW:
-                    cs = cs[-CHARGE_SAMPLE_WINDOW:]
-                s['charge_samples'] = cs
-                avg = sum(cs) / len(cs) if cs else 0.0
-                count_above = sum(1 for v in cs if v >= PLUG_THRESHOLD)
-                # Debug
-                try:
-                    print(f"[POLL {slot}] sample={sample:.3f} avg={avg:.3f} count_above={count_above}/{len(cs)}")
-                except Exception:
-                    pass
-                # require both a sufficient average and a minimum count within the window
-                if avg >= CHARGE_AVG_THRESHOLD and count_above >= PLUG_CONFIRM_COUNT:
+                # Simple threshold-based plug detection (original behavior):
+                # record plug-hits when sample >= PLUG_THRESHOLD within PLUG_CONFIRM_WINDOW
+                if sample >= PLUG_THRESHOLD:
+                    s['plug_hits'].append(now)
+                    s['plug_hits'] = [t for t in s['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
+                else:
+                    s['plug_hits'] = [t for t in s['plug_hits'] if (now - t) <= PLUG_CONFIRM_WINDOW]
+                # If we have enough hits within the confirmation window, declare charging
+                if len(s['plug_hits']) >= PLUG_CONFIRM_COUNT:
                     try:
                         write_user(uid_local, {"charging_status": "charging"})
                     except Exception:
                         pass
                     try:
-                        append_audit_log(actor=uid_local, action='charging_detected', meta={'slot': slot, 'amps': amps, 'avg': avg})
+                        append_audit_log(actor=uid_local, action='charging_detected', meta={'slot': slot, 'amps': amps})
                     except Exception:
                         pass
                     s['is_charging'] = True
@@ -1312,11 +1306,10 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 sample = 0.0
             try:
-                # Plug detection: sample >= PLUG_THRESHOLD
-                # Unplug detection: sample < UNPLUG_THRESHOLD
-                if sample >= PLUG_THRESHOLD:
-                    # device drawing current -> clear any unplug timer and resume countdown
-                    s['unplug_time'] = None
+                # Simple threshold-based unplug detection: count consecutive low samples in a short window
+                if sample >= UNPLUG_THRESHOLD:
+                    # device drawing current -> clear any unplug hits and resume countdown
+                    s['unplug_hits'] = []
                     if not s.get('is_charging'):
                         s['is_charging'] = True
                         # restart tick loop if not scheduled
@@ -1331,49 +1324,38 @@ class ChargingScreen(tk.Frame):
                         except Exception:
                             pass
                 else:
-                    # below threshold: start or continue idle timer for this session
-                    if not s.get('unplug_time'):
-                        # first low reading: start the grace countdown
-                        s['unplug_time'] = now
-                        # pause tick loop so remaining doesn't decrease while unplugged
-                        s['is_charging'] = False
-                        if s.get('tick_job') is not None:
-                            try:
-                                self.after_cancel(s['tick_job'])
-                            except Exception:
-                                pass
-                            s['tick_job'] = None
+                    # below threshold: record an unplug hit and prune by confirm window
+                    s['unplug_hits'].append(now)
+                    s['unplug_hits'] = [t for t in s['unplug_hits'] if (now - t) <= UNPLUG_CONFIRM_WINDOW]
+                    try:
+                        print(f"[CHG MON SLOT] low current sample for {slot} amps={sample:.3f} unplug_hits={len(s['unplug_hits'])}/{UNPLUG_CONFIRM_COUNT}")
+                    except Exception:
+                        pass
+                    if len(s['unplug_hits']) >= UNPLUG_CONFIRM_COUNT:
                         try:
-                            print(f"[CHG MON SLOT] no current detected for {slot}, starting idle timer for {UNPLUG_GRACE_SECONDS}s")
+                            print(f"[CHG EVENT] unplug confirmed, stopping session slot={slot} amps={amps:.3f}")
                         except Exception:
                             pass
-                    else:
-                        # check if idle timer expired for this session
-                        if (now - s.get('unplug_time', now)) >= UNPLUG_GRACE_SECONDS:
-                            try:
-                                print(f"[CHG EVENT] idle timeout expired, stopping session slot={slot} amps={amps:.3f}")
-                            except Exception:
-                                pass
-                            try:
-                                append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
-                            except Exception:
-                                pass
-                            # finish session cleanup similar to tick finishing
-                            self._cancel_session_jobs(s)
-                            try:
-                                write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
-                            except Exception:
-                                pass
-                            try:
-                                write_slot(slot, {"status": "inactive", "current_user": "none"})
-                            except Exception:
-                                pass
-                            try:
-                                print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
-                                del self._sessions[slot]
-                            except Exception:
-                                pass
-                            return
+                        try:
+                            append_audit_log(actor=uid_local, action='charging_unplugged', meta={'slot': slot})
+                        except Exception:
+                            pass
+                        # finish session cleanup similar to tick finishing
+                        self._cancel_session_jobs(s)
+                        try:
+                            write_user(uid_local, {"charging_status": "idle", "occupied_slot": "none"})
+                        except Exception:
+                            pass
+                        try:
+                            write_slot(slot, {"status": "inactive", "current_user": "none"})
+                        except Exception:
+                            pass
+                        try:
+                            print(f"[SESSION END] slot={slot} reason=unplug_detected uid={uid_local}")
+                            del self._sessions[slot]
+                        except Exception:
+                            pass
+                        return
             except Exception:
                 # on error reset unplug_time and continue
                 try:

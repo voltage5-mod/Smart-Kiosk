@@ -136,24 +136,40 @@ class TestIntegration:
                 print(f"    [SIM] {slot_name} display test (no hardware)")
 
     def test_charging_relays(self):
-        """Test power and lock relays for all 4 slots."""
-        print("\n[RELAY TEST]")
+        """Test power and lock relays for all 4 slots (1 sec ON, 1 sec OFF each)."""
+        print("\n[RELAY TEST - 1 sec ON / 1 sec OFF per relay]")
         relay_map = PINMAP.get('raspberry_pi', {}).get('charging_relays', {})
-        for relay_name, pin in relay_map.items():
-            print(f"  {relay_name}: GPIO {pin}")
-            if self.mode == "real":
+        
+        if self.mode == "real":
+            # Setup all relay pins first
+            for relay_name, pin in relay_map.items():
                 try:
                     self.gpio.setup(pin, self.gpio.OUT)
-                    # pulse relay: ON 0.5s, OFF 0.5s
+                    self.gpio.output(pin, self.gpio.LOW)  # start OFF
+                except Exception as e:
+                    print(f"  [ERR] Failed to setup {relay_name} (GPIO {pin}): {e}")
+            
+            # Test each relay: ON for 1 sec, OFF for 1 sec
+            for relay_name, pin in relay_map.items():
+                print(f"  Testing {relay_name} (GPIO {pin})...")
+                try:
+                    # ON for 1 second
                     self.gpio.output(pin, self.gpio.HIGH)
-                    time.sleep(0.5)
+                    print(f"    [ON]  {relay_name} - 1.0 sec")
+                    time.sleep(1.0)
+                    
+                    # OFF for 1 second
                     self.gpio.output(pin, self.gpio.LOW)
-                    time.sleep(0.5)
-                    print(f"    [OK] {relay_name} relay pulsed")
+                    print(f"    [OFF] {relay_name} - 1.0 sec")
+                    time.sleep(1.0)
+                    
+                    print(f"    [OK]  {relay_name} test complete")
                 except Exception as e:
                     print(f"    [ERR] {relay_name} error: {e}")
-            else:
-                print(f"    [SIM] {relay_name} relay pulse (no hardware)")
+        else:
+            print("  [SIM] Relay test (no hardware)")
+            for relay_name, pin in relay_map.items():
+                print(f"  [SIM] {relay_name} (GPIO {pin}): ON 1sec, OFF 1sec")
 
     def test_acs712_current_sensors(self):
         """Test ACS712 current sensors via MCP3008 ADC."""

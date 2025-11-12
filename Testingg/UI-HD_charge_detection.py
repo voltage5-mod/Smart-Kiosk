@@ -523,6 +523,25 @@ class KioskApp(tk.Tk):
         frame = self.frames[cls]
         if hasattr(frame, "refresh"):
             frame.refresh()
+        # If switching to hardware-backed screens, notify Arduino to switch mode
+        try:
+            al = getattr(self, 'arduino_listener', None)
+            if al is not None:
+                # Water screen -> MODE WATER, Charging flow -> MODE CHARGE
+                if cls.__name__ == 'WaterScreen':
+                    try:
+                        al.send_command('MODE WATER')
+                        print('INFO: Sent MODE WATER to Arduino')
+                    except Exception:
+                        pass
+                elif cls.__name__ in ('SlotSelectScreen', 'ChargingScreen'):
+                    try:
+                        al.send_command('MODE CHARGE')
+                        print('INFO: Sent MODE CHARGE to Arduino')
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         frame.tkraise()
     
     def cleanup(self):

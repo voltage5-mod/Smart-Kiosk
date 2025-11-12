@@ -38,6 +38,7 @@ class ArduinoListener(threading.Thread):
         self.simulate = simulate
         self._stop = threading.Event()
         self._ser = None
+        self._lock = threading.Lock()
         self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
 
     def register_callback(self, cb: Callable[[Dict[str, Any]], None]):
@@ -88,6 +89,39 @@ class ArduinoListener(threading.Thread):
             return s
         except Exception:
             return None
+
+    def send_command(self, cmd: str) -> bool:
+        """Send a command string to the Arduino (appends newline). Returns True on success."""
+        if self.simulate:
+            # in simulate mode, just noop
+            return True
+        if serial is None:
+            return False
+        try:
+            with self._lock:
+                if self._ser is None:
+                    # attempt to open a connection if not already open
+                    self._ser = self._connect_serial()
+                if self._ser is None:
+                    return False
+                # ensure bytes
+                out = cmd.encode() if isinstance(cmd, str) else cmd
+                if not out.endswith(b"\n"):
+                    out = out + b"\n"
+                self._ser.write(out)
+                try:
+                    self._ser.flush()
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            try:
+                if self._ser:
+                    self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+            return False
 
     def stop(self):
         self._stop.set()

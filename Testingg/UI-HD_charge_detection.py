@@ -13,6 +13,7 @@ from firebase_admin import credentials, db
 import time
 import json
 import os
+import re
 from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
 # hardware integration
 from hardware_gpio import HardwareGPIO
@@ -1104,7 +1105,13 @@ class SlotSelectScreen(tk.Frame):
             slot = read_slot(key)
             if slot is None:
                 text = f"Slot {i}\nFree"
-                color = "#2ecc71"
+            # record coin insert for UI popup
+            try:
+                if record:
+                    self.controller.record_coin_insert(uid, amount, add)
+            except Exception:
+                pass
+        else:
             else:
                 status = slot.get("status", "inactive")
                 cur = slot.get("current_user", "none")
@@ -1116,7 +1123,12 @@ class SlotSelectScreen(tk.Frame):
                         text = f"Slot {i}\nIn Use"
                         # use neutral color (same as disabled/neutral) instead of yellow
                         color = "#95a5a6"
-                    else:
+            try:
+                if record:
+                    self.controller.record_coin_insert(uid, amount, add)
+            except Exception:
+                pass
+        self.refresh()
                         # Other users see it as occupied (red)
                         text = f"Slot {i}\nOccupied"
                         color = "#e74c3c"
@@ -2243,11 +2255,30 @@ class WaterScreen(tk.Frame):
             print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         
         if event_type == "COIN_INSERTED":
-            # Arduino detected coin insertion
-            volume_ml = event.get("volume_ml", 0)
-            # Assume ₱1 = 1 volume unit (or map as needed)
-            # For now, treat any coin as ₱1
-            self.insert_coin_water(1)
+            # Arduino detected coin insertion. Try to extract peso from raw message.
+            raw = event.get('raw', '') or ''
+            peso = 1
+            try:
+                m = re.search(r"(\d+)P", raw)
+                if m:
+                    peso = int(m.group(1))
+            except Exception:
+                peso = 1
+            # volume_ml if provided by parser
+            add_ml = event.get('volume_ml', None)
+            # apply the water credit (don't double-record the coin from insert_coin_water)
+            try:
+                # update DB/state
+                self.insert_coin_water(peso, record=False)
+            except Exception:
+                pass
+            # notify controller/UI about inserted coin so popup appears
+            try:
+                # for popup, pass seconds-like value: prefer ml if available, else map peso via COIN_MAP
+                seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
+            except Exception:
+                pass
         
         elif event_type == "CUP_DETECTED":
             # Physical cup placed on sensor
@@ -2263,7 +2294,7 @@ class WaterScreen(tk.Frame):
             print(f"INFO: WaterScreen - Dispensing complete: {total_ml} ml")
 
 
-    def insert_coin_water(self, amount):
+    def insert_coin_water(self, amount, record=True):
         uid = self.controller.active_uid
         if not uid:
             print("WARN: No user; scan first.")
@@ -2281,7 +2312,8 @@ class WaterScreen(tk.Frame):
             print(f"INFO: ₱{amount} added to water balance ({add} sec).")
             try:
                 # record coin insert for UI popup
-                self.controller.record_coin_insert(uid, amount, add)
+                if record:
+                    self.controller.record_coin_insert(uid, amount, add)
             except Exception:
                 pass
         else:
@@ -2298,7 +2330,8 @@ class WaterScreen(tk.Frame):
             print(f"INFO: ₱{amount} purchased => {add} seconds water (temporary).")
             try:
                 # record coin insert for UI popup
-                self.controller.record_coin_insert(uid, amount, add)
+                if record:
+                    self.controller.record_coin_insert(uid, amount, add)
             except Exception:
                 pass
         self.refresh()

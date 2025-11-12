@@ -21,8 +21,8 @@ float pulsesPerLiter = 450.0;
 
 // ---------------- COIN CREDIT SETTINGS ----------------
 int coin1P_pulses = 1;
-int coin5P_pulses = 3;
-int coin10P_pulses = 5;
+int coin5P_pulses = 5;
+int coin10P_pulses = 10;
 
 // Water mode: mL per coin
 int creditML_1P = 100;    // 1 peso = 100 mL

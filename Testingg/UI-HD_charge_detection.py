@@ -2255,25 +2255,44 @@ class WaterScreen(tk.Frame):
         if event_type == "COIN_INSERTED":
             # Arduino detected coin insertion. Try to extract peso from raw message.
             raw = event.get('raw', '') or ''
-            peso = 1
-            try:
-                m = re.search(r"(\d+)P", raw)
-                if m:
-                    peso = int(m.group(1))
-            except Exception:
-                peso = 1
-            # volume_ml if provided by parser
+            # Prefer explicit volume_ml if provided by parser
             add_ml = event.get('volume_ml', None)
+            peso = None
+            try:
+                if add_ml is not None:
+                    # infer peso from ml using 100 mL per peso (matches Arduino defaults)
+                    try:
+                        peso = int(round((int(add_ml) / 100.0)))
+                    except Exception:
+                        peso = None
+                if peso is None:
+                    m = re.search(r"(\d+)P", raw)
+                    if m:
+                        peso = int(m.group(1))
+            except Exception:
+                peso = None
+            if peso is None:
+                peso = 1
+
             # apply the water credit (don't double-record the coin from insert_coin_water)
             try:
-                # update DB/state
-                self.insert_coin_water(peso, record=False)
+                # update DB/state. For water we prefer to credit using ml if available else fallback mapping
+                if add_ml is not None:
+                    # convert ml to seconds or stored unit via existing UI flow: insert_coin_water expects peso
+                    self.insert_coin_water(peso, record=False)
+                else:
+                    self.insert_coin_water(peso, record=False)
             except Exception:
                 pass
+
             # notify controller/UI about inserted coin so popup appears
             try:
-                # for popup, pass seconds-like value: prefer ml if available, else map peso via COIN_MAP
-                seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                # For popup amount show peso; for seconds-like value prefer ml when available, else map via COIN_MAP
+                seconds_like = None
+                if add_ml is not None:
+                    seconds_like = int(add_ml)
+                else:
+                    seconds_like = COIN_MAP.get(peso, 0)
                 self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
             except Exception:
                 pass

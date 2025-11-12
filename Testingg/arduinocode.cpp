@@ -11,6 +11,7 @@
 // ---------------- CONSTANTS ----------------
 #define COIN_DEBOUNCE_MS  120
 #define COIN_TIMEOUT_MS   800
+#define COIN_STABILIZE_MS  600  // ignore pulses for this many ms after mode switch
 #define INACTIVITY_TIMEOUT 300000 // 5 min
 #define CUP_DISTANCE_CM   10.0
 #define BAUDRATE          115200
@@ -45,6 +46,7 @@ int creditML = 0;
 unsigned long targetPulses = 0;
 unsigned long startFlowCount = 0;
 unsigned long lastActivity = 0;
+unsigned long coinIgnoreUntil = 0; // ignore coin pulses until this time (ms)
 
 // ---------------- SERIAL STATE TRACKING ----------------
 int last_creditML = -1;
@@ -112,6 +114,13 @@ void loop() {
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
   if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
+    // if we're inside the stabilization window after a mode change, drop pulses
+    if (millis() < coinIgnoreUntil) {
+      // clear accumulated pulses and skip processing
+      coinPulseCount = 0;
+      lastActivity = millis();
+      return;
+    }
     int pulses = coinPulseCount;
     coinPulseCount = 0;
     lastActivity = millis();
@@ -204,10 +213,14 @@ void handlePiCommands() {
   if (cmd.equalsIgnoreCase("MODE WATER")) {
     waterMode = true;
     Serial.println("MODE: WATER");
+    // stabilization: ignore any coin pulses for a short window to avoid startup noise
+    coinIgnoreUntil = millis() + COIN_STABILIZE_MS;
   }
   else if (cmd.equalsIgnoreCase("MODE CHARGE")) {
     waterMode = false;
     Serial.println("MODE: CHARGE");
+    // stabilization: ignore any coin pulses for a short window to avoid startup noise
+    coinIgnoreUntil = millis() + COIN_STABILIZE_MS;
   }
   else if (cmd.equalsIgnoreCase("STATUS")) {
     Serial.print("CREDIT_ML "); Serial.println(creditML);

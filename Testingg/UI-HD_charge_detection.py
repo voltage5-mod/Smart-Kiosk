@@ -2335,6 +2335,36 @@ class WaterScreen(tk.Frame):
         raw = event.get('raw')
         if event_type == 'RAW':
             print(f"INFO: WaterScreen - Arduino event: RAW for user {uid} - raw='{raw}'")
+            # Try to parse coin-like payloads from RAW lines (some firmwares print human-friendly strings)
+            try:
+                # common formats: 'Coin inserted: 5P', '5P added', 'COIN_WATER 5', 'COIN_CHARGE 1'
+                peso = None
+                m = re.search(r"Coin inserted[:\s]*?(\d+)\s*[Pp]\b", raw)
+                if not m:
+                    m = re.search(r"(\d+)\s*[Pp]\b", raw)
+                if not m:
+                    m = re.search(r"COIN_(?:WATER|CHARGE)\s+(\d+)", raw, flags=re.I)
+                if m:
+                    try:
+                        peso = int(m.group(1))
+                    except Exception:
+                        peso = None
+                # If we found a peso, treat as coin inserted event
+                if peso is not None:
+                    try:
+                        # avoid double-recording via record=False
+                        self.insert_coin_water(peso, record=False)
+                    except Exception:
+                        pass
+                    try:
+                        seconds_like = COIN_MAP.get(peso, 0)
+                        self.controller.record_coin_insert(uid, peso, seconds_like)
+                    except Exception:
+                        pass
+                    # we've handled this RAW as coin-related; return early
+                    return
+            except Exception:
+                pass
         else:
             print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         

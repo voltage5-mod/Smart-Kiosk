@@ -2429,6 +2429,12 @@ class WaterScreen(tk.Frame):
                         append_audit_log(actor=uid, action='temp_water_expired', meta={'uid': uid})
                     except Exception:
                         pass
+                    # clear any UI coin counters for this uid so next session starts fresh
+                    try:
+                        if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
+                            del self.controller.coin_counters[uid]
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self.temp_water_time = 0
@@ -2488,6 +2494,12 @@ class WaterScreen(tk.Frame):
                     except Exception:
                         pass
                     self.temp_water_time = 0
+                    # clear UI coin counters for this uid so the session doesn't stack
+                    try:
+                        if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
+                            del self.controller.coin_counters[uid]
+                    except Exception:
+                        pass
             except Exception:
                 pass
             print("INFO: No cup detected. Water session ended.")
@@ -2523,6 +2535,12 @@ class WaterScreen(tk.Frame):
             write_user(uid, {"temp_water_time": 0})
             try:
                 append_audit_log(actor=uid, action='reset_temp_water', meta={'uid': uid})
+            except Exception:
+                pass
+            # also clear any UI coin counters so next session starts fresh
+            try:
+                if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
+                    del self.controller.coin_counters[uid]
             except Exception:
                 pass
         self.temp_water_time = 0

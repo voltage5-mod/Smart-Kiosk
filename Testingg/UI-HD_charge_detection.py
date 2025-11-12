@@ -580,6 +580,47 @@ class KioskApp(tk.Tk):
         except Exception:
             pass
 
+    def show_coin_popup(self, uid, peso: int = None, added_ml: int = None, total_ml: int = None):
+        """Display a simple coin popup using only Arduino-provided values.
+        This is the canonical popup used by hardware-driven flows. It will also
+        persist added_ml (delta) into the user's water balance.
+        """
+        def _do():
+            parts = []
+            if peso is not None:
+                parts.append(f"Inserted: \u20B1{peso}")
+            if added_ml is not None:
+                parts.append(f"Added: {added_ml} mL")
+            if total_ml is not None:
+                parts.append(f"Total: {total_ml} mL")
+            msg = "\n".join(parts) if parts else "Coin event"
+            # persist to DB if added_ml provided
+            try:
+                if uid and added_ml is not None and added_ml > 0:
+                    user = read_user(uid) or {}
+                    if user.get('type') == 'member':
+                        cur = user.get('water_balance') or 0
+                        write_user(uid, {'water_balance': cur + added_ml})
+                    else:
+                        cur = user.get('temp_water_time') or 0
+                        write_user(uid, {'temp_water_time': cur + added_ml})
+                    try:
+                        # refresh UI to show updated balances
+                        self.refresh_all_user_info()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                messagebox.showinfo("Coin Inserted", msg)
+            except Exception:
+                print("POPUP:", msg)
+
+        try:
+            self.after(0, _do)
+        except Exception:
+            _do()
+
     def show_frame(self, cls):
         # record current frame name for context (used by coin popups)
         try:
@@ -2262,212 +2303,60 @@ class WaterScreen(tk.Frame):
         listener.register_callback(self._on_arduino_event)
 
     def _on_arduino_event(self, event):
-        """Handle Arduino events: COIN_INSERTED, CUP_DETECTED, CUP_REMOVED, DISPENSING_DONE."""
+        """Minimal Arduino-driven handler.
+        This handler trusts Arduino events and keeps logic small:
+        - COIN_INSERTED: Show a peso-only popup (no DB update).
+        - COIN_WATER: Use the listener-provided delta (volume_ml) to update DB
+          and show an added-ml popup. The listener already converts running totals
+          into a delta (volume_ml).
+        Other events (cup/dispense) are forwarded as before.
+        """
         uid = self.controller.active_uid
         if not uid:
             return
-        
-        event_type = event.get("event")
-        # show raw content for debugging when parsing falls back to RAW
+
+        event_type = event.get('event')
         raw = event.get('raw')
         if event_type == 'RAW':
-            print(f"INFO: WaterScreen - Arduino event: RAW for user {uid} - raw='{raw}'")
-            # Attempt to recover coin events from raw Arduino lines if parser fell back to RAW
-            try:
-                raw_str = (raw or '')
-                # human-friendly coin message: "Coin inserted: 5P added 500mL, new total: 500"
-                m = re.search(r"Coin inserted:\s*(\d+)P", raw_str)
-                if m:
-                    peso = int(m.group(1))
-                    # volume if present
-                    vm = re.search(r"added\s*(\d+)mL", raw_str)
-                    add_ml = int(vm.group(1)) if vm else None
-                    print(f"INFO: WaterScreen - parsed coin from RAW: {peso}P, add_ml={add_ml}")
-                    try:
-                        self.insert_coin_water(peso, record=False)
-                    except Exception:
-                        pass
-                    try:
-                        # prefer explicit ml when present; otherwise map peso -> ml using WATER_COIN_MAP
-                        seconds_like = add_ml if add_ml is not None else WATER_COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-                # compact token: COIN_WATER <ml> or COIN_CHARGE <peso>
-                m2 = re.search(r"COIN_WATER\s+(\d+)", raw_str)
-                if m2:
-                    total_ml = int(m2.group(1))
-                    add_ml = total_ml  # best-effort
-                    # try to infer peso from the ml value using WATER_COIN_MAP (exact match or nearest)
-                    try:
-                        inv = {v: k for k, v in WATER_COIN_MAP.items()}
-                        peso = inv.get(add_ml)
-                        if peso is None:
-                            # pick nearest
-                            closest = None
-                            best_diff = None
-                            for p, m in WATER_COIN_MAP.items():
-                                d = abs(m - add_ml)
-                                if best_diff is None or d < best_diff:
-                                    best_diff = d
-                                    closest = p
-                            peso = closest or 1
-                    except Exception:
-                        peso = 1
-                    try:
-                        self.insert_coin_water(peso, record=False)
-                    except Exception:
-                        pass
-                    try:
-                        seconds_like = add_ml if add_ml is not None else WATER_COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-                m3 = re.search(r"COIN_CHARGE\s+(\d+)", raw_str)
-                if m3:
-                    peso = int(m3.group(1))
-                    # Charging coins handled elsewhere; notify controller for popup
-                    try:
-                        seconds_like = COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
-        else:
-            print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
+            # nothing to do for RAW here; print for diagnostics
+            print(f"INFO: WaterScreen - RAW from Arduino for user {uid}: {raw}")
+            return
 
-        # COIN_WATER may be emitted separately (volume only). If a COIN_INSERTED
-        # was just processed for this uid, suppress COIN_WATER to avoid double credits.
-        if event_type == "COIN_WATER":
-            add_ml = event.get('volume_ml', None)
-            uid = self.controller.active_uid
-            if not uid:
-                return
+        if event_type == 'COIN_INSERTED':
+            # coin detected; may contain peso but not necessarily ml yet
+            peso = event.get('peso')
             try:
-                now = time.time()
-                last = self._last_coin_ts.get(uid, 0)
-                if now - last < 1.0:
-                    return
-            except Exception:
-                pass
-            # infer peso by matching known WATER_COIN_MAP values
-            try:
-                inv = {v: k for k, v in WATER_COIN_MAP.items()}
-                peso = inv.get(add_ml)
-                if peso is None:
-                    closest = None
-                    best_diff = None
-                    for p, m in WATER_COIN_MAP.items():
-                        d = abs(m - (add_ml or 0))
-                        if best_diff is None or d < best_diff:
-                            best_diff = d
-                            closest = p
-                    peso = closest or 1
-            except Exception:
-                peso = 1
-            add_ml_canonical = WATER_COIN_MAP.get(peso, add_ml or 0)
-            try:
-                user = read_user(uid) or {}
-                if user.get('type') == 'member':
-                    new = (user.get('water_balance', 0) or 0) + add_ml_canonical
-                    write_user(uid, {"water_balance": new})
-                else:
-                    prev = user.get('temp_water_time', 0) or 0
-                    newtemp = prev + add_ml_canonical
-                    write_user(uid, {"temp_water_time": newtemp})
-                try:
-                    self.refresh()
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            try:
-                self.controller.record_coin_insert(uid, peso, add_ml_canonical)
-            except Exception:
-                pass
-            try:
-                self._last_coin_ts[uid] = time.time()
+                self.controller.show_coin_popup(uid=uid, peso=peso, added_ml=None, total_ml=None)
             except Exception:
                 pass
             return
 
-        if event_type == "COIN_INSERTED":
-            # Arduino detected coin insertion. Prefer explicit volume_ml when present.
-            add_ml = event.get('volume_ml', None)
-            peso = event.get('peso', None)
-            # If parser did not provide ml, map peso -> ml using WATER_COIN_MAP
-            if add_ml is None:
-                try:
-                    if peso in (1, 5, 10):
-                        add_ml = WATER_COIN_MAP.get(peso, 0)
-                    else:
-                        add_ml = 0
-                except Exception:
-                    add_ml = 0
-            # If peso was not provided but ml is present, try to infer peso by matching known ml values
-            if (peso is None or peso == 0) and add_ml:
-                try:
-                    inv = {v: k for k, v in WATER_COIN_MAP.items()}
-                    peso = inv.get(add_ml)
-                    if peso is None:
-                        # fallback: choose the nearest peso by ml distance
-                        closest = None
-                        best_diff = None
-                        for p, m in WATER_COIN_MAP.items():
-                            d = abs(m - add_ml)
-                            if best_diff is None or d < best_diff:
-                                best_diff = d
-                                closest = p
-                        peso = closest or 1
-                except Exception:
-                    peso = 1
-            # persist the added ml to DB for members or temp for non-members
+        if event_type == 'COIN_WATER':
+            # Arduino-reported delta (listener provides 'volume_ml' as the added amount)
+            added_ml = event.get('volume_ml')
+            total_ml = event.get('total_ml')
             try:
-                uid = self.controller.active_uid
-                if uid:
-                    user = read_user(uid) or {}
-                    if user.get('type') == 'member':
-                        # member: increment water_balance (stored as mL)
-                        new = (user.get('water_balance', 0) or 0) + add_ml
-                        write_user(uid, {"water_balance": new})
-                    else:
-                        # non-member: increment temp_water_time (repurposed to store mL)
-                        prev = user.get('temp_water_time', 0) or 0
-                        newtemp = prev + add_ml
-                        write_user(uid, {"temp_water_time": newtemp})
-                    # refresh UI to reflect updated balances
-                    try:
-                        self.refresh()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            # notify controller/UI about inserted coin so popup appears
-            try:
-                # for popup, pass peso (amount) and ml (value)
+                # Let the central show_coin_popup persist and display the event.
                 try:
-                    self.controller.record_coin_insert(self.controller.active_uid, peso or 0, add_ml or 0)
+                    self.controller.show_coin_popup(uid=uid, peso=None, added_ml=added_ml, total_ml=total_ml)
                 except Exception:
                     pass
             except Exception:
                 pass
-        
-        elif event_type == "CUP_DETECTED":
-            # Physical cup placed on sensor
+            return
+
+        if event_type == 'CUP_DETECTED':
             self.place_cup()
-        
-        elif event_type == "CUP_REMOVED":
-            # Physical cup removed
+            return
+
+        if event_type == 'CUP_REMOVED':
             self.remove_cup()
-        
-        elif event_type == "DISPENSING_DONE":
-            # Optional: Arduino signaled dispensing complete
-            total_ml = event.get("total_ml", 0)
+            return
+
+        if event_type == 'DISPENSING_DONE':
+            total_ml = event.get('total_ml', 0)
             print(f"INFO: WaterScreen - Dispensing complete: {total_ml} ml")
+            return
 
 
     def insert_coin_water(self, amount, record=True):

@@ -1103,44 +1103,42 @@ class SlotSelectScreen(tk.Frame):
         for i in range(1, 5):
             key = f"slot{i}"
             slot = read_slot(key)
-            if slot is None:
-                text = f"Slot {i}\nFree"
-            # record coin insert for UI popup
+            # Default values
+            text = f"Slot {i}\nFree"
+            color = "#2ecc71"  # green for free
             try:
-                if record:
-                    self.controller.record_coin_insert(uid, amount, add)
-            except Exception:
-                pass
-        else:
-            else:
-                status = slot.get("status", "inactive")
-                cur = slot.get("current_user", "none")
-                uid = self.controller.active_uid
-                # If slot is assigned to someone
-                if cur != "none":
-                    if cur == uid:
-                        # The logged-in user owns this slot -> show as in use (no special highlight)
-                        text = f"Slot {i}\nIn Use"
-                        # use neutral color (same as disabled/neutral) instead of yellow
-                        color = "#95a5a6"
-            try:
-                if record:
-                    self.controller.record_coin_insert(uid, amount, add)
-            except Exception:
-                pass
-        self.refresh()
-                        # Other users see it as occupied (red)
-                        text = f"Slot {i}\nOccupied"
-                        color = "#e74c3c"
+                if slot is None:
+                    # keep defaults
+                    pass
                 else:
-                    # no current_user assigned; reflect active status as red In Use
-                    if status == "active":
-                        text = f"Slot {i}\nIn Use"
-                        color = "#e74c3c"
+                    status = slot.get("status", "inactive")
+                    cur = slot.get("current_user", "none")
+                    uid = self.controller.active_uid
+                    if cur != "none":
+                        # assigned to someone
+                        if cur == uid:
+                            # assigned to current user
+                            text = f"Slot {i}\nIn Use"
+                            color = "#95a5a6"  # neutral
+                        else:
+                            text = f"Slot {i}\nOccupied"
+                            color = "#e74c3c"  # red
                     else:
-                        text = f"Slot {i}\nFree"
-                        color = "#2ecc71"
-            self.slot_buttons[key].config(text=text, bg=color)
+                        # no current_user assigned
+                        if status == "active":
+                            text = f"Slot {i}\nIn Use"
+                            color = "#e74c3c"
+                        else:
+                            text = f"Slot {i}\nFree"
+                            color = "#2ecc71"
+            except Exception:
+                # on any error keep defaults
+                text = f"Slot {i}\nFree"
+                color = "#2ecc71"
+            try:
+                self.slot_buttons[key].config(text=text, bg=color)
+            except Exception:
+                pass
         # show coin status for current user if any
         try:
             uid = self.controller.active_uid

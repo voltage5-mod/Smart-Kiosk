@@ -52,13 +52,23 @@ bool last_dispensing = false;
 unsigned long last_flowCount = 0;
 
 // ---------------- INTERRUPTS ----------------
+bool firstPulseIgnored = false;  // add this global flag at top
+
 void coinISR() {
   unsigned long now = millis();
   if (now - lastCoinPulseTime > COIN_DEBOUNCE_MS) {
+    // Ignore the very first pulse after system starts
+    if (!firstPulseIgnored) {
+      firstPulseIgnored = true;
+      lastCoinPulseTime = now;
+      return;  // ignore this one
+    }
+
     coinPulseCount++;
     lastCoinPulseTime = now;
   }
 }
+
 
 void flowISR() {
   flowPulseCount++;

@@ -57,9 +57,16 @@ class ArduinoListener(threading.Thread):
             return None
         line = line.strip()
         # Define regex-driven parsers for expected Arduino messages
+        # Support multiple Arduino message formats (human-readable and compact tokens)
         m = re.search(r'Coin detected, new credit:\s*(\d+)\s*ml', line, re.I)
         if m:
             return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
+        m = re.search(r'COIN_WATER\s+(\d+)', line, re.I)
+        if m:
+            return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
+        m = re.search(r'COIN_CHARGE\s+(\d+)', line, re.I)
+        if m:
+            return {"event": "COIN_CHARGE", "peso": int(m.group(1)), "raw": line}
         m = re.search(r'CREDIT_ML:\s*(\d+)', line, re.I)
         if m:
             return {"event": "CREDIT_UPDATE", "credit_ml": int(m.group(1)), "raw": line}
@@ -72,10 +79,15 @@ class ArduinoListener(threading.Thread):
         m = re.search(r'FLOW_PULSES:\s*(\d+)', line, re.I)
         if m:
             return {"event": "FLOW_PULSES", "pulses": int(m.group(1)), "raw": line}
-        if 'Cup detected' in line:
+        if 'Cup detected' in line or re.search(r'\bCUP_DETECTED\b', line, re.I):
             return {"event": "CUP_DETECTED", "raw": line}
-        if 'Cup removed' in line:
+        if 'Cup removed' in line or re.search(r'\bCUP_REMOVED\b', line, re.I):
             return {"event": "CUP_REMOVED", "raw": line}
+        if re.search(r'\bDISPENSE_START\b|\bDISPENSE_STARTED\b', line, re.I) or re.search(r'DISPENSE_START', line):
+            return {"event": "DISPENSING_STARTED", "raw": line}
+        m = re.search(r'DISPENSE_DONE\s*(\d+(?:\.\d+)?)', line, re.I)
+        if m:
+            return {"event": "DISPENSING_DONE", "total_ml": float(m.group(1)), "raw": line}
         # Fallback: return RAW event so higher layers can log/unpack details
         return {"event": "RAW", "raw": line}
 

@@ -2091,10 +2091,10 @@ class WaterScreen(tk.Frame):
         # Hardware active indicator
         hw = getattr(self.controller, 'hw', None)
         hw_present = hw is not None
-        hw_label = tk.Label(body, 
-                           text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
-                           fg="#27ae60" if hw_present else "#f39c12", bg="#2980b9", font=("Arial", 12))
-        hw_label.pack(pady=4)
+        self.hw_label = tk.Label(body,
+                                 text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
+                                 fg="#27ae60" if hw_present else "#f39c12", bg="#2980b9", font=("Arial", 12))
+        self.hw_label.pack(pady=4)
 
         # Control buttons
         btn_frame = tk.Frame(body, bg="#2980b9")
@@ -2137,6 +2137,16 @@ class WaterScreen(tk.Frame):
             self.user_info.refresh()
         except Exception:
             pass
+        # update hardware-present indicator in case hw was initialized after screen creation
+        try:
+            hw = getattr(self.controller, 'hw', None)
+            hw_present = hw is not None
+            self.hw_label.config(
+                text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
+                fg="#27ae60" if hw_present else "#f39c12"
+            )
+        except Exception:
+            pass
         uid = self.controller.active_uid
         if not uid:
             self.time_var.set("0")
@@ -2177,7 +2187,12 @@ class WaterScreen(tk.Frame):
             return
         
         event_type = event.get("event")
-        print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
+        # show raw content for debugging when parsing falls back to RAW
+        raw = event.get('raw')
+        if event_type == 'RAW':
+            print(f"INFO: WaterScreen - Arduino event: RAW for user {uid} - raw='{raw}'")
+        else:
+            print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         
         if event_type == "COIN_INSERTED":
             # Arduino detected coin insertion

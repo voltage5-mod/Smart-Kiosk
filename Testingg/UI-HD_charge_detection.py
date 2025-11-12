@@ -514,27 +514,28 @@ class KioskApp(tk.Tk):
         def _handle():
             try:
                 # track recent coin inserts for display
-                rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0, 'amount': 0})
+                # 'value' is generic: for WaterScreen it's mL, for Charging it's seconds
+                rec = self.coin_counters.get(uid, {'coins': 0, 'value': 0, 'amount': 0})
                 rec['coins'] += 1
-                rec['seconds'] += seconds
+                rec['value'] += seconds
                 rec['amount'] += amount
                 self.coin_counters[uid] = rec
             except Exception:
-                rec = {'coins': 0, 'seconds': 0, 'amount': 0}
+                rec = {'coins': 0, 'value': 0, 'amount': 0}
             # show a small popup summarizing the inserted coins and current balance for the active service
             try:
                 user = read_user(uid) or {}
                 # determine active service screen
                 active = getattr(self, 'current_frame', None)
                 if active == 'WaterScreen':
-                    # water balance: members use water_balance, non-members use temp_water_time
+                    # water balance: members use water_balance (mL), non-members use temp_water_time (mL)
                     if user.get('type') == 'member':
                         bal = user.get('water_balance', 0) or 0
                     else:
-                        bal = user.get('temp_water_time', 0) or rec.get('seconds', 0)
+                        bal = user.get('temp_water_time', 0) if user.get('temp_water_time', None) is not None else rec.get('value', 0)
                     # show liters conversion for readability
-                    liters = bal / WATER_SECONDS_PER_LITER
-                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nTotal water time: {bal} s (~{liters:.2f} L)"
+                    liters = (bal or 0) / 1000.0
+                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nTotal water volume: {bal} mL (~{liters:.2f} L)"
                 elif active in ('ChargingScreen', 'SlotSelectScreen'):
                     bal = user.get('charge_balance', 0) or 0
                     mins = bal // 60
@@ -545,7 +546,7 @@ class KioskApp(tk.Tk):
                     wbal = user.get('water_balance', 0) or 0
                     cbal = user.get('charge_balance', 0) or 0
                     msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
-                           f"Water time: {wbal} s\nCharging time: {cbal} s")
+                           f"Water volume: {wbal} mL\nCharging time: {cbal} s")
                 try:
                     messagebox.showinfo("Coin Inserted", msg)
                 except Exception:
@@ -1145,7 +1146,10 @@ class SlotSelectScreen(tk.Frame):
             if uid:
                 rec = self.controller.coin_counters.get(uid)
                 if rec:
-                    self.coin_status_lbl.config(text=f"Coins inserted: {rec.get('coins',0)} (≈ {rec.get('seconds',0)}s)")
+                    # show value: for water this is mL, for charging it's seconds
+                    val = rec.get('value', 0)
+                    # if user is member and this is water screen we show mL; otherwise show seconds
+                    self.coin_status_lbl.config(text=f"Coins inserted: {rec.get('coins',0)} (≈ {val})")
                 else:
                     self.coin_status_lbl.config(text="")
             else:
@@ -2303,28 +2307,48 @@ class WaterScreen(tk.Frame):
             print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         
         if event_type == "COIN_INSERTED":
-            # Arduino detected coin insertion. Try to extract peso from raw message.
-            raw = event.get('raw', '') or ''
-            peso = 1
-            try:
-                m = re.search(r"(\d+)P", raw)
-                if m:
-                    peso = int(m.group(1))
-            except Exception:
-                peso = 1
-            # volume_ml if provided by parser
+            # Arduino detected coin insertion. Prefer explicit volume_ml when present.
             add_ml = event.get('volume_ml', None)
-            # apply the water credit (don't double-record the coin from insert_coin_water)
+            peso = event.get('peso', None) or 1
+            # If parser provided ml use it; otherwise map peso to ml via coin mapping
+            if add_ml is None:
+                # Map pesos to ml using the sketch's coin mapping (1->100,5->500,10->1000)
+                try:
+                    if peso == 1:
+                        add_ml = 100
+                    elif peso == 5:
+                        add_ml = 500
+                    elif peso == 10:
+                        add_ml = 1000
+                    else:
+                        add_ml = 0
+                except Exception:
+                    add_ml = 0
+            # persist the added ml to DB for members or temp for non-members
             try:
-                # update DB/state
-                self.insert_coin_water(peso, record=False)
+                uid = self.controller.active_uid
+                if uid:
+                    user = read_user(uid) or {}
+                    if user.get('type') == 'member':
+                        # member: increment water_balance (stored as mL)
+                        new = (user.get('water_balance', 0) or 0) + add_ml
+                        write_user(uid, {"water_balance": new})
+                    else:
+                        # non-member: increment temp_water_time (repurposed to store mL)
+                        prev = user.get('temp_water_time', 0) or 0
+                        newtemp = prev + add_ml
+                        write_user(uid, {"temp_water_time": newtemp})
+                    # refresh UI to reflect updated balances
+                    try:
+                        self.refresh()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # notify controller/UI about inserted coin so popup appears
             try:
-                # for popup, pass seconds-like value: prefer ml if available, else map peso via COIN_MAP
-                seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
-                self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
+                # for popup, pass ml as the generic 'value' parameter
+                self.controller.record_coin_insert(self.controller.active_uid, peso, add_ml)
             except Exception:
                 pass
         

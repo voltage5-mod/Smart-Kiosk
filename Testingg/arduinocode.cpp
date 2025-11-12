@@ -21,8 +21,8 @@ float pulsesPerLiter = 450.0;
 
 // ---------------- COIN CREDIT SETTINGS ----------------
 int coin1P_pulses = 1;
-int coin5P_pulses = 3;
-int coin10P_pulses = 5;
+int coin5P_pulses = 5;
+int coin10P_pulses = 10;
 
 // (Water mode)
 int creditML_1P = 100;
@@ -88,6 +88,12 @@ void setup() {
 
   if (isnan(pulsesPerLiter) || pulsesPerLiter < 200 || pulsesPerLiter > 1000)
     pulsesPerLiter = 450.0;
+
+  // Print current coin pulse configuration so the host can see what the Arduino expects
+  Serial.print("CFG: coin1P="); Serial.print(coin1P_pulses);
+  Serial.print(" coin5P="); Serial.print(coin5P_pulses);
+  Serial.print(" coin10P="); Serial.print(coin10P_pulses);
+  Serial.print(" pulsesPerLiter="); Serial.println(pulsesPerLiter);
 
   Serial.println("System Ready. Waiting for Pi signal...");
   lastActivity = millis();
@@ -216,6 +222,16 @@ void handlePiCommands() {
   else if (cmd.equalsIgnoreCase("RESET")) resetSystem();
   else if (cmd.equalsIgnoreCase("CAL")) calibrateCoins();
   else if (cmd.equalsIgnoreCase("FLOWCAL")) calibrateFlow();
+  else if (cmd.equalsIgnoreCase("FORCE_DEFAULT_COINS")) {
+    // Overwrite EEPROM with sane defaults and report back
+    coin1P_pulses = 1;
+    coin5P_pulses = 5;
+    coin10P_pulses = 10;
+    EEPROM.put(0, coin1P_pulses);
+    EEPROM.put(4, coin5P_pulses);
+    EEPROM.put(8, coin10P_pulses);
+    Serial.println("FORCE_DEFAULT_COINS: written");
+  }
 }
 
 // ---------------- CONVERSIONS ----------------

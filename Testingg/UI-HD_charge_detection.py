@@ -2349,11 +2349,15 @@ class WaterScreen(tk.Frame):
             elif ev == 'COIN_WATER':
                 # value expected to be the added ml for this coin
                 try:
-                    added = int(value)
+                    added = int(float(value)) if value is not None else 0
                 except Exception:
-                    added = 0
+                    # value might be a running total (older firmware) or string; try extract int
+                    try:
+                        added = int(re.search(r"(\d+)", str(value)).group(1))
+                    except Exception:
+                        added = 0
                 self.total_credit += added
-                # Persist and show a small popup via the centralized helper (this writes added_ml once)
+                # Persist and show a small popup via the centralized helper (this writes added ml once)
                 try:
                     self.controller.show_coin_popup(self.controller.active_uid, peso=None, added_ml=added, total_ml=self.total_credit)
                 except Exception:
@@ -2363,7 +2367,13 @@ class WaterScreen(tk.Frame):
                     self.controller.show_totals_popup(self.controller.active_uid, self.total_coins, self.total_credit)
                 except Exception:
                     pass
+                # No further action here; Arduino will handle dispensing. Keep UI in sync.
             elif ev == 'CUP_DETECTED':
+                try:
+                    # Update UI state and call place_cup to start local UI flows
+                    self.status_lbl.config(text="Cup detected. Waiting for dispense...")
+                except Exception:
+                    pass
                 try:
                     self.place_cup()
                 except Exception:
@@ -2371,6 +2381,66 @@ class WaterScreen(tk.Frame):
             elif ev == 'CUP_REMOVED':
                 try:
                     self.remove_cup()
+                except Exception:
+                    pass
+                try:
+                    # when cup removed, Arduino often reports remaining credit via CREDIT_LEFT
+                    # we keep UI refreshed in CREDIT_LEFT handler below
+                    pass
+                except Exception:
+                    pass
+            elif ev in ('DISPENSE_START', 'DISPENSE_STARTED'):
+                try:
+                    self.status_lbl.config(text="Dispensing...")
+                except Exception:
+                    pass
+            elif ev in ('DISPENSE_PROGRESS',):
+                # value may be a string like 'ml=400' or 'ml=400 remaining=100'
+                try:
+                    s = str(value or '')
+                    m = re.search(r'ml=(\d+)', s)
+                    rem = re.search(r'remaining=(\d+)', s)
+                    if m:
+                        dispensed = int(m.group(1))
+                        self.status_lbl.config(text=f"Dispensed: {dispensed} mL")
+                    if rem:
+                        remaining = int(rem.group(1))
+                        # sync DB remaining credit for user
+                        try:
+                            uid = self.controller.active_uid
+                            if uid:
+                                user = read_user(uid) or {}
+                                if user.get('type') == 'member':
+                                    write_user(uid, {'water_balance': remaining})
+                                else:
+                                    write_user(uid, {'temp_water_time': remaining})
+                                try:
+                                    self.refresh()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            elif ev in ('DISPENSE_DONE', 'DISPENSE_COMPLETE'):
+                # value is dispensed amount; Arduino usually clears internal credit after done
+                try:
+                    self.status_lbl.config(text="Dispense complete")
+                except Exception:
+                    pass
+                try:
+                    uid = self.controller.active_uid
+                    if uid:
+                        # set remaining credit to 0 in DB (Arduino cleared its internal credit)
+                        user = read_user(uid) or {}
+                        if user.get('type') == 'member':
+                            write_user(uid, {'water_balance': 0})
+                        else:
+                            write_user(uid, {'temp_water_time': 0})
+                        try:
+                            self.refresh()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         except Exception:

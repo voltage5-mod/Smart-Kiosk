@@ -148,11 +148,36 @@ def firebase_handler(event: Dict[str, Any]):
 
 
 if __name__ == '__main__':
-    L = ArduinoListener(port=DEFAULT_PORT, baud=DEFAULT_BAUD)
-    L.register_callback(firebase_handler)
+    # Simple CLI runner: prints parsed events to stdout.
+    import argparse
+
+    parser = argparse.ArgumentParser(description='ArduinoListener CLI - print parsed Arduino events')
+    parser.add_argument('--port', '-p', help='serial port (e.g. /dev/ttyACM0)', default=DEFAULT_PORT)
+    parser.add_argument('--baud', '-b', help='baud rate', type=int, default=DEFAULT_BAUD)
+    parser.add_argument('--simulate', action='store_true', help='run in simulate mode (no serial)')
+    args = parser.parse_args()
+
+    port = args.port if not args.simulate else None
+    L = ArduinoListener(port=port, baud=args.baud, simulate=args.simulate)
+
+    # register firebase handler if available
+    try:
+        L.register_callback(firebase_handler)
+    except Exception:
+        pass
+
+    # printing callback for CLI
+    def _printer(ev: Dict[str, Any]):
+        try:
+            print(f"EVENT: {ev.get('event')} - { {k:v for k,v in ev.items() if k!='event'} }")
+        except Exception:
+            print(f"RAW EVENT: {ev}")
+
+    L.register_callback(_printer)
     L.start()
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        print('Stopping listener...')
         L.stop()

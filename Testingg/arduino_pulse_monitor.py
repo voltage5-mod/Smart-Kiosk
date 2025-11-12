@@ -120,6 +120,10 @@ def main(argv=None):
     p.add_argument('--pulse-mode', action='store_true', help='Enable pulse analyzer (group pulses into bursts)')
     p.add_argument('--burst-gap', type=float, default=0.1, help='Max seconds between pulses in same burst')
     p.add_argument('--idle', type=float, default=1.5, help='Idle seconds to flush pulse burst')
+    p.add_argument('--coin-map', type=str, default='1:1,5:5,10:10',
+                   help='Comma-separated mapping pulse_count:coin_value e.g. "1:1,5:5,10:10"')
+    p.add_argument('--tolerance', type=int, default=1,
+                   help='Allowed pulse-count tolerance when inferring coin from burst count')
     p.add_argument('--log', help='Append output to a log file')
     args = p.parse_args(argv)
 
@@ -144,6 +148,17 @@ def main(argv=None):
             logfh = None
 
     pa = PulseAnalyzer(burst_gap_s=args.burst_gap, max_idle_s=args.idle) if args.pulse_mode else None
+    # parse coin map
+    coin_map = {}
+    try:
+        for part in args.coin_map.split(','):
+            if not part.strip():
+                continue
+            k, v = part.split(':')
+            coin_map[int(k.strip())] = int(v.strip())
+    except Exception:
+        print('Failed to parse --coin-map, using default 1:1,5:5,10:10')
+        coin_map = {1: 1, 5: 5, 10: 10}
 
     try:
         while True:
@@ -158,11 +173,19 @@ def main(argv=None):
                     summaries = pa.maybe_emit()
                     if summaries:
                         for s in summaries:
-                            out = f"[{human_time()}] PULSE_BURST count={s['count']} dur={s['duration']:.3f}s avg_freq={s['avg_freq']:.1f}Hz"
-                            print(out)
-                            if logfh:
-                                logfh.write(out + '\n')
-                                logfh.flush()
+                                out = f"[{human_time()}] PULSE_BURST count={s['count']} dur={s['duration']:.3f}s avg_freq={s['avg_freq']:.1f}Hz"
+                                # try to infer coin value based on count
+                                inferred = None
+                                for pulse_count, coin_val in coin_map.items():
+                                    if abs(s['count'] - pulse_count) <= args.tolerance:
+                                        inferred = (pulse_count, coin_val)
+                                        break
+                                if inferred:
+                                    out += f" -> INFERRED COIN: {inferred[1]}P (expected pulses {inferred[0]})"
+                                print(out)
+                                if logfh:
+                                    logfh.write(out + '\n')
+                                    logfh.flush()
                 continue
             try:
                 line = raw.decode('utf-8', errors='replace').rstrip('\r\n')

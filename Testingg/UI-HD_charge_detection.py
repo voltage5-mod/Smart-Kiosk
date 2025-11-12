@@ -438,45 +438,22 @@ class KioskApp(tk.Tk):
         
         # Initialize ArduinoListener for water service hardware integration
         try:
-            from arduino_listener import ArduinoListener
-            # Priority: environment variable ARDUINO_PORT -> pinmap.json arduino_usb -> fallback -> simulate
-            env_port = os.getenv('ARDUINO_PORT', None)
-            if env_port:
-                arduino_port = env_port
-                arduino_baud = int(os.getenv('ARDUINO_BAUD', '115200'))
-                self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
+            # prefer the new ArduinoListener.py implementation (capitalized filename)
+            try:
+                from ArduinoListener import ArduinoListener
+            except Exception:
+                # fallback to older module name if present
+                from arduino_listener import ArduinoListener
+
+            # create central listener and dispatch events to screens
+            self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
+            try:
                 self.arduino_listener.start()
-                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from ARDUINO_PORT env)")
-            elif _pinmap and _pinmap.get('arduino_usb'):
-                arduino_port = _pinmap.get('arduino_usb', '/dev/ttyUSB0')
-                arduino_baud = _pinmap.get('arduino_baud', 115200)
-                self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
-                self.arduino_listener.start()
-                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from pinmap)")
-            else:
-                # Try common device names before falling back to simulation
-                guessed = None
-                for p in ['/dev/ttyACM0', '/dev/ttyUSB0']:
-                    try:
-                        # don't attempt to open here, just check existence
-                        if os.path.exists(p):
-                            guessed = p
-                            break
-                    except Exception:
-                        pass
-                if guessed:
-                    arduino_port = guessed
-                    arduino_baud = 115200
-                    self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
-                    self.arduino_listener.start()
-                    print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (auto-detected)")
-                else:
-                    # Simulate mode if no pinmap or arduino_usb not configured
-                    self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
-                    self.arduino_listener.start()
-                    print("INFO: ArduinoListener running in simulate mode")
+                print("INFO: ArduinoListener started (centralized event callback)")
+            except Exception:
+                print("WARN: ArduinoListener failed to start")
         except ImportError:
-            print("WARN: arduino_listener module not found; water service will use simulation buttons only")
+            print("WARN: ArduinoListener module not found; water service will use simulation buttons only")
             self.arduino_listener = None
         except Exception as e:
             print(f"WARN: Failed to initialize ArduinoListener: {e}")
@@ -484,9 +461,8 @@ class KioskApp(tk.Tk):
         
         # NOW that ArduinoListener is created, register WaterScreen callbacks
         try:
-            water_screen = self.frames.get(WaterScreen, None)
-            if water_screen and self.arduino_listener:
-                water_screen._register_arduino_callbacks()
+            # WaterScreen will receive events via the central dispatcher; no per-screen registration required
+            pass
         except Exception as e:
             print(f"WARN: Failed to register WaterScreen callbacks: {e}")
         
@@ -521,87 +497,64 @@ class KioskApp(tk.Tk):
             pass
 
     def record_coin_insert(self, uid, amount, seconds):
-        # Minimal central handler that updates per-UID counters and shows a popup.
-        # Behavior differs by active screen (water vs charging).
+        # Run UI-updates and popup on the Tk main loop to avoid thread issues
         def _handle():
             try:
+                # track recent coin inserts for display
+                # 'value' is generic: for WaterScreen it's mL, for Charging it's seconds
                 rec = self.coin_counters.get(uid, {'coins': 0, 'value': 0, 'amount': 0})
                 rec['coins'] += 1
-                # 'amount' accumulates peso total
-                try:
-                    rec['amount'] += int(amount or 0)
-                except Exception:
-                    rec['amount'] = rec.get('amount', 0) + (amount or 0)
-                # 'value' accumulates service-specific value (mL for water, seconds for charging)
-                try:
-                    rec['value'] += int(seconds or 0)
-                except Exception:
-                    rec['value'] = rec.get('value', 0) + (seconds or 0)
+                rec['value'] += seconds
+                rec['amount'] += amount
                 self.coin_counters[uid] = rec
             except Exception:
-                rec = {'coins': 1, 'value': seconds or 0, 'amount': amount or 0}
-
-            # Determine active service and show/persist accordingly
-            active = getattr(self, 'current_frame', None)
+                rec = {'coins': 0, 'value': 0, 'amount': 0}
+            # show a small popup summarizing the inserted coins and current balance for the active service
             try:
                 user = read_user(uid) or {}
-            except Exception:
-                user = {}
-
-            if active == 'WaterScreen':
-                # Persist ml and show cumulative inserted peso & total ml credited
-                added_ml = seconds or 0
-                # Persist using centralized popup (which also updates DB)
-                try:
-                    self.show_coin_popup(uid=uid, peso=amount, added_ml=added_ml, total_ml=None)
-                except Exception:
-                    pass
-            elif active in ('ChargingScreen', 'SlotSelectScreen'):
-                # Charging flow: seconds represent added charging seconds.
-                added_secs = seconds or 0
-                try:
-                    if uid:
-                        cur = (user.get('charge_balance') or 0)
-                        write_user(uid, {'charge_balance': cur + added_secs})
-                        try:
-                            self.refresh_all_user_info()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                # show a charging popup summarizing cumulative coin and charge balance
-                try:
-                    bal = (user.get('charge_balance') or 0) + (added_secs)
+                # determine active service screen
+                active = getattr(self, 'current_frame', None)
+                if active == 'WaterScreen':
+                    # water balance: members use water_balance (mL), non-members use temp_water_time (mL)
+                    if user.get('type') == 'member':
+                        bal = user.get('water_balance', 0) or 0
+                    else:
+                        bal = user.get('temp_water_time', 0) if user.get('temp_water_time', None) is not None else rec.get('value', 0)
+                    # show liters conversion for readability
+                    liters = (bal or 0) / 1000.0
+                    # rec['amount'] is the total peso inserted; ensure it's an int
+                    try:
+                        peso_total = int(rec.get('amount', 0))
+                    except Exception:
+                        peso_total = rec.get('amount', 0)
+                    msg = f"Coins inserted: ₱{peso_total}\nTotal water volume: {bal} mL (~{liters:.2f} L)"
+                elif active in ('ChargingScreen', 'SlotSelectScreen'):
+                    bal = user.get('charge_balance', 0) or 0
                     mins = bal // 60
                     secs = bal % 60
                     msg = f"Coins inserted: ₱{rec.get('amount',0)}\nCharging balance: {mins}m {secs}s"
-                    try:
-                        messagebox.showinfo("Coin Inserted", msg)
-                    except Exception:
-                        print("POPUP:", msg)
-                except Exception:
-                    pass
-            else:
-                # Generic fallback: show cumulative totals
-                try:
+                else:
+                    # fallback: show both balances
                     wbal = user.get('water_balance', 0) or 0
                     cbal = user.get('charge_balance', 0) or 0
                     msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
                            f"Water volume: {wbal} mL\nCharging time: {cbal} s")
-                    try:
-                        messagebox.showinfo("Coin Inserted", msg)
-                    except Exception:
-                        print("POPUP:", msg)
+                try:
+                    messagebox.showinfo("Coin Inserted", msg)
                 except Exception:
-                    pass
+                    print(f"INFO: Coin Inserted popup: {msg}")
+            except Exception:
+                pass
 
         try:
+            # schedule on main thread
             try:
                 self.after(0, _handle)
             except Exception:
+                # if after isn't available, run directly
                 _handle()
         except Exception:
-            _handle()
+            pass
 
     def show_coin_popup(self, uid, peso: int = None, added_ml: int = None, total_ml: int = None):
         """Display a simple coin popup using only Arduino-provided values.
@@ -609,29 +562,15 @@ class KioskApp(tk.Tk):
         persist added_ml (delta) into the user's water balance.
         """
         def _do():
-            # Update per-UID cumulative counters (amount in pesos, value in mL)
-            try:
-                rec = self.coin_counters.get(uid, {'coins': 0, 'value': 0, 'amount': 0})
-                # if peso present, add to cumulative peso amount
-                if peso is not None:
-                    try:
-                        rec['amount'] += int(peso)
-                    except Exception:
-                        rec['amount'] = rec.get('amount', 0) + (peso or 0)
-                # if added_ml present, add to cumulative credited ml
-                if added_ml is not None:
-                    try:
-                        rec['value'] += int(added_ml)
-                    except Exception:
-                        rec['value'] = rec.get('value', 0) + (added_ml or 0)
-                # increment coin count only when peso was explicitly inserted
-                if peso is not None:
-                    rec['coins'] = rec.get('coins', 0) + 1
-                self.coin_counters[uid] = rec
-            except Exception:
-                rec = {'coins': 1 if peso is not None else 0, 'amount': peso or 0, 'value': added_ml or 0}
-
-            # persist to DB if added_ml provided (centralized)
+            parts = []
+            if peso is not None:
+                parts.append(f"Inserted: \u20B1{peso}")
+            if added_ml is not None:
+                parts.append(f"Added: {added_ml} mL")
+            if total_ml is not None:
+                parts.append(f"Total: {total_ml} mL")
+            msg = "\n".join(parts) if parts else "Coin event"
+            # persist to DB if added_ml provided
             try:
                 if uid and added_ml is not None and added_ml > 0:
                     user = read_user(uid) or {}
@@ -642,25 +581,12 @@ class KioskApp(tk.Tk):
                         cur = user.get('temp_water_time') or 0
                         write_user(uid, {'temp_water_time': cur + added_ml})
                     try:
+                        # refresh UI to show updated balances
                         self.refresh_all_user_info()
                     except Exception:
                         pass
             except Exception:
                 pass
-
-            # Compose cumulative popup message
-            try:
-                amt = rec.get('amount', 0)
-                val_ml = rec.get('value', 0)
-                liters = (val_ml or 0) / 1000.0
-                parts = [f"Total inserted: ₱{amt}", f"Total credit: {val_ml} mL (~{liters:.2f} L)"]
-                # Optionally include Arduino-reported running total for transparency
-                if total_ml is not None:
-                    parts.append(f"Arduino total: {total_ml} mL")
-                msg = "\n".join(parts)
-            except Exception:
-                msg = "Coin event"
-
             try:
                 messagebox.showinfo("Coin Inserted", msg)
             except Exception:
@@ -670,6 +596,39 @@ class KioskApp(tk.Tk):
             self.after(0, _do)
         except Exception:
             _do()
+
+    def show_totals_popup(self, uid, total_coins: int, total_credit_ml: int):
+        """Show a simple totals popup: total inserted coins (₱) and total credit (mL)."""
+        def _do_totals():
+            try:
+                parts = [f"Total Coins Inserted: ₱{total_coins}", f"Total Credit: {total_credit_ml} mL (~{total_credit_ml/1000.0:.2f} L)"]
+                msg = "\n".join(parts)
+                try:
+                    messagebox.showinfo("Coin Totals", msg)
+                except Exception:
+                    print("POPUP:", msg)
+            except Exception:
+                pass
+
+        try:
+            self.after(0, _do_totals)
+        except Exception:
+            _do_totals()
+
+    def _arduino_event_callback(self, event, value):
+        """Central dispatcher for ArduinoListener events.
+        For now we forward events to the WaterScreen instance if present.
+        The external ArduinoListener calls this with (event, value).
+        """
+        try:
+            ws = self.frames.get(WaterScreen)
+            if ws and hasattr(ws, 'handle_arduino_event'):
+                try:
+                    ws.handle_arduino_event(event, value)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def show_frame(self, cls):
         # record current frame name for context (used by coin popups)
@@ -2299,6 +2258,9 @@ class WaterScreen(tk.Frame):
         # per-UID timestamp of last processed coin (seconds since epoch)
         # used to suppress duplicate handling when Arduino emits COIN_INSERTED then COIN_WATER
         self._last_coin_ts = {}
+        # Totals tracked for the popup display (stacking behavior)
+        self.total_coins = 0    # sum of peso values inserted during this session
+        self.total_credit = 0   # sum of added mL credited during this session
         
         # Note: Arduino callbacks will be registered by KioskApp.__init__() after ArduinoListener is created
         # This avoids a timing issue where WaterScreen is initialized before ArduinoListener exists
@@ -2350,7 +2312,61 @@ class WaterScreen(tk.Frame):
             print("INFO: WaterScreen - No ArduinoListener found; simulation mode only.")
             return
         print("INFO: WaterScreen - Registering for Arduino events.")
-        listener.register_callback(self._on_arduino_event)
+        # The new ArduinoListener implementation calls a central callback with (event, value).
+        # We rely on the KioskApp central dispatcher to forward to our handle_arduino_event.
+        # Keep backward compatibility for older listener implementations that support register_callback.
+        try:
+            listener.register_callback(self._on_arduino_event)
+        except Exception:
+            pass
+
+    def handle_arduino_event(self, event, value):
+        """Handle events coming from the ArduinoListener(event, value) interface.
+        Expected events: 'COIN_INSERTED' (peso), 'COIN_WATER' (added ml), 'CUP_DETECTED', 'CUP_REMOVED', etc.
+        We update running totals and show a concise totals popup each coin insertion.
+        """
+        try:
+            ev = (event or '').strip()
+            if ev == 'COIN_INSERTED':
+                try:
+                    v = int(value)
+                except Exception:
+                    v = 0
+                self.total_coins += v
+                # show totals (no DB write yet; DB write happens on COIN_WATER when actual ml credited)
+                try:
+                    self.controller.show_totals_popup(self.controller.active_uid, self.total_coins, self.total_credit)
+                except Exception:
+                    pass
+            elif ev == 'COIN_WATER':
+                # value expected to be the added ml for this coin
+                try:
+                    added = int(value)
+                except Exception:
+                    added = 0
+                self.total_credit += added
+                # Persist and show a small popup via the centralized helper (this writes added_ml once)
+                try:
+                    self.controller.show_coin_popup(self.controller.active_uid, peso=None, added_ml=added, total_ml=self.total_credit)
+                except Exception:
+                    pass
+                # Also show totals summary
+                try:
+                    self.controller.show_totals_popup(self.controller.active_uid, self.total_coins, self.total_credit)
+                except Exception:
+                    pass
+            elif ev == 'CUP_DETECTED':
+                try:
+                    self.place_cup()
+                except Exception:
+                    pass
+            elif ev == 'CUP_REMOVED':
+                try:
+                    self.remove_cup()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_arduino_event(self, event):
         """Minimal Arduino-driven handler.
@@ -2414,20 +2430,69 @@ class WaterScreen(tk.Frame):
         if not uid:
             print("WARN: No user; scan first.")
             return
+        user = read_user(uid)
         # map peso -> milliliters for water
         add = WATER_COIN_MAP.get(amount, 0)
-        # produce audit log and console info, but delegate persistence and popup to the
-        # centralized record_coin_insert/show_coin_popup to avoid double-writes.
-        try:
-            append_audit_log(actor=uid, action='insert_coin_water', meta={'amount': amount, 'added_ml': add})
-        except Exception:
-            pass
-        print(f"INFO: ₱{amount} coin received -> {add} mL (delegating persistence to central handler)")
-        try:
-            if record:
-                self.controller.record_coin_insert(uid, amount, add)
-        except Exception:
-            pass
+        if user.get("type") == "member":
+            # add to member water balance stored in DB
+            new = (user.get("water_balance", 0) or 0) + add
+            write_user(uid, {"water_balance": new})
+            try:
+                append_audit_log(actor=uid, action='insert_coin_water', meta={'amount': amount, 'added_ml': add, 'new_water_balance_ml': new})
+            except Exception:
+                pass
+            print(f"INFO: ₱{amount} added to water balance ({add} mL).")
+            try:
+                # record coin insert for UI popup
+                if record:
+                    # update session totals and show centralized popup
+                    try:
+                        # update totals
+                        self.total_coins += int(amount)
+                        self.total_credit += int(add)
+                    except Exception:
+                        pass
+                    try:
+                        # persist and show coin popup (writes added ml)
+                        self.controller.show_coin_popup(uid, peso=None, added_ml=add, total_ml=self.total_credit)
+                    except Exception:
+                        pass
+                    try:
+                        self.controller.show_totals_popup(uid, self.total_coins, self.total_credit)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            # non-member: add to temp purchase time (persist to DB so it remains across screens)
+            # read any existing persisted temp value
+            prev = user.get("temp_water_time", 0) or 0
+            newtemp = prev + add
+            self.temp_water_time = newtemp
+            write_user(uid, {"temp_water_time": newtemp})
+            try:
+                append_audit_log(actor=uid, action='purchase_water', meta={'amount': amount, 'added_ml': add, 'new_temp_ml': newtemp})
+            except Exception:
+                pass
+            print(f"INFO: ₱{amount} purchased => {add} mL water (temporary).")
+            try:
+                # record coin insert for UI popup
+                if record:
+                    try:
+                        self.total_coins += int(amount)
+                        self.total_credit += int(add)
+                    except Exception:
+                        pass
+                    try:
+                        self.controller.show_coin_popup(uid, peso=None, added_ml=add, total_ml=self.total_credit)
+                    except Exception:
+                        pass
+                    try:
+                        self.controller.show_totals_popup(uid, self.total_coins, self.total_credit)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         self.refresh()
 
     def place_cup(self):

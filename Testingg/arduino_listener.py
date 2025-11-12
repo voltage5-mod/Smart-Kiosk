@@ -40,9 +40,6 @@ class ArduinoListener(threading.Thread):
         self._ser = None
         self._lock = threading.Lock()
         self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
-        # coin pulse calibration reported by Arduino (populated from CFG: line)
-        # Example: {'coin1P':1, 'coin5P':5, 'coin10P':10, 'pulsesPerLiter':450.0}
-        self._coin_cfg: Dict[str, Any] = {}
 
     def register_callback(self, cb: Callable[[Dict[str, Any]], None]):
         self._callbacks.append(cb)
@@ -61,6 +58,18 @@ class ArduinoListener(threading.Thread):
         line = line.strip()
         # Define regex-driven parsers for expected Arduino messages
         # Support multiple Arduino message formats (human-readable and compact tokens)
+        # Human-friendly coin message (e.g. "Coin inserted: 5P added 500mL, new total: 500")
+        m = re.search(r'Coin inserted:\s*(\d+)P(?:\s+added\s*(\d+)mL)?', line, re.I)
+        if m:
+            peso = int(m.group(1))
+            vol = int(m.group(2)) if m.group(2) else None
+            ev = {"event": "COIN_INSERTED", "peso": peso, "raw": line}
+            if vol is not None:
+                ev['volume_ml'] = vol
+            return ev
+        # Simple PULSE line emitted by some Arduino builds to indicate flow pulses
+        if re.fullmatch(r'PULSE', line, re.I):
+            return {"event": "FLOW_PULSE", "raw": line}
         m = re.search(r'Coin detected, new credit:\s*(\d+)\s*ml', line, re.I)
         if m:
             return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
@@ -70,30 +79,6 @@ class ArduinoListener(threading.Thread):
         m = re.search(r'COIN_CHARGE\s+(\d+)', line, re.I)
         if m:
             return {"event": "COIN_CHARGE", "peso": int(m.group(1)), "raw": line}
-        # UNKNOWN_COIN <pulses> : Arduino couldn't match pulses to known coin counts
-        m = re.search(r'UNKNOWN_COIN\s+(\d+)', line, re.I)
-        if m:
-            pulses = int(m.group(1))
-            # If we have calibration info from CFG, attempt to map pulses to a coin
-            try:
-                cfg = self._coin_cfg
-                if cfg:
-                    # compute closest among coin1P, coin5P, coin10P
-                    candidates = []
-                    for k, peso in (('coin1P', 1), ('coin5P', 5), ('coin10P', 10)):
-                        if k in cfg:
-                            candidates.append((abs(pulses - int(cfg[k])), peso))
-                    if candidates:
-                        candidates.sort()
-                        # choose best match
-                        best_peso = candidates[0][1]
-                        # For water, map peso to ml using common mapping
-                        ml_map = {1: 100, 5: 500, 10: 1000}
-                        return {"event": "COIN_INSERTED", "peso": best_peso, "volume_ml": ml_map.get(best_peso), "raw": line}
-            except Exception:
-                pass
-            # fallback: emit UNKNOWN_COIN event
-            return {"event": "COIN_UNKNOWN", "pulses": pulses, "raw": line}
         m = re.search(r'CREDIT_ML:\s*(\d+)', line, re.I)
         if m:
             return {"event": "CREDIT_UPDATE", "credit_ml": int(m.group(1)), "raw": line}
@@ -106,27 +91,6 @@ class ArduinoListener(threading.Thread):
         m = re.search(r'FLOW_PULSES:\s*(\d+)', line, re.I)
         if m:
             return {"event": "FLOW_PULSES", "pulses": int(m.group(1)), "raw": line}
-        # CREDIT_LEFT <ml> -- used by some sketches to report remaining credit
-        m = re.search(r'CREDIT_LEFT\s+(\d+)', line, re.I)
-        if m:
-            return {"event": "CREDIT_UPDATE", "credit_ml": int(m.group(1)), "raw": line}
-        # DISPENSE_PROGRESS ml=<float> remaining=<float>
-        m = re.search(r'DISPENSE_PROGRESS\s+ml=(\d+(?:\.\d+)?)\s+remaining=(\d+(?:\.\d+)?)', line, re.I)
-        if m:
-            return {"event": "DISPENSE_PROGRESS", "dispensed_ml": float(m.group(1)), "remaining_ml": float(m.group(2)), "raw": line}
-        # CFG: coin1P=1 coin5P=5 coin10P=10 pulsesPerLiter=450
-        m = re.search(r'CFG:\s*coin1P=(\d+)\s*coin5P=(\d+)\s*coin10P=(\d+)\s*pulsesPerLiter=([0-9\.]+)', line, re.I)
-        if m:
-            try:
-                self._coin_cfg = {
-                    'coin1P': int(m.group(1)),
-                    'coin5P': int(m.group(2)),
-                    'coin10P': int(m.group(3)),
-                    'pulsesPerLiter': float(m.group(4)),
-                }
-            except Exception:
-                self._coin_cfg = {}
-            return {"event": "CFG", "cfg": self._coin_cfg, "raw": line}
         if 'Cup detected' in line or re.search(r'\bCUP_DETECTED\b', line, re.I):
             return {"event": "CUP_DETECTED", "raw": line}
         if 'Cup removed' in line or re.search(r'\bCUP_REMOVED\b', line, re.I):

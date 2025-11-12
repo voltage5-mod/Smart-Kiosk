@@ -2506,6 +2506,11 @@ class WaterScreen(tk.Frame):
                     self.reset_totals()
                 except Exception:
                     pass
+                # ensure Arduino stops any active sensing/relays now that dispense finished
+                try:
+                    self._notify_arduino_stop()
+                except Exception:
+                    pass
                 return
         except Exception:
             pass
@@ -2734,6 +2739,34 @@ class WaterScreen(tk.Frame):
         except Exception:
             pass
 
+    def _notify_arduino_stop(self):
+        """Best-effort: tell the Arduino to stop water activity.
+        We send RESET (turn off relays / clear credit) and then switch to CHARGE mode
+        so that the Arduino is not actively in water dispensing logic. The firmware
+        doesn't implement a dedicated STOP command, so this is a pragmatic approach
+        until firmware STOP/IDLE is added.
+        """
+        try:
+            al = getattr(self.controller, 'arduino_listener', None)
+            if al is None:
+                return
+            try:
+                # clear internal Arduino credit and ensure relays off
+                al.send_command('RESET')
+            except Exception:
+                pass
+            try:
+                # switch out of water mode so cup/flow logic won't run
+                al.send_command('MODE CHARGE')
+            except Exception:
+                pass
+            try:
+                print('INFO: Sent RESET and MODE CHARGE to Arduino to stop water sensing')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def place_cup(self):
         uid = self.controller.active_uid
         if not uid:
@@ -2904,6 +2937,11 @@ class WaterScreen(tk.Frame):
                 pass
             print("INFO: No cup detected. Water session ended.")
             # reset session totals so next session starts fresh
+            # notify Arduino to stop sensing/relays (best-effort)
+            try:
+                self._notify_arduino_stop()
+            except Exception:
+                pass
             try:
                 self.reset_totals()
             except Exception:
@@ -2965,6 +3003,11 @@ class WaterScreen(tk.Frame):
         # reset totals for this session
         try:
             self.reset_totals()
+        except Exception:
+            pass
+        # notify Arduino to stop active sensing/relays (best-effort)
+        try:
+            self._notify_arduino_stop()
         except Exception:
             pass
         print("INFO: Water session stopped.")

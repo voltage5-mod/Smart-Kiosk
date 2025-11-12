@@ -487,6 +487,8 @@ class KioskApp(tk.Tk):
 
         # coin counters per-uid (list of inserted coin amounts)
         self.coin_counters = {}
+        # small toplevel used for transient toasts (created on demand)
+        self._toast_windows = []
         # Ensure the initial visible screen is the ScanScreen (raise it above others)
         try:
             self.show_frame(ScanScreen)
@@ -546,10 +548,14 @@ class KioskApp(tk.Tk):
                     cbal = user.get('charge_balance', 0) or 0
                     msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
                            f"Water time: {wbal} s\nCharging time: {cbal} s")
+                # Prefer a non-modal toast so the kiosk flow isn't blocked by dialogs.
                 try:
-                    messagebox.showinfo("Coin Inserted", msg)
+                    self._show_toast(title="Coin Inserted", message=msg, timeout=3500)
                 except Exception:
-                    print(f"INFO: Coin Inserted popup: {msg}")
+                    try:
+                        messagebox.showinfo("Coin Inserted", msg)
+                    except Exception:
+                        print(f"INFO: Coin Inserted popup: {msg}")
             except Exception:
                 pass
 
@@ -562,6 +568,86 @@ class KioskApp(tk.Tk):
                 _handle()
         except Exception:
             pass
+
+    def _show_toast(self, title, message, timeout=3000):
+        """Show a small non-modal toast window centered on the app for `timeout` ms.
+        Keeps toasts on top of the main window briefly and destroys them after timeout.
+        """
+        try:
+            # create a Toplevel window with no decorations
+            tw = tk.Toplevel(self)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            # simple styling
+            frm = tk.Frame(tw, bg="#222f3e", bd=2)
+            frm.pack(fill="both", expand=True)
+            tk.Label(frm, text=title, font=("Arial", 12, "bold"), fg="white", bg="#222f3e").pack(padx=12, pady=(8,0))
+            tk.Label(frm, text=message, font=("Arial", 10), fg="white", bg="#222f3e", justify="left").pack(padx=12, pady=(4,8))
+
+            # position: center of main window
+            self.update_idletasks()
+            mw = self.winfo_width()
+            mh = self.winfo_height()
+            mx = self.winfo_rootx()
+            my = self.winfo_rooty()
+            tw.update_idletasks()
+            ww = tw.winfo_reqwidth()
+            wh = tw.winfo_reqheight()
+            x = mx + (mw - ww)//2
+            y = my + int(mh * 0.15)
+            try:
+                tw.geometry(f"+{x}+{y}")
+            except Exception:
+                pass
+
+            # remember and destroy after timeout
+            self._toast_windows.append(tw)
+            try:
+                print(f"DEBUG: Showing toast: {title} - {message}")
+            except Exception:
+                pass
+            def _destroy_toast():
+                try:
+                    if tw in self._toast_windows:
+                        self._toast_windows.remove(tw)
+                    try:
+                        print(f"DEBUG: Destroying toast: {title}")
+                    except Exception:
+                        pass
+                    tw.destroy()
+                except Exception:
+                    pass
+
+            try:
+                # Attempt to bring the toast to the front reliably on Windows
+                try:
+                    tw.transient(self)
+                except Exception:
+                    pass
+                try:
+                    tw.lift(aboveThis=self)
+                except Exception:
+                    try:
+                        tw.lift()
+                    except Exception:
+                        pass
+                try:
+                    tw.attributes("-topmost", True)
+                except Exception:
+                    pass
+                try:
+                    tw.focus_force()
+                except Exception:
+                    pass
+                self.after(timeout, _destroy_toast)
+            except Exception:
+                # best-effort: schedule via threading.Timer if after fails
+                try:
+                    threading.Timer(timeout/1000.0, _destroy_toast).start()
+                except Exception:
+                    pass
+        except Exception:
+            raise
 
     def show_frame(self, cls):
         # record current frame name for context (used by coin popups)

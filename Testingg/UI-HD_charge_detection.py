@@ -546,10 +546,39 @@ class KioskApp(tk.Tk):
                     cbal = user.get('charge_balance', 0) or 0
                     msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
                            f"Water time: {wbal} s\nCharging time: {cbal} s")
+                # Always print to console for debugging
                 try:
-                    messagebox.showinfo("Coin Inserted", msg)
-                except Exception:
                     print(f"INFO: Coin Inserted popup: {msg}")
+                except Exception:
+                    pass
+                # Create a non-modal toast so it is visible on kiosk fullscreen systems
+                try:
+                    toast = tk.Toplevel(self)
+                    toast.overrideredirect(True)
+                    try:
+                        toast.attributes("-topmost", True)
+                    except Exception:
+                        pass
+                    toast.configure(bg="#222f3e")
+                    lbl = tk.Label(toast, text=msg, fg="white", bg="#222f3e", font=("Arial", 12))
+                    lbl.pack(padx=12, pady=8)
+                    # position near top-center of the main window
+                    try:
+                        self.update_idletasks()
+                        w = toast.winfo_reqwidth()
+                        x = self.winfo_rootx() + max(0, (self.winfo_width() - w)//2)
+                        y = self.winfo_rooty() + 40
+                        toast.geometry(f"+{x}+{y}")
+                    except Exception:
+                        pass
+                    # auto-destroy after 3 seconds
+                    toast.after(3000, toast.destroy)
+                except Exception:
+                    # fallback to messagebox if toast creation fails
+                    try:
+                        messagebox.showinfo("Coin Inserted", msg)
+                    except Exception:
+                        print(f"INFO: Coin Inserted popup fallback: {msg}")
             except Exception:
                 pass
 

@@ -58,6 +58,18 @@ class ArduinoListener(threading.Thread):
         line = line.strip()
         # Define regex-driven parsers for expected Arduino messages
         # Support multiple Arduino message formats (human-readable and compact tokens)
+        # Human-friendly coin message (e.g. "Coin inserted: 5P added 500mL, new total: 500")
+        m = re.search(r'Coin inserted:\s*(\d+)P(?:\s+added\s*(\d+)mL)?', line, re.I)
+        if m:
+            peso = int(m.group(1))
+            vol = int(m.group(2)) if m.group(2) else None
+            ev = {"event": "COIN_INSERTED", "peso": peso, "raw": line}
+            if vol is not None:
+                ev['volume_ml'] = vol
+            return ev
+        # Simple PULSE line emitted by some Arduino builds to indicate flow pulses
+        if re.fullmatch(r'PULSE', line, re.I):
+            return {"event": "FLOW_PULSE", "raw": line}
         m = re.search(r'Coin detected, new credit:\s*(\d+)\s*ml', line, re.I)
         if m:
             return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}

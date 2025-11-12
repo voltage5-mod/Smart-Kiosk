@@ -2340,34 +2340,92 @@ class WaterScreen(tk.Frame):
                     v = int(value)
                 except Exception:
                     v = 0
-                self.total_coins += v
-                # show totals (no DB write yet; DB write happens on COIN_WATER when actual ml credited)
+                # Map peso -> ml and persist immediately (follow Arduino water automation flow)
+                try:
+                    add_ml = WATER_COIN_MAP.get(v, 0)
+                except Exception:
+                    add_ml = 0
+                try:
+                    uid = self.controller.active_uid
+                    if uid:
+                        user = read_user(uid) or {}
+                        if user.get('type') == 'member':
+                            cur = user.get('water_balance') or 0
+                            write_user(uid, {'water_balance': cur + add_ml})
+                        else:
+                            cur = user.get('temp_water_time') or 0
+                            write_user(uid, {'temp_water_time': cur + add_ml})
+                        try:
+                            self.refresh()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                # update totals and timestamp (to suppress subsequent COIN_WATER duplicate)
+                try:
+                    self.total_coins += v
+                    self.total_credit += add_ml
+                except Exception:
+                    pass
+                try:
+                    # persist and show coin popup and totals
+                    self.controller.show_coin_popup(self.controller.active_uid, peso=v, added_ml=add_ml, total_ml=self.total_credit)
+                except Exception:
+                    pass
                 try:
                     self.controller.show_totals_popup(self.controller.active_uid, self.total_coins, self.total_credit)
                 except Exception:
                     pass
+                try:
+                    self._last_coin_ts[self.controller.active_uid] = time.time()
+                except Exception:
+                    pass
             elif ev == 'COIN_WATER':
-                # value expected to be the added ml for this coin
+                # value expected to be the added ml for this coin. Suppress if we just handled COIN_INSERTED.
+                try:
+                    now = time.time()
+                    last = self._last_coin_ts.get(self.controller.active_uid, 0)
+                    if now - last < 1.0:
+                        # already processed via COIN_INSERTED mapping; ignore to avoid double-credit
+                        return
+                except Exception:
+                    pass
                 try:
                     added = int(float(value)) if value is not None else 0
                 except Exception:
-                    # value might be a running total (older firmware) or string; try extract int
                     try:
                         added = int(re.search(r"(\d+)", str(value)).group(1))
                     except Exception:
                         added = 0
-                self.total_credit += added
-                # Persist and show a small popup via the centralized helper (this writes added ml once)
+                # fallback credit if COIN_INSERTED was missed
+                try:
+                    uid = self.controller.active_uid
+                    if uid:
+                        user = read_user(uid) or {}
+                        if user.get('type') == 'member':
+                            cur = user.get('water_balance') or 0
+                            write_user(uid, {'water_balance': cur + added})
+                        else:
+                            cur = user.get('temp_water_time') or 0
+                            write_user(uid, {'temp_water_time': cur + added})
+                        try:
+                            self.refresh()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    self.total_credit += added
+                except Exception:
+                    pass
                 try:
                     self.controller.show_coin_popup(self.controller.active_uid, peso=None, added_ml=added, total_ml=self.total_credit)
                 except Exception:
                     pass
-                # Also show totals summary
                 try:
                     self.controller.show_totals_popup(self.controller.active_uid, self.total_coins, self.total_credit)
                 except Exception:
                     pass
-                # No further action here; Arduino will handle dispensing. Keep UI in sync.
             elif ev == 'CUP_DETECTED':
                 try:
                     # Update UI state and call place_cup to start local UI flows
@@ -2443,6 +2501,12 @@ class WaterScreen(tk.Frame):
                             pass
                 except Exception:
                     pass
+                # session complete: reset per-session totals
+                try:
+                    self.reset_totals()
+                except Exception:
+                    pass
+                return
         except Exception:
             pass
 
@@ -2470,7 +2534,44 @@ class WaterScreen(tk.Frame):
             # coin detected; may contain peso but not necessarily ml yet
             peso = event.get('peso')
             try:
-                self.controller.show_coin_popup(uid=uid, peso=peso, added_ml=None, total_ml=None)
+                v = int(peso) if peso is not None else 0
+            except Exception:
+                v = 0
+            # Map to ml and persist immediately (follow Arduino automation flow)
+            try:
+                add_ml = WATER_COIN_MAP.get(v, 0)
+            except Exception:
+                add_ml = 0
+            try:
+                if uid:
+                    user = read_user(uid) or {}
+                    if user.get('type') == 'member':
+                        cur = user.get('water_balance') or 0
+                        write_user(uid, {'water_balance': cur + add_ml})
+                    else:
+                        cur = user.get('temp_water_time') or 0
+                        write_user(uid, {'temp_water_time': cur + add_ml})
+                    try:
+                        self.refresh()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                self.total_coins += v
+                self.total_credit += add_ml
+            except Exception:
+                pass
+            try:
+                self.controller.show_coin_popup(uid=uid, peso=v, added_ml=add_ml, total_ml=self.total_credit)
+            except Exception:
+                pass
+            try:
+                self.controller.show_totals_popup(uid=uid, total_coins=self.total_coins, total_credit_ml=self.total_credit)
+            except Exception:
+                pass
+            try:
+                self._last_coin_ts[uid] = time.time()
             except Exception:
                 pass
             return
@@ -2480,11 +2581,45 @@ class WaterScreen(tk.Frame):
             added_ml = event.get('volume_ml')
             total_ml = event.get('total_ml')
             try:
-                # Let the central show_coin_popup persist and display the event.
+                # suppress if we just processed COIN_INSERTED
+                now = time.time()
+                last = self._last_coin_ts.get(uid, 0)
+                if now - last < 1.0:
+                    return
+            except Exception:
+                pass
+            try:
+                added = int(added_ml) if added_ml is not None else 0
+            except Exception:
                 try:
-                    self.controller.show_coin_popup(uid=uid, peso=None, added_ml=added_ml, total_ml=total_ml)
+                    added = int(re.search(r"(\d+)", str(added_ml or '')).group(1))
                 except Exception:
-                    pass
+                    added = 0
+            try:
+                if uid:
+                    user = read_user(uid) or {}
+                    if user.get('type') == 'member':
+                        cur = user.get('water_balance') or 0
+                        write_user(uid, {'water_balance': cur + added})
+                    else:
+                        cur = user.get('temp_water_time') or 0
+                        write_user(uid, {'temp_water_time': cur + added})
+                    try:
+                        self.refresh()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                self.total_credit += added
+            except Exception:
+                pass
+            try:
+                self.controller.show_coin_popup(uid=uid, peso=None, added_ml=added, total_ml=total_ml)
+            except Exception:
+                pass
+            try:
+                self.controller.show_totals_popup(uid=uid, total_coins=self.total_coins, total_credit_ml=self.total_credit)
             except Exception:
                 pass
             return
@@ -2500,6 +2635,24 @@ class WaterScreen(tk.Frame):
         if event_type == 'DISPENSING_DONE':
             total_ml = event.get('total_ml', 0)
             print(f"INFO: WaterScreen - Dispensing complete: {total_ml} ml")
+            try:
+                if uid:
+                    # clear remaining credit in DB
+                    user = read_user(uid) or {}
+                    if user.get('type') == 'member':
+                        write_user(uid, {'water_balance': 0})
+                    else:
+                        write_user(uid, {'temp_water_time': 0})
+                    try:
+                        self.refresh()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                self.reset_totals()
+            except Exception:
+                pass
             return
 
 

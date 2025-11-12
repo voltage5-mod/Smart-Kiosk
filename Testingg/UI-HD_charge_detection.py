@@ -61,6 +61,10 @@ UNPLUG_CONFIRM_WINDOW = 2.0
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
 
+# Coin to ml mapping (water). Keep this separate from COIN_MAP which is for charging.
+# Per user request: 1P = 50 mL, 5P = 250 mL, 10P = 500 mL
+WATER_COIN_MAP = {1: 50, 5: 250, 10: 500}
+
 # Default starting balances for newly registered members (seconds)
 DEFAULT_WATER_BAL = 600   # 10 min
 DEFAULT_CHARGE_BAL = 1200 # 20 min
@@ -357,8 +361,15 @@ def seconds_to_min_display(sec):
 def water_seconds_to_liters(sec):
     if sec is None:
         return "N/A"
-    liters = sec / WATER_SECONDS_PER_LITER
-    return f"{liters:.1f} L"
+    # Historically this function converted 'seconds' -> liters. The app now stores
+    # water balances as milliliters (mL). Interpret the input as mL and convert
+    # to liters for display.
+    try:
+        ml = float(sec or 0)
+        liters = ml / 1000.0
+        return f"{liters:.2f} L"
+    except Exception:
+        return "N/A"
 
 # ----------------- Tkinter UI -----------------
 class KioskApp(tk.Tk):
@@ -535,7 +546,12 @@ class KioskApp(tk.Tk):
                         bal = user.get('temp_water_time', 0) if user.get('temp_water_time', None) is not None else rec.get('value', 0)
                     # show liters conversion for readability
                     liters = (bal or 0) / 1000.0
-                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nTotal water volume: {bal} mL (~{liters:.2f} L)"
+                    # rec['amount'] is the total peso inserted; ensure it's an int
+                    try:
+                        peso_total = int(rec.get('amount', 0))
+                    except Exception:
+                        peso_total = rec.get('amount', 0)
+                    msg = f"Coins inserted: ₱{peso_total}\nTotal water volume: {bal} mL (~{liters:.2f} L)"
                 elif active in ('ChargingScreen', 'SlotSelectScreen'):
                     bal = user.get('charge_balance', 0) or 0
                     mins = bal // 60
@@ -2269,7 +2285,8 @@ class WaterScreen(tk.Frame):
                     except Exception:
                         pass
                     try:
-                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                        # prefer explicit ml when present; otherwise map peso -> ml using WATER_COIN_MAP
+                        seconds_like = add_ml if add_ml is not None else WATER_COIN_MAP.get(peso, 0)
                         self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
                     except Exception:
                         pass
@@ -2278,15 +2295,29 @@ class WaterScreen(tk.Frame):
                 m2 = re.search(r"COIN_WATER\s+(\d+)", raw_str)
                 if m2:
                     total_ml = int(m2.group(1))
-                    # we don't know coin peso exactly from this token, assume caller will reconcile; treat as 1P nominal
-                    peso = 1
                     add_ml = total_ml  # best-effort
+                    # try to infer peso from the ml value using WATER_COIN_MAP (exact match or nearest)
+                    try:
+                        inv = {v: k for k, v in WATER_COIN_MAP.items()}
+                        peso = inv.get(add_ml)
+                        if peso is None:
+                            # pick nearest
+                            closest = None
+                            best_diff = None
+                            for p, m in WATER_COIN_MAP.items():
+                                d = abs(m - add_ml)
+                                if best_diff is None or d < best_diff:
+                                    best_diff = d
+                                    closest = p
+                            peso = closest or 1
+                    except Exception:
+                        peso = 1
                     try:
                         self.insert_coin_water(peso, record=False)
                     except Exception:
                         pass
                     try:
-                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                        seconds_like = add_ml if add_ml is not None else WATER_COIN_MAP.get(peso, 0)
                         self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
                     except Exception:
                         pass
@@ -2309,21 +2340,33 @@ class WaterScreen(tk.Frame):
         if event_type == "COIN_INSERTED":
             # Arduino detected coin insertion. Prefer explicit volume_ml when present.
             add_ml = event.get('volume_ml', None)
-            peso = event.get('peso', None) or 1
-            # If parser provided ml use it; otherwise map peso to ml via coin mapping
+            peso = event.get('peso', None)
+            # If parser did not provide ml, map peso -> ml using WATER_COIN_MAP
             if add_ml is None:
-                # Map pesos to ml using the sketch's coin mapping (1->100,5->500,10->1000)
                 try:
-                    if peso == 1:
-                        add_ml = 100
-                    elif peso == 5:
-                        add_ml = 500
-                    elif peso == 10:
-                        add_ml = 1000
+                    if peso in (1, 5, 10):
+                        add_ml = WATER_COIN_MAP.get(peso, 0)
                     else:
                         add_ml = 0
                 except Exception:
                     add_ml = 0
+            # If peso was not provided but ml is present, try to infer peso by matching known ml values
+            if (peso is None or peso == 0) and add_ml:
+                try:
+                    inv = {v: k for k, v in WATER_COIN_MAP.items()}
+                    peso = inv.get(add_ml)
+                    if peso is None:
+                        # fallback: choose the nearest peso by ml distance
+                        closest = None
+                        best_diff = None
+                        for p, m in WATER_COIN_MAP.items():
+                            d = abs(m - add_ml)
+                            if best_diff is None or d < best_diff:
+                                best_diff = d
+                                closest = p
+                        peso = closest or 1
+                except Exception:
+                    peso = 1
             # persist the added ml to DB for members or temp for non-members
             try:
                 uid = self.controller.active_uid
@@ -2347,8 +2390,11 @@ class WaterScreen(tk.Frame):
                 pass
             # notify controller/UI about inserted coin so popup appears
             try:
-                # for popup, pass ml as the generic 'value' parameter
-                self.controller.record_coin_insert(self.controller.active_uid, peso, add_ml)
+                # for popup, pass peso (amount) and ml (value)
+                try:
+                    self.controller.record_coin_insert(self.controller.active_uid, peso or 0, add_ml or 0)
+                except Exception:
+                    pass
             except Exception:
                 pass
         

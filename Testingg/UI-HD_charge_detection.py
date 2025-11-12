@@ -1445,6 +1445,14 @@ class ChargingScreen(tk.Frame):
             self.user_info.refresh()
         except Exception:
             pass
+        # If this screen is shown fresh, ensure session totals are initialized
+        try:
+            if not hasattr(self, 'total_coins'):
+                self.total_coins = 0
+            if not hasattr(self, 'total_credit'):
+                self.total_credit = 0
+        except Exception:
+            pass
         if uid:
             user = read_user(uid)
             cb = user.get("charge_balance", 0) or 0
@@ -2495,6 +2503,14 @@ class WaterScreen(tk.Frame):
                 pass
         self.refresh()
 
+    def reset_totals(self):
+        """Reset per-session totals (coins and credited ml)."""
+        try:
+            self.total_coins = 0
+            self.total_credit = 0
+        except Exception:
+            pass
+
     def place_cup(self):
         uid = self.controller.active_uid
         if not uid:
@@ -2664,6 +2680,11 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             print("INFO: No cup detected. Water session ended.")
+            # reset session totals so next session starts fresh
+            try:
+                self.reset_totals()
+            except Exception:
+                pass
             self.controller.show_frame(MainScreen)
             return
         # re-schedule the check and store handle
@@ -2718,6 +2739,11 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             self._water_nocup_job = None
+        # reset totals for this session
+        try:
+            self.reset_totals()
+        except Exception:
+            pass
         print("INFO: Water session stopped.")
         self.controller.show_frame(MainScreen)
 

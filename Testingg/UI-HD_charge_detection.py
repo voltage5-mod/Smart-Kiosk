@@ -13,7 +13,6 @@ from firebase_admin import credentials, db
 import time
 import json
 import os
-import re
 from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
 # hardware integration
 from hardware_gpio import HardwareGPIO
@@ -428,42 +427,17 @@ class KioskApp(tk.Tk):
         # Initialize ArduinoListener for water service hardware integration
         try:
             from arduino_listener import ArduinoListener
-            # Priority: environment variable ARDUINO_PORT -> pinmap.json arduino_usb -> fallback -> simulate
-            env_port = os.getenv('ARDUINO_PORT', None)
-            if env_port:
-                arduino_port = env_port
-                arduino_baud = int(os.getenv('ARDUINO_BAUD', '115200'))
-                self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
-                self.arduino_listener.start()
-                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from ARDUINO_PORT env)")
-            elif _pinmap and _pinmap.get('arduino_usb'):
+            if _pinmap and _pinmap.get('arduino_usb'):
                 arduino_port = _pinmap.get('arduino_usb', '/dev/ttyUSB0')
                 arduino_baud = _pinmap.get('arduino_baud', 115200)
                 self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
                 self.arduino_listener.start()
-                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (from pinmap)")
+                print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud")
             else:
-                # Try common device names before falling back to simulation
-                guessed = None
-                for p in ['/dev/ttyACM0', '/dev/ttyUSB0']:
-                    try:
-                        # don't attempt to open here, just check existence
-                        if os.path.exists(p):
-                            guessed = p
-                            break
-                    except Exception:
-                        pass
-                if guessed:
-                    arduino_port = guessed
-                    arduino_baud = 115200
-                    self.arduino_listener = ArduinoListener(port=arduino_port, baud=arduino_baud, simulate=False)
-                    self.arduino_listener.start()
-                    print(f"INFO: ArduinoListener started on {arduino_port} @ {arduino_baud} baud (auto-detected)")
-                else:
-                    # Simulate mode if no pinmap or arduino_usb not configured
-                    self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
-                    self.arduino_listener.start()
-                    print("INFO: ArduinoListener running in simulate mode")
+                # Simulate mode if no pinmap or arduino_usb not configured
+                self.arduino_listener = ArduinoListener(port=None, baud=115200, simulate=True)
+                self.arduino_listener.start()
+                print("INFO: ArduinoListener running in simulate mode")
         except ImportError:
             print("WARN: arduino_listener module not found; water service will use simulation buttons only")
             self.arduino_listener = None
@@ -510,87 +484,20 @@ class KioskApp(tk.Tk):
             pass
 
     def record_coin_insert(self, uid, amount, seconds):
-        # Run UI-updates and popup on the Tk main loop to avoid thread issues
-        def _handle():
-            try:
-                # track recent coin inserts for display
-                rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0, 'amount': 0})
-                rec['coins'] += 1
-                rec['seconds'] += seconds
-                rec['amount'] += amount
-                self.coin_counters[uid] = rec
-            except Exception:
-                rec = {'coins': 0, 'seconds': 0, 'amount': 0}
-            # show a small popup summarizing the inserted coins and current balance for the active service
-            try:
-                user = read_user(uid) or {}
-                # determine active service screen
-                active = getattr(self, 'current_frame', None)
-                if active == 'WaterScreen':
-                    # water balance: members use water_balance, non-members use temp_water_time
-                    if user.get('type') == 'member':
-                        bal = user.get('water_balance', 0) or 0
-                    else:
-                        bal = user.get('temp_water_time', 0) or rec.get('seconds', 0)
-                    # show liters conversion for readability
-                    liters = bal / WATER_SECONDS_PER_LITER
-                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nTotal water time: {bal} s (~{liters:.2f} L)"
-                elif active in ('ChargingScreen', 'SlotSelectScreen'):
-                    bal = user.get('charge_balance', 0) or 0
-                    mins = bal // 60
-                    secs = bal % 60
-                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nCharging balance: {mins}m {secs}s"
-                else:
-                    # fallback: show both balances
-                    wbal = user.get('water_balance', 0) or 0
-                    cbal = user.get('charge_balance', 0) or 0
-                    msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
-                           f"Water time: {wbal} s\nCharging time: {cbal} s")
-                try:
-                    messagebox.showinfo("Coin Inserted", msg)
-                except Exception:
-                    print(f"INFO: Coin Inserted popup: {msg}")
-            except Exception:
-                pass
-
+        # track recent coin inserts for display
         try:
-            # schedule on main thread
-            try:
-                self.after(0, _handle)
-            except Exception:
-                # if after isn't available, run directly
-                _handle()
+            rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0})
+            rec['coins'] += 1
+            rec['seconds'] += seconds
+            self.coin_counters[uid] = rec
         except Exception:
             pass
+        self.show_frame(ScanScreen)
 
     def show_frame(self, cls):
-        # record current frame name for context (used by coin popups)
-        try:
-            self.current_frame = cls.__name__
-        except Exception:
-            self.current_frame = None
         frame = self.frames[cls]
         if hasattr(frame, "refresh"):
             frame.refresh()
-        # If switching to hardware-backed screens, notify Arduino to switch mode
-        try:
-            al = getattr(self, 'arduino_listener', None)
-            if al is not None:
-                # Water screen -> MODE WATER, Charging flow -> MODE CHARGE
-                if cls.__name__ == 'WaterScreen':
-                    try:
-                        al.send_command('MODE WATER')
-                        print('INFO: Sent MODE WATER to Arduino')
-                    except Exception:
-                        pass
-                elif cls.__name__ in ('SlotSelectScreen', 'ChargingScreen'):
-                    try:
-                        al.send_command('MODE CHARGE')
-                        print('INFO: Sent MODE CHARGE to Arduino')
-                    except Exception:
-                        pass
-        except Exception:
-            pass
         frame.tkraise()
     
     def cleanup(self):
@@ -1103,42 +1010,33 @@ class SlotSelectScreen(tk.Frame):
         for i in range(1, 5):
             key = f"slot{i}"
             slot = read_slot(key)
-            # Default values
-            text = f"Slot {i}\nFree"
-            color = "#2ecc71"  # green for free
-            try:
-                if slot is None:
-                    # keep defaults
-                    pass
-                else:
-                    status = slot.get("status", "inactive")
-                    cur = slot.get("current_user", "none")
-                    uid = self.controller.active_uid
-                    if cur != "none":
-                        # assigned to someone
-                        if cur == uid:
-                            # assigned to current user
-                            text = f"Slot {i}\nIn Use"
-                            color = "#95a5a6"  # neutral
-                        else:
-                            text = f"Slot {i}\nOccupied"
-                            color = "#e74c3c"  # red
-                    else:
-                        # no current_user assigned
-                        if status == "active":
-                            text = f"Slot {i}\nIn Use"
-                            color = "#e74c3c"
-                        else:
-                            text = f"Slot {i}\nFree"
-                            color = "#2ecc71"
-            except Exception:
-                # on any error keep defaults
+            if slot is None:
                 text = f"Slot {i}\nFree"
                 color = "#2ecc71"
-            try:
-                self.slot_buttons[key].config(text=text, bg=color)
-            except Exception:
-                pass
+            else:
+                status = slot.get("status", "inactive")
+                cur = slot.get("current_user", "none")
+                uid = self.controller.active_uid
+                # If slot is assigned to someone
+                if cur != "none":
+                    if cur == uid:
+                        # The logged-in user owns this slot -> show as in use (no special highlight)
+                        text = f"Slot {i}\nIn Use"
+                        # use neutral color (same as disabled/neutral) instead of yellow
+                        color = "#95a5a6"
+                    else:
+                        # Other users see it as occupied (red)
+                        text = f"Slot {i}\nOccupied"
+                        color = "#e74c3c"
+                else:
+                    # no current_user assigned; reflect active status as red In Use
+                    if status == "active":
+                        text = f"Slot {i}\nIn Use"
+                        color = "#e74c3c"
+                    else:
+                        text = f"Slot {i}\nFree"
+                        color = "#2ecc71"
+            self.slot_buttons[key].config(text=text, bg=color)
         # show coin status for current user if any
         try:
             uid = self.controller.active_uid
@@ -2149,10 +2047,10 @@ class WaterScreen(tk.Frame):
         # Hardware active indicator
         hw = getattr(self.controller, 'hw', None)
         hw_present = hw is not None
-        self.hw_label = tk.Label(body,
-                                 text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
-                                 fg="#27ae60" if hw_present else "#f39c12", bg="#2980b9", font=("Arial", 12))
-        self.hw_label.pack(pady=4)
+        hw_label = tk.Label(body, 
+                           text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
+                           fg="#27ae60" if hw_present else "#f39c12", bg="#2980b9", font=("Arial", 12))
+        hw_label.pack(pady=4)
 
         # Control buttons
         btn_frame = tk.Frame(body, bg="#2980b9")
@@ -2195,16 +2093,6 @@ class WaterScreen(tk.Frame):
             self.user_info.refresh()
         except Exception:
             pass
-        # update hardware-present indicator in case hw was initialized after screen creation
-        try:
-            hw = getattr(self.controller, 'hw', None)
-            hw_present = hw is not None
-            self.hw_label.config(
-                text="🔗 Hardware sensors active" if hw_present else "⚠ Simulation mode (no hardware)",
-                fg="#27ae60" if hw_present else "#f39c12"
-            )
-        except Exception:
-            pass
         uid = self.controller.active_uid
         if not uid:
             self.time_var.set("0")
@@ -2245,88 +2133,14 @@ class WaterScreen(tk.Frame):
             return
         
         event_type = event.get("event")
-        # show raw content for debugging when parsing falls back to RAW
-        raw = event.get('raw')
-        if event_type == 'RAW':
-            print(f"INFO: WaterScreen - Arduino event: RAW for user {uid} - raw='{raw}'")
-            # Attempt to recover coin events from raw Arduino lines if parser fell back to RAW
-            try:
-                raw_str = (raw or '')
-                # human-friendly coin message: "Coin inserted: 5P added 500mL, new total: 500"
-                m = re.search(r"Coin inserted:\s*(\d+)P", raw_str)
-                if m:
-                    peso = int(m.group(1))
-                    # volume if present
-                    vm = re.search(r"added\s*(\d+)mL", raw_str)
-                    add_ml = int(vm.group(1)) if vm else None
-                    print(f"INFO: WaterScreen - parsed coin from RAW: {peso}P, add_ml={add_ml}")
-                    try:
-                        self.insert_coin_water(peso, record=False)
-                    except Exception:
-                        pass
-                    try:
-                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-                # compact token: COIN_WATER <ml> or COIN_CHARGE <peso>
-                m2 = re.search(r"COIN_WATER\s+(\d+)", raw_str)
-                if m2:
-                    total_ml = int(m2.group(1))
-                    # we don't know coin peso exactly from this token, assume caller will reconcile; treat as 1P nominal
-                    peso = 1
-                    add_ml = total_ml  # best-effort
-                    try:
-                        self.insert_coin_water(peso, record=False)
-                    except Exception:
-                        pass
-                    try:
-                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-                m3 = re.search(r"COIN_CHARGE\s+(\d+)", raw_str)
-                if m3:
-                    peso = int(m3.group(1))
-                    # Charging coins handled elsewhere; notify controller for popup
-                    try:
-                        seconds_like = COIN_MAP.get(peso, 0)
-                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-                    except Exception:
-                        pass
-                    return
-            except Exception:
-                pass
-        else:
-            print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
+        print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         
         if event_type == "COIN_INSERTED":
-            # Arduino detected coin insertion. Try to extract peso from raw message.
-            raw = event.get('raw', '') or ''
-            peso = 1
-            try:
-                m = re.search(r"(\d+)P", raw)
-                if m:
-                    peso = int(m.group(1))
-            except Exception:
-                peso = 1
-            # volume_ml if provided by parser
-            add_ml = event.get('volume_ml', None)
-            # apply the water credit (don't double-record the coin from insert_coin_water)
-            try:
-                # update DB/state
-                self.insert_coin_water(peso, record=False)
-            except Exception:
-                pass
-            # notify controller/UI about inserted coin so popup appears
-            try:
-                # for popup, pass seconds-like value: prefer ml if available, else map peso via COIN_MAP
-                seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
-                self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
-            except Exception:
-                pass
+            # Arduino detected coin insertion
+            volume_ml = event.get("volume_ml", 0)
+            # Assume ₱1 = 1 volume unit (or map as needed)
+            # For now, treat any coin as ₱1
+            self.insert_coin_water(1)
         
         elif event_type == "CUP_DETECTED":
             # Physical cup placed on sensor
@@ -2342,7 +2156,7 @@ class WaterScreen(tk.Frame):
             print(f"INFO: WaterScreen - Dispensing complete: {total_ml} ml")
 
 
-    def insert_coin_water(self, amount, record=True):
+    def insert_coin_water(self, amount):
         uid = self.controller.active_uid
         if not uid:
             print("WARN: No user; scan first.")
@@ -2358,12 +2172,6 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             print(f"INFO: ₱{amount} added to water balance ({add} sec).")
-            try:
-                # record coin insert for UI popup
-                if record:
-                    self.controller.record_coin_insert(uid, amount, add)
-            except Exception:
-                pass
         else:
             # non-member: add to temp purchase time (persist to DB so it remains across screens)
             # read any existing persisted temp value
@@ -2376,12 +2184,6 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             print(f"INFO: ₱{amount} purchased => {add} seconds water (temporary).")
-            try:
-                # record coin insert for UI popup
-                if record:
-                    self.controller.record_coin_insert(uid, amount, add)
-            except Exception:
-                pass
         self.refresh()
 
     def place_cup(self):
@@ -2479,12 +2281,6 @@ class WaterScreen(tk.Frame):
                         append_audit_log(actor=uid, action='temp_water_expired', meta={'uid': uid})
                     except Exception:
                         pass
-                    # clear any UI coin counters for this uid so next session starts fresh
-                    try:
-                        if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
-                            del self.controller.coin_counters[uid]
-                    except Exception:
-                        pass
             except Exception:
                 pass
             self.temp_water_time = 0
@@ -2544,12 +2340,6 @@ class WaterScreen(tk.Frame):
                     except Exception:
                         pass
                     self.temp_water_time = 0
-                    # clear UI coin counters for this uid so the session doesn't stack
-                    try:
-                        if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
-                            del self.controller.coin_counters[uid]
-                    except Exception:
-                        pass
             except Exception:
                 pass
             print("INFO: No cup detected. Water session ended.")
@@ -2585,12 +2375,6 @@ class WaterScreen(tk.Frame):
             write_user(uid, {"temp_water_time": 0})
             try:
                 append_audit_log(actor=uid, action='reset_temp_water', meta={'uid': uid})
-            except Exception:
-                pass
-            # also clear any UI coin counters so next session starts fresh
-            try:
-                if hasattr(self.controller, 'coin_counters') and uid in self.controller.coin_counters:
-                    del self.controller.coin_counters[uid]
             except Exception:
                 pass
         self.temp_water_time = 0

@@ -2249,6 +2249,56 @@ class WaterScreen(tk.Frame):
         raw = event.get('raw')
         if event_type == 'RAW':
             print(f"INFO: WaterScreen - Arduino event: RAW for user {uid} - raw='{raw}'")
+            # Attempt to recover coin events from raw Arduino lines if parser fell back to RAW
+            try:
+                raw_str = (raw or '')
+                # human-friendly coin message: "Coin inserted: 5P added 500mL, new total: 500"
+                m = re.search(r"Coin inserted:\s*(\d+)P", raw_str)
+                if m:
+                    peso = int(m.group(1))
+                    # volume if present
+                    vm = re.search(r"added\s*(\d+)mL", raw_str)
+                    add_ml = int(vm.group(1)) if vm else None
+                    print(f"INFO: WaterScreen - parsed coin from RAW: {peso}P, add_ml={add_ml}")
+                    try:
+                        self.insert_coin_water(peso, record=False)
+                    except Exception:
+                        pass
+                    try:
+                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
+                    except Exception:
+                        pass
+                    return
+                # compact token: COIN_WATER <ml> or COIN_CHARGE <peso>
+                m2 = re.search(r"COIN_WATER\s+(\d+)", raw_str)
+                if m2:
+                    total_ml = int(m2.group(1))
+                    # we don't know coin peso exactly from this token, assume caller will reconcile; treat as 1P nominal
+                    peso = 1
+                    add_ml = total_ml  # best-effort
+                    try:
+                        self.insert_coin_water(peso, record=False)
+                    except Exception:
+                        pass
+                    try:
+                        seconds_like = add_ml if add_ml is not None else COIN_MAP.get(peso, 0)
+                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
+                    except Exception:
+                        pass
+                    return
+                m3 = re.search(r"COIN_CHARGE\s+(\d+)", raw_str)
+                if m3:
+                    peso = int(m3.group(1))
+                    # Charging coins handled elsewhere; notify controller for popup
+                    try:
+                        seconds_like = COIN_MAP.get(peso, 0)
+                        self.controller.record_coin_insert(self.controller.active_uid, peso, seconds_like)
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
         else:
             print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
         

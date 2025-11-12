@@ -509,17 +509,65 @@ class KioskApp(tk.Tk):
             pass
 
     def record_coin_insert(self, uid, amount, seconds):
-        # track recent coin inserts for display
+        # Run UI-updates and popup on the Tk main loop to avoid thread issues
+        def _handle():
+            try:
+                # track recent coin inserts for display
+                rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0, 'amount': 0})
+                rec['coins'] += 1
+                rec['seconds'] += seconds
+                rec['amount'] += amount
+                self.coin_counters[uid] = rec
+            except Exception:
+                rec = {'coins': 0, 'seconds': 0, 'amount': 0}
+            # show a small popup summarizing the inserted coins and current balance for the active service
+            try:
+                user = read_user(uid) or {}
+                # determine active service screen
+                active = getattr(self, 'current_frame', None)
+                if active == 'WaterScreen':
+                    # water balance: members use water_balance, non-members use temp_water_time
+                    if user.get('type') == 'member':
+                        bal = user.get('water_balance', 0) or 0
+                    else:
+                        bal = user.get('temp_water_time', 0) or rec.get('seconds', 0)
+                    # show liters conversion for readability
+                    liters = bal / WATER_SECONDS_PER_LITER
+                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nTotal water time: {bal} s (~{liters:.2f} L)"
+                elif active in ('ChargingScreen', 'SlotSelectScreen'):
+                    bal = user.get('charge_balance', 0) or 0
+                    mins = bal // 60
+                    secs = bal % 60
+                    msg = f"Coins inserted: ₱{rec.get('amount',0)}\nCharging balance: {mins}m {secs}s"
+                else:
+                    # fallback: show both balances
+                    wbal = user.get('water_balance', 0) or 0
+                    cbal = user.get('charge_balance', 0) or 0
+                    msg = (f"Coins inserted: ₱{rec.get('amount',0)}\n"
+                           f"Water time: {wbal} s\nCharging time: {cbal} s")
+                try:
+                    messagebox.showinfo("Coin Inserted", msg)
+                except Exception:
+                    print(f"INFO: Coin Inserted popup: {msg}")
+            except Exception:
+                pass
+
         try:
-            rec = self.coin_counters.get(uid, {'coins': 0, 'seconds': 0})
-            rec['coins'] += 1
-            rec['seconds'] += seconds
-            self.coin_counters[uid] = rec
+            # schedule on main thread
+            try:
+                self.after(0, _handle)
+            except Exception:
+                # if after isn't available, run directly
+                _handle()
         except Exception:
             pass
-        self.show_frame(ScanScreen)
 
     def show_frame(self, cls):
+        # record current frame name for context (used by coin popups)
+        try:
+            self.current_frame = cls.__name__
+        except Exception:
+            self.current_frame = None
         frame = self.frames[cls]
         if hasattr(frame, "refresh"):
             frame.refresh()
@@ -2231,6 +2279,11 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             print(f"INFO: ₱{amount} added to water balance ({add} sec).")
+            try:
+                # record coin insert for UI popup
+                self.controller.record_coin_insert(uid, amount, add)
+            except Exception:
+                pass
         else:
             # non-member: add to temp purchase time (persist to DB so it remains across screens)
             # read any existing persisted temp value
@@ -2243,6 +2296,11 @@ class WaterScreen(tk.Frame):
             except Exception:
                 pass
             print(f"INFO: ₱{amount} purchased => {add} seconds water (temporary).")
+            try:
+                # record coin insert for UI popup
+                self.controller.record_coin_insert(uid, amount, add)
+            except Exception:
+                pass
         self.refresh()
 
     def place_cup(self):

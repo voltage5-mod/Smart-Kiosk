@@ -9,7 +9,7 @@
 #define VALVE_PIN         7     // Solenoid valve relay
 
 // ---------------- CONSTANTS ----------------
-#define COIN_DEBOUNCE_MS  50
+#define COIN_DEBOUNCE_MS  120
 #define COIN_TIMEOUT_MS   800
 #define INACTIVITY_TIMEOUT 300000 // 5 min
 #define CUP_DISTANCE_CM   10.0

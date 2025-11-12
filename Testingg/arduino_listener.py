@@ -39,6 +39,11 @@ class ArduinoListener(threading.Thread):
         self._stop = threading.Event()
         self._ser = None
         self._lock = threading.Lock()
+        # Track last seen water credit total reported by the Arduino so we can
+        # convert cumulative COIN_WATER reports into a delta (added ml).
+        # This prevents double-crediting when the Arduino prints the new total
+        # immediately after also printing a coin-inserted token.
+        self._last_water_total: Optional[int] = None
         self._callbacks: List[Callable[[Dict[str, Any]], None]] = []
 
     def register_callback(self, cb: Callable[[Dict[str, Any]], None]):
@@ -80,9 +85,24 @@ class ArduinoListener(threading.Thread):
             return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
         m = re.search(r'COIN_WATER\s+(\d+)', line, re.I)
         if m:
-            # Keep COIN_WATER as a distinct event (volume only). Higher layers
-            # may combine this with a prior COIN_INSERTED peso event.
-            return {"event": "COIN_WATER", "volume_ml": int(m.group(1)), "raw": line}
+            # Arduino currently prints the running total credit (creditML)
+            # after adding the coin. To avoid double-crediting on the Pi, we
+            # convert that running total into the delta (added ml) by
+            # subtracting the previously seen total. We still include the
+            # reported total as 'total_ml' for callers that need it.
+            try:
+                total = int(m.group(1))
+            except Exception:
+                return {"event": "COIN_WATER", "volume_ml": None, "raw": line}
+            with self._lock:
+                last = self._last_water_total
+                if last is None:
+                    added = total
+                else:
+                    added = max(0, total - last)
+                # Update last seen total for future delta calculations
+                self._last_water_total = total
+            return {"event": "COIN_WATER", "volume_ml": added, "total_ml": total, "raw": line}
         m = re.search(r'COIN_CHARGE\s+(\d+)', line, re.I)
         if m:
             return {"event": "COIN_CHARGE", "peso": int(m.group(1)), "raw": line}

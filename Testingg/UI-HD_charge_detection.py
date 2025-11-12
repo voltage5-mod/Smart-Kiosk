@@ -2205,6 +2205,9 @@ class WaterScreen(tk.Frame):
         self._water_nocup_job = None
         self._water_db_acc = 0
         self._water_remaining = 0
+        # per-UID timestamp of last processed coin (seconds since epoch)
+        # used to suppress duplicate handling when Arduino emits COIN_INSERTED then COIN_WATER
+        self._last_coin_ts = {}
         
         # Note: Arduino callbacks will be registered by KioskApp.__init__() after ArduinoListener is created
         # This avoids a timing issue where WaterScreen is initialized before ArduinoListener exists
@@ -2336,7 +2339,62 @@ class WaterScreen(tk.Frame):
                 pass
         else:
             print(f"INFO: WaterScreen - Arduino event: {event_type} for user {uid}")
-        
+
+        # COIN_WATER may be emitted separately (volume only). If a COIN_INSERTED
+        # was just processed for this uid, suppress COIN_WATER to avoid double credits.
+        if event_type == "COIN_WATER":
+            add_ml = event.get('volume_ml', None)
+            uid = self.controller.active_uid
+            if not uid:
+                return
+            try:
+                now = time.time()
+                last = self._last_coin_ts.get(uid, 0)
+                if now - last < 1.0:
+                    return
+            except Exception:
+                pass
+            # infer peso by matching known WATER_COIN_MAP values
+            try:
+                inv = {v: k for k, v in WATER_COIN_MAP.items()}
+                peso = inv.get(add_ml)
+                if peso is None:
+                    closest = None
+                    best_diff = None
+                    for p, m in WATER_COIN_MAP.items():
+                        d = abs(m - (add_ml or 0))
+                        if best_diff is None or d < best_diff:
+                            best_diff = d
+                            closest = p
+                    peso = closest or 1
+            except Exception:
+                peso = 1
+            add_ml_canonical = WATER_COIN_MAP.get(peso, add_ml or 0)
+            try:
+                user = read_user(uid) or {}
+                if user.get('type') == 'member':
+                    new = (user.get('water_balance', 0) or 0) + add_ml_canonical
+                    write_user(uid, {"water_balance": new})
+                else:
+                    prev = user.get('temp_water_time', 0) or 0
+                    newtemp = prev + add_ml_canonical
+                    write_user(uid, {"temp_water_time": newtemp})
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                self.controller.record_coin_insert(uid, peso, add_ml_canonical)
+            except Exception:
+                pass
+            try:
+                self._last_coin_ts[uid] = time.time()
+            except Exception:
+                pass
+            return
+
         if event_type == "COIN_INSERTED":
             # Arduino detected coin insertion. Prefer explicit volume_ml when present.
             add_ml = event.get('volume_ml', None)
@@ -2418,16 +2476,17 @@ class WaterScreen(tk.Frame):
             print("WARN: No user; scan first.")
             return
         user = read_user(uid)
-        add = COIN_MAP.get(amount, 0)
+        # map peso -> milliliters for water
+        add = WATER_COIN_MAP.get(amount, 0)
         if user.get("type") == "member":
             # add to member water balance stored in DB
             new = (user.get("water_balance", 0) or 0) + add
             write_user(uid, {"water_balance": new})
             try:
-                append_audit_log(actor=uid, action='insert_coin_water', meta={'amount': amount, 'added_seconds': add, 'new_water_balance': new})
+                append_audit_log(actor=uid, action='insert_coin_water', meta={'amount': amount, 'added_ml': add, 'new_water_balance_ml': new})
             except Exception:
                 pass
-            print(f"INFO: ₱{amount} added to water balance ({add} sec).")
+            print(f"INFO: ₱{amount} added to water balance ({add} mL).")
             try:
                 # record coin insert for UI popup
                 if record:
@@ -2442,10 +2501,10 @@ class WaterScreen(tk.Frame):
             self.temp_water_time = newtemp
             write_user(uid, {"temp_water_time": newtemp})
             try:
-                append_audit_log(actor=uid, action='purchase_water', meta={'amount': amount, 'added_seconds': add, 'new_temp': newtemp})
+                append_audit_log(actor=uid, action='purchase_water', meta={'amount': amount, 'added_ml': add, 'new_temp_ml': newtemp})
             except Exception:
                 pass
-            print(f"INFO: ₱{amount} purchased => {add} seconds water (temporary).")
+            print(f"INFO: ₱{amount} purchased => {add} mL water (temporary).")
             try:
                 # record coin insert for UI popup
                 if record:

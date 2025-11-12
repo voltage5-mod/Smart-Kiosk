@@ -67,6 +67,11 @@ class ArduinoListener(threading.Thread):
             if vol is not None:
                 ev['volume_ml'] = vol
             return ev
+        # COIN_INSERTED token (newer firmware prints this)
+        m_ci = re.search(r'COIN_INSERTED\s+(\d+)', line, re.I)
+        if m_ci:
+            return {"event": "COIN_INSERTED", "peso": int(m_ci.group(1)), "raw": line}
+
         # Simple PULSE line emitted by some Arduino builds to indicate flow pulses
         if re.fullmatch(r'PULSE', line, re.I):
             return {"event": "FLOW_PULSE", "raw": line}
@@ -75,7 +80,9 @@ class ArduinoListener(threading.Thread):
             return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
         m = re.search(r'COIN_WATER\s+(\d+)', line, re.I)
         if m:
-            return {"event": "COIN_INSERTED", "volume_ml": int(m.group(1)), "raw": line}
+            # Keep COIN_WATER as a distinct event (volume only). Higher layers
+            # may combine this with a prior COIN_INSERTED peso event.
+            return {"event": "COIN_WATER", "volume_ml": int(m.group(1)), "raw": line}
         m = re.search(r'COIN_CHARGE\s+(\d+)', line, re.I)
         if m:
             return {"event": "COIN_CHARGE", "peso": int(m.group(1)), "raw": line}

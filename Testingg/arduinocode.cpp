@@ -313,8 +313,8 @@ void resetSystem() {
 /*Added features summary for release notes:
 | **Feature**                          | **Description**                                                                                     |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| 🪙 **`COIN_INSERTED` signal**        | Sent immediately when a coin is recognized (before crediting)                                       |
-| 💬 **Clearer serial protocol**       | Every message starts with an event keyword (e.g., `COIN_`, `CUP_`, `DISPENSE_`, `CREDIT_`, `MODE:`) |
-| ⚙️ **`currentMode` variable**        | Responds to `MODE WATER` / `MODE CHARGE` from Pi                                                    |
-| 💡 **Improved serial event clarity** | Each stage of water dispensing sends a single, readable line to the Pi                              |
-| 🔄 **Consistent EEPROM handling**    | Keeps calibrated coin values persistent                                                             |
+| **`COIN_INSERTED` signal**        | Sent immediately when a coin is recognized (before crediting)                                       |
+| **Clearer serial protocol**       | Every message starts with an event keyword (e.g., `COIN_`, `CUP_`, `DISPENSE_`, `CREDIT_`, `MODE:`) |
+| **`currentMode` variable**        | Responds to `MODE WATER` / `MODE CHARGE` from Pi                                                    |
+| **Improved serial event clarity** | Each stage of water dispensing sends a single, readable line to the Pi                              |
+| **Consistent EEPROM handling**    | Keeps calibrated coin values persistent       */                                                      |

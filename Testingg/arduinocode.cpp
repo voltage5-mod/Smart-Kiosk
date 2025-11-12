@@ -290,23 +290,41 @@ void handleCoin() {
     else if (abs(pulses - coin5P_pulses) <= 1) { peso = 5; ml = 500; }
     else if (abs(pulses - coin10P_pulses) <= 1) { peso = 10; ml = 1000; }
     else {
+      Serial.print("[DEBUG] Unknown coin pattern: ");
+      Serial.println(pulses);
       Serial.print("UNKNOWN_COIN "); Serial.println(pulses);
       return;
     }
 
-    // 🆕 New: notify Pi that coin was physically inserted
+    // 🪙 Human-readable debug log
+    Serial.print("[DEBUG] Coin inserted: ₱");
+    Serial.println(peso);
+
+    // 🧠 Signal to Pi
     Serial.print("COIN_INSERTED "); Serial.println(peso);
 
     if (currentMode == WATER_MODE) {
       creditML += ml;
+
+      // Machine-readable signal for Pi
       Serial.print("COIN_WATER "); Serial.println(ml);
-    } else if (currentMode == CHARGE_MODE) {
+
+      // Human-readable for Serial Monitor
+      Serial.print("[DEBUG] Credit added: ");
+      Serial.print(ml);
+      Serial.println(" mL");
+    } 
+    else if (currentMode == CHARGE_MODE) {
       Serial.print("COIN_CHARGE "); Serial.println(peso);
+
+      Serial.print("[DEBUG] Charging credit added: ₱");
+      Serial.println(peso);
     }
 
     lastActivity = millis();
   }
 }
+
 
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {

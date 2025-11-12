@@ -1,0 +1,80 @@
+
+---
+
+## 🔌 Pin Connections (Arduino Side)
+
+| Arduino Pin | Component | Description |
+|--------------|------------|--------------|
+| D2 | Coin Acceptor | Pulse input (interrupt) |
+| D3 | Flow Sensor (YF-S201) | Pulse input (interrupt) |
+| D7 | Solenoid Valve Relay | Controls water output |
+| D8 | Pump Relay | Controls mini water pump |
+| D9 | Ultrasonic Trigger | HC-SR04 trigger |
+| D10 | Ultrasonic Echo | HC-SR04 echo |
+| GND | Common Ground | Must be shared with Pi |
+| 5V | Relay module VCC | Common supply line |
+
+---
+
+## 🔁 Serial Communication
+
+### 🧠 From Arduino → Raspberry Pi
+
+| Event | Example Message | Meaning |
+|--------|------------------|---------|
+| Startup | `System Ready. Waiting for Pi signal...` | Arduino initialized |
+| Mode confirmed | `MODE: WATER` | Current mode active |
+| Coin detected | `COIN_INSERTED 5` | Physical coin recognized |
+| Credit applied | `COIN_WATER 500` or `COIN_CHARGE 10` | Coin value assigned |
+| Cup detected | `CUP_DETECTED` | Cup in range |
+| Dispensing start | `DISPENSE_START` | Pump and valve on |
+| Dispensing progress | `DISPENSE_PROGRESS ml=400 remaining=100` | Live update |
+| Dispensing complete | `DISPENSE_DONE 500.0` | Completed dispensing |
+| Cup removed mid-dispense | `CREDIT_LEFT 150` | Remaining balance |
+| Reset | `System reset.` | System cleared |
+
+---
+
+### 🧭 From Raspberry Pi → Arduino
+
+| Command | Description |
+|----------|--------------|
+| `MODE WATER` | Enable water logic |
+| `MODE CHARGE` | Enable charge logic |
+| `CAL` | Begin coin calibration |
+| `FLOWCAL` | Begin flow calibration |
+| `RESET` | Stop and clear |
+| `STATUS` | Print current values |
+
+---
+
+## 🔄 Event Flow Example — Water Mode
+
+1. Pi sends `MODE WATER`
+2. Arduino replies `MODE: WATER`
+3. User inserts ₱5 coin →  
+   `COIN_INSERTED 5`  
+   `COIN_WATER 500`
+4. Cup detected → `CUP_DETECTED`
+5. Dispensing → `DISPENSE_START`
+6. Progress updates every ~100 pulses
+7. Dispense complete → `DISPENSE_DONE 500.0`
+
+---
+
+## ✅ Integration Notes
+
+- The **Pi must listen continuously** via `/dev/ttyUSB0` or `/dev/ttyACM0` at **115200 baud**.
+- All messages end with `\n`, suitable for `.readline()` parsing.
+- The Pi’s `ArduinoListener` should trigger:
+  - Popup on `COIN_INSERTED`
+  - Credit update on `COIN_WATER` / `COIN_CHARGE`
+  - Balance updates on `CREDIT_LEFT` or `DISPENSE_DONE`
+- Always share **GND** between Pi and Arduino.
+- Use **optocouplers or relay isolation** for solenoid/pump.
+
+---
+
+**Author:** VoltageV (Cedrick L.)  
+**Project:** Solar-Powered Smart Vending & Charging Kiosk  
+**Version:** Arduino Integration Final — November 2025

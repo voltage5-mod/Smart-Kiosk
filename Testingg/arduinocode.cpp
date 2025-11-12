@@ -1,3 +1,94 @@
+/*
+=====================================================================
+ arduinocode.cpp - Smart Solar Kiosk Water Vending Subsystem
+ Version: Final Integrated Build (Arduino–Raspberry Pi)
+ Date: November 2025
+=====================================================================
+
+⚙️ PURPOSE:
+This firmware controls the water vending subsystem of the Smart Solar Kiosk.
+It interfaces with the Raspberry Pi via Serial (USB), and manages:
+ - Coin acceptor pulse input
+ - Water flow sensor (YF-S201)
+ - Ultrasonic cup detection
+ - Pump and solenoid valve relays
+ - EEPROM calibration for coins and flow rate
+ - Real-time feedback via Serial for Pi UI updates
+
+=====================================================================
+🔄 NEW CHANGES FROM PREVIOUS VERSION:
+=====================================================================
+🆕 1. Added "COIN_INSERTED" event
+    → Sent immediately when a coin is recognized (before crediting).
+    → Allows Raspberry Pi to trigger instant popup window.
+
+🆕 2. Added "currentMode" variable and Serial control:
+    → Pi can send "MODE WATER" or "MODE CHARGE".
+    → Controls logic for credit computation and messaging.
+
+🆕 3. Expanded serial protocol:
+    → All system messages standardized into clear event types.
+    → Example events:
+       - COIN_INSERTED 5
+       - COIN_WATER 500
+       - COIN_CHARGE 10
+       - CUP_DETECTED
+       - DISPENSE_START / DISPENSE_DONE
+       - CREDIT_LEFT 150
+
+🆕 4. Improved calibration reporting:
+    → Outputs "CAL_DONE 1=1 5=3 10=5" for verification.
+
+🆕 5. Enhanced safety and clarity:
+    → Ensures solenoid/pump off during idle/reset.
+    → Flow and coin timeouts for noise immunity.
+
+=====================================================================
+🔗 SERIAL COMMUNICATION SUMMARY:
+=====================================================================
+Arduino → Pi messages (examples):
+
+  - COIN_INSERTED 5          → physical coin detected
+  - COIN_WATER 500           → +500mL credit (WATER mode)
+  - COIN_CHARGE 10           → ₱10 for charging (CHARGE mode)
+  - CUP_DETECTED             → cup placed under nozzle
+  - DISPENSE_START           → water dispensing started
+  - DISPENSE_PROGRESS ml=300 remaining=200
+  - DISPENSE_DONE 500.0      → complete
+  - CREDIT_LEFT 150          → unused mL balance after removal
+  - MODE: WATER              → confirmation after Pi command
+  - SYSTEM_RESET             → after RESET
+
+Pi → Arduino commands:
+
+  - MODE WATER
+  - MODE CHARGE
+  - RESET
+  - STATUS
+  - CAL
+  - FLOWCAL
+
+=====================================================================
+WIRING SUMMARY:
+=====================================================================
+Arduino Pin  →  Component              →  Notes
+---------------------------------------------------------------------
+D2           →  Coin Acceptor Signal   →  5V logic pulse (interrupt)
+D3           →  Flow Sensor (YF-S201)  →  5V pulse output (interrupt)
+D7           →  Solenoid Valve Relay   →  Active HIGH
+D8           →  Pump Relay             →  Active HIGH
+D9           →  Ultrasonic Trigger     →  HC-SR04 TRIG
+D10          →  Ultrasonic Echo        →  HC-SR04 ECHO
+GND          →  Common Ground with Pi  →  Required for serial logic
+VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
+
+=====================================================================
+ Author: VoltageV (Cedrick L.)
+ Collaborators: R4A_EUC / Smart Kiosk Group 2
+=====================================================================
+*/
+
+
 #include <EEPROM.h>
 
 // ---------------- PIN DEFINITIONS ----------------
@@ -309,12 +400,3 @@ void resetSystem() {
   lastActivity = millis();
 }
 
-
-/*Added features summary for release notes:
-| **Feature**                          | **Description**                                                                                     |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| **`COIN_INSERTED` signal**        | Sent immediately when a coin is recognized (before crediting)                                       |
-| **Clearer serial protocol**       | Every message starts with an event keyword (e.g., `COIN_`, `CUP_`, `DISPENSE_`, `CREDIT_`, `MODE:`) |
-| **`currentMode` variable**        | Responds to `MODE WATER` / `MODE CHARGE` from Pi                                                    |
-| **Improved serial event clarity** | Each stage of water dispensing sends a single, readable line to the Pi                              |
-| **Consistent EEPROM handling**    | Keeps calibrated coin values persistent       */                                                      |

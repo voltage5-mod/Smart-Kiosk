@@ -66,38 +66,81 @@ def test_relays(hw: HardwareGPIO, pinmap: Dict[str, Any], args: argparse.Namespa
     lock_map = pinmap.get('lock_relay') or {}
     pump = pinmap.get('pump_relay')
 
-    relays = []
-    for name, pin in power_map.items():
-        relays.append(('power', name, pin))
-    for name, pin in lock_map.items():
-        relays.append(('lock', name, pin))
+    # Test POWER relays
+    if power_map:
+        print('\n--- Power Relays ---')
+        for name, pin in power_map.items():
+            print(f"\nFound power relay: {name} (pin {pin})")
+            if args.dry_run:
+                continue
+            should_run = args.auto or args.yes or confirm(f"Toggle power relay {name} (pin {pin}) now?")
+            if not should_run:
+                print('Skipping')
+                continue
+            try:
+                print('-> TURNING ON')
+                hw.relay_on(name)
+                time.sleep(args.hold)
+            except Exception as e:
+                print('relay_on failed:', e)
+            try:
+                print('-> TURNING OFF')
+                hw.relay_off(name)
+                time.sleep(0.3)
+            except Exception as e:
+                print('relay_off failed:', e)
+    else:
+        print('No power_relay entries found in pinmap.json')
+
+    # Test LOCK relays (using direct pin, NOT relay_on/relay_off which map via pinmap)
+    if lock_map:
+        print('\n--- Lock Relays ---')
+        for name, pin in lock_map.items():
+            print(f"\nFound lock relay: {name} (pin {pin})")
+            if args.dry_run:
+                continue
+            should_run = args.auto or args.yes or confirm(f"Toggle lock relay {name} (pin {pin}) now?")
+            if not should_run:
+                print('Skipping')
+                continue
+            try:
+                print('-> TURNING ON (lock)')
+                hw.relay_on(pin)  # Pass direct pin, not name
+                time.sleep(args.hold)
+            except Exception as e:
+                print('relay_on failed:', e)
+            try:
+                print('-> TURNING OFF (unlock)')
+                hw.relay_off(pin)  # Pass direct pin, not name
+                time.sleep(0.3)
+            except Exception as e:
+                print('relay_off failed:', e)
+    else:
+        print('No lock_relay entries found in pinmap.json')
+
+    # Test PUMP relay
     if pump is not None:
-        relays.append(('pump', 'pump_relay', pump))
-
-    if not relays:
-        print('No relays found in pinmap.json')
-        return
-
-    for kind, name, pin in relays:
-        print(f"\nFound relay: kind={kind} name={name} pin={pin}")
-        if args.dry_run:
-            continue
-        should_run = args.auto or args.yes or confirm(f"Toggle relay {name} (pin {pin}) now?")
-        if not should_run:
-            print('Skipping')
-            continue
-        try:
-            print('-> TURNING ON')
-            hw.relay_on(name)
-            time.sleep(args.hold)
-        except Exception as e:
-            print('relay_on failed:', e)
-        try:
-            print('-> TURNING OFF')
-            hw.relay_off(name)
-            time.sleep(0.3)
-        except Exception as e:
-            print('relay_off failed:', e)
+        print('\n--- Pump Relay ---')
+        print(f"\nFound pump relay (pin {pump})")
+        if not args.dry_run:
+            should_run = args.auto or args.yes or confirm(f"Toggle pump relay (pin {pump}) now?")
+            if should_run:
+                try:
+                    print('-> TURNING ON')
+                    hw.relay_on(pump)
+                    time.sleep(args.hold)
+                except Exception as e:
+                    print('relay_on failed:', e)
+                try:
+                    print('-> TURNING OFF')
+                    hw.relay_off(pump)
+                    time.sleep(0.3)
+                except Exception as e:
+                    print('relay_off failed:', e)
+            else:
+                print('Skipping')
+    else:
+        print('No pump_relay entry found in pinmap.json')
 
 
 def test_sensors(hw: HardwareGPIO, pinmap: Dict[str, Any], args: argparse.Namespace):

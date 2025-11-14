@@ -281,47 +281,53 @@ void stopDispenseEarly() {
 void handleCoin() {
   if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
     int pulses = coinPulseCount;
-    coinPulseCount = 0;
-
+    
+    //  FIX: Validate BEFORE resetting
     int peso = 0;
     int ml = 0;
+    bool validCoin = false;
 
-    if (abs(pulses - coin1P_pulses) <= 1) { peso = 1; ml = 50; }
-    else if (abs(pulses - coin5P_pulses) <= 1) { peso = 5; ml = 250; }
-    else if (abs(pulses - coin10P_pulses) <= 1) { peso = 10; ml = 500; }
-    else {
+    if (abs(pulses - coin1P_pulses) <= 1) { 
+      peso = 1; ml = 50; validCoin = true; 
+    }
+    else if (abs(pulses - coin5P_pulses) <= 1) { 
+      peso = 5; ml = 250; validCoin = true; 
+    }
+    else if (abs(pulses - coin10P_pulses) <= 1) { 
+      peso = 10; ml = 500; validCoin = true; 
+    }
+
+    //  FIX: Only reset if it's a valid coin
+    if (validCoin) {
+      coinPulseCount = 0;  // Reset only for valid coins
+      
+      Serial.print("[DEBUG] Coin inserted: ₱");
+      Serial.println(peso);
+      Serial.print("COIN_INSERTED "); Serial.println(peso);
+
+      if (currentMode == WATER_MODE) {
+        creditML += ml;
+        Serial.print("COIN_WATER "); Serial.println(ml);
+        Serial.print("[DEBUG] Credit added: ");
+        Serial.print(ml);
+        Serial.println(" mL");
+      } 
+      else if (currentMode == CHARGE_MODE) {
+        Serial.print("COIN_CHARGE "); Serial.println(peso);
+        Serial.print("[DEBUG] Charging credit added: ₱");
+        Serial.println(peso);
+      }
+      lastActivity = millis();
+    } else {
+      //  FIX: For invalid coins, decrement instead of resetting to 0
+      // This allows real coins to still be detected if noise pulses accumulate
+      if (coinPulseCount > 0) {
+        coinPulseCount--;  // Gradually reduce noise pulses
+      }
       Serial.print("[DEBUG] Unknown coin pattern: ");
       Serial.println(pulses);
       Serial.print("UNKNOWN_COIN "); Serial.println(pulses);
-      return;
     }
-
-    // 🪙 Human-readable debug log
-    Serial.print("[DEBUG] Coin inserted: ₱");
-    Serial.println(peso);
-
-    // 🧠 Signal to Pi
-    Serial.print("COIN_INSERTED "); Serial.println(peso);
-
-    if (currentMode == WATER_MODE) {
-      creditML += ml;
-
-      // Machine-readable signal for Pi
-      Serial.print("COIN_WATER "); Serial.println(ml);
-
-      // Human-readable for Serial Monitor
-      Serial.print("[DEBUG] Credit added: ");
-      Serial.print(ml);
-      Serial.println(" mL");
-    } 
-    else if (currentMode == CHARGE_MODE) {
-      Serial.print("COIN_CHARGE "); Serial.println(peso);
-
-      Serial.print("[DEBUG] Charging credit added: ₱");
-      Serial.println(peso);
-    }
-
-    lastActivity = millis();
   }
 }
 

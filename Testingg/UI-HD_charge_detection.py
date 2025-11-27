@@ -1871,7 +1871,7 @@ class ChargingScreen(tk.Frame):
             print(f"[UNPLUG MON] Slot: {slot}, Amps: {amps:.3f}A, Plug Threshold: {PLUG_THRESHOLD}A")
             
             # HYSTERESIS: Use PLUG_THRESHOLD for unplug, but require significant rise for re-plug
-            RE_PLUG_BUFFER = 0.15  # 150mA buffer - require current to rise significantly
+            RE_PLUG_BUFFER = 0.05  # 150mA buffer - require current to rise significantly
             
             # UNPLUG DETECTION: Use PLUG_THRESHOLD (0.8A)
             if amps < PLUG_THRESHOLD:

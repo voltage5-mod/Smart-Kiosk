@@ -1846,7 +1846,7 @@ class ChargingScreen(tk.Frame):
             pass
 
     def _hardware_unplug_monitor(self):
-        """Reliable unplug detection with hysteresis"""
+        """Improved unplug detection with hysteresis to prevent false triggers"""
         self._hw_monitor_job = None
         
         # Safety checks
@@ -1862,7 +1862,6 @@ class ChargingScreen(tk.Frame):
         uid = self._get_session_uid()
         
         if not slot or not hw or not uid or not self.is_charging:
-            # If not charging, don't monitor
             try:
                 self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
             except Exception:
@@ -1875,14 +1874,14 @@ class ChargingScreen(tk.Frame):
             
             print(f"[UNPLUG MON] Slot: {slot}, Amps: {amps:.3f}A, Unplug threshold: {UNPLUG_THRESHOLD}A")
             
-            # Unplug detection with hysteresis
-            if amps < UNPLUG_THRESHOLD:
+            # HYSTERESIS: Require current to drop significantly below threshold to detect unplug
+            # and rise significantly above threshold to detect re-plug
+            if amps < (UNPLUG_THRESHOLD - 0.02):  # Require 0.02A buffer below threshold
+                # Confirmed unplug - current is well below threshold
                 if not self.unplug_time:
-                    # First detection below threshold
                     self.unplug_time = time.time()
-                    print(f"[UNPLUG MON] Unplug detected, starting grace period")
+                    print(f"[UNPLUG MON] Confirmed unplug detected (amps well below threshold), starting grace period")
                 else:
-                    # Check if grace period expired
                     idle_time = time.time() - self.unplug_time
                     if idle_time >= UNPLUG_GRACE_SECONDS:
                         print(f"[UNPLUG MON] Grace period expired ({idle_time:.0f}s), stopping session")
@@ -1890,15 +1889,22 @@ class ChargingScreen(tk.Frame):
                         return
                     else:
                         print(f"[UNPLUG MON] Still unplugged - {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
-            else:
-                # Current above threshold - device is plugged
+            
+            elif amps > (UNPLUG_THRESHOLD + 0.02):  # Require 0.02A buffer above threshold to resume
+                # Confirmed re-plug - current is well above threshold
                 if self.unplug_time:
-                    print(f"[UNPLUG MON] Device re-plugged, resuming charging")
+                    print(f"[UNPLUG MON] Confirmed re-plug detected (amps well above threshold), resuming charging")
                 self.unplug_time = None
                 
+            else:
+                # In the "gray zone" - don't change state, just continue monitoring
+                if self.unplug_time:
+                    idle_time = time.time() - self.unplug_time
+                    print(f"[UNPLUG MON] Gray zone - maintaining unplug state, {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
+                # Don't change unplug_time in gray zone
+                    
         except Exception as e:
             print(f"[UNPLUG MON] Error: {e}")
-            # On error, be conservative and don't trigger unplug
             self.unplug_time = None
 
         # Continue monitoring

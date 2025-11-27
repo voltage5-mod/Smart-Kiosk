@@ -41,7 +41,7 @@ NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
 # Charging detection tuning (simplified and more reliable)
 PLUG_THRESHOLD = 0.15  # Increased slightly for better detection
-UNPLUG_THRESHOLD = 0.10  # Lower than plug threshold for hysteresis
+UNPLUG_THRESHOLD = 0.04  # Lower than plug threshold for hysteresis
 CONFIRM_SAMPLES = 3  # Require 3 consecutive samples for state change
 SAMPLE_INTERVAL = 0.5  # Sample every 500ms
 

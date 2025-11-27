@@ -2740,9 +2740,7 @@ class WaterScreen(tk.Frame):
         print("INFO: Water session stopped.")
         self.controller.show_frame(MainScreen)
     
-    # Add this to your button frame (temporary for debugging)
-    tk.Button(btn_frame, text="Debug Arduino", font=("Arial", 10, "bold"),
-            bg="#8e44ad", fg="white", width=15, command=self.debug_arduino_connection).pack(pady=4)
+    
 
     def debug_arduino_connection(self):
         """Debug method to check Arduino connection and send test commands"""

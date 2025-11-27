@@ -1,22 +1,3 @@
-"""
-ArduinoListener.py
-------------------
-This module manages serial communication between the Raspberry Pi and Arduino Uno.
-It listens for real-time hardware events such as coin insertions, water dispensing, 
-and flow sensor readings. These events are parsed and forwarded to the UI and 
-Firebase systems for data synchronization and user feedback.
-
-🧠 Purpose:
-- Bridge hardware logic (Arduino) and software logic (Python/UI)
-- Read incoming serial messages from Arduino via USB
-- Emit structured events for use in other modules (e.g., WaterScreen)
-- Allow sending commands (e.g., MODE WATER, RESET, STATUS) back to Arduino
-
-🧩 Compatible with:
-- Water automation system handled by Arduino
-- Charging automation handled by Raspberry Pi GPIO
-"""
-
 import serial
 import threading
 import time
@@ -146,11 +127,10 @@ class ArduinoListener:
             self.logger.warning("Listener already running or not connected")
             return False
 
-    # -------------------------------------------------
-    # 🛑 STOP LISTENER
-    # -------------------------------------------------
+    # --------------------------------------------------------
+    # Stop Listener
+    # --------------------------------------------------------
     def stop(self):
-        """Stop the reading thread and close serial port."""
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
@@ -268,13 +248,10 @@ class ArduinoListener:
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
 
-    # -------------------------------------------------
-    # ⬆️ SEND COMMANDS TO ARDUINO
-    # -------------------------------------------------
-    def send_command(self, cmd):
-        """
-        Send a command string to Arduino.
-        Used for mode switching, calibration, or reset.
+        # ----------------- Water Mode Events ---------------------------
+        elif line == "CUP_DETECTED":
+            if self.callback:
+                self.callback("CUP_DETECTED", {})
 
         Example:
             send_command("MODE WATER")

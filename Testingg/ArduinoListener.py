@@ -36,20 +36,19 @@ class ArduinoListener:
     and converts them into structured event callbacks usable by the kiosk UI.
     """
 
-    def __init__(self, event_callback=None):
-        """
-        Initialize listener thread and serial connection.
 
-        Args:
-            event_callback (callable): Optional callback function to handle parsed events.
-                                       It should accept parameters (event_name, event_value).
-        """
+    def __init__(self, event_callback=None):
         self.event_callback = event_callback
         self.running = False
         self.ser = None
         self.thread = None
-        self.last_line = ""
         self.connected = False
+        self.callbacks = []
+
+    def register_callback(self, fn):
+        """Allow UI screens to attach additional listeners."""
+        self.callbacks.append(fn)
+
 
     # -------------------------------------------------
     # 🔌 SERIAL CONNECTION SETUP
@@ -115,23 +114,8 @@ class ArduinoListener:
     # 🧩 MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """
-        Parse Arduino serial messages and trigger corresponding events.
-
-        Expected message formats:
-        - COIN_INSERTED <peso>
-        - COIN_WATER <credit_ml>
-        - DISPENSE_START
-        - DISPENSE_COMPLETE
-        - CUP_DETECTED
-        - SYSTEM_RESET
-        - FLOW_PULSES <count>
-        - [DEBUG] ... (ignored or logged)
-        """
-
         logging.debug(f"[Arduino RAW] {line}")
 
-        # Ignore debug messages
         if line.startswith("[DEBUG]"):
             logging.info(f"Arduino Debug: {line}")
             return
@@ -149,11 +133,21 @@ class ArduinoListener:
             except ValueError:
                 value = parts[1]
 
-        # 🔁 Emit structured event to callback (e.g., WaterScreen)
+        # ---- send to main callback (KioskApp) ----
         if self.event_callback:
-            self.event_callback(event, value)
-        else:
-            logging.info(f"Arduino Event: {event} {value if value else ''}")
+            try:
+                self.event_callback(event, value)
+            except Exception as e:
+                logging.error(f"Error in event_callback: {e}")
+
+        # ---- send to additional UI callbacks (e.g. WaterScreen) ----
+        payload = {"event": event, "value": value, "raw": line}
+
+        for cb in self.callbacks:
+            try:
+                cb(payload)
+            except Exception as e:
+                logging.error(f"Error in callback {cb}: {e}")
 
     # -------------------------------------------------
     # ⬆️ SEND COMMANDS TO ARDUINO

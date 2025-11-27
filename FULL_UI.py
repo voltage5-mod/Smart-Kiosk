@@ -13,6 +13,7 @@ from firebase_admin import credentials, db
 import time
 from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
 
+
 # ---------------- Configuration ----------------
 DATABASE_URL = "https://kiosk-testing-22bf4-default-rtdb.firebaseio.com/"  # <-- CHANGE to your DB URL
 SERVICE_KEY = "firebase-key.json"                  # placed in same folder
@@ -1308,3 +1309,4 @@ class WaterScreen(tk.Frame):
 if __name__ == "__main__":
     app = KioskApp()
     app.mainloop()
+

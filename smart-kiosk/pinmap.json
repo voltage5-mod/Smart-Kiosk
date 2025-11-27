@@ -1,0 +1,15 @@
+{
+  "spi": { "cs": 8, "miso": 9, "mosi": 10, "sclk": 11 },
+  "tm1637": { "clk": 5, "dio": { "slot1": 16, "slot2": 21, "slot3": 20, "slot4": 4 } },
+  "power_relay": { "slot1": 17, "slot2": 22, "slot3": 24, "slot4": 26 },
+  "lock_relay": { "slot1": 27, "slot2": 23, "slot3": 25, "slot4": 19 },
+  "acs712_channels": { "slot1": 0, "slot2": 1, "slot3": 2, "slot4": 3 },
+  "coin_acceptor": 7,
+  "tank_level": { "tank1": 2, "tank2": 3 },
+  "water_flow": 14,
+  "pump_relay": 13,
+  "ultrasonic": { "trig": 6, "echo": 12 },
+  "rfid": "USB",
+  "arduino_usb": "/dev/ttyACM0",
+  "free_gpio": [15, 18]
+}

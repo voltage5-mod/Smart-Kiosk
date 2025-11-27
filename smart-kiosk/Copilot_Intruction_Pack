@@ -1,0 +1,294 @@
+Below is the **COMPLETE, READY-TO-PASTE COPILOT INSTRUCTION PACK**.
+You can paste this directly into GitHub Copilot Chat or VSCode Copilot sidebar.
+
+It contains:
+
+✔ The dependency map
+✔ The allowed vs NOT allowed changes
+✔ The rules Copilot must follow
+✔ The wiring that must be fixed — safely
+✔ The forbidden renames
+
+**Copilot will fix ONLY the wiring, NOTHING else.**
+
+---
+
+# 🚀 **COPILOT INSTRUCTION PACK — Smart-Kiosk (STRICT RULES)**
+
+### 📌 *Paste everything below into Copilot:*
+
+---
+
+# 🔵 **START OF INSTRUCTIONS FOR COPILOT (DO NOT MODIFY THIS TEXT)**
+
+You are fixing a **Smart-Kiosk** Python project with the following directory structure:
+
+```
+Smart-Kiosk/
+│ main.py
+│ kiosk_app.py
+│ config.py
+│ pinmap.json
+│
+├── arduino/
+│     arduino_listener.py
+│
+├── hardware/
+│     gpio_manager.py
+│     acs712.py
+│     adc_mcp3008.py
+│
+├── db/
+│     firebase_helpers.py
+│     firebase_worker.py
+│
+├── services/
+│     session_manager.py
+│     billing_service.py
+│     charging_service.py
+│     water_service.py
+│
+├── ui/
+│   │ ui_controller.py
+│   └── screens/
+│         scan_screen.py
+│         register_choice_screen.py
+│         main_screen.py
+│         slot_select_screen.py
+│         charging_screen.py
+│         water_screen.py
+│         user_info.py
+│
+└── utils/
+      events.py
+```
+
+Your job is to **fix the wiring and missing connections ONLY**, without renaming or redesigning anything.
+
+---
+
+# 🔥 **CRITICAL RULES (DO NOT BREAK ANY OF THESE)**
+
+### ❌ **NEVER rename or remove any variable.**
+
+These must stay exactly as they are:
+
+```
+active_uid
+active_slot
+charging_uid
+charging_slot
+remaining
+cup_present
+temp_water_time
+users_ref
+read_user
+write_user
+append_audit_log
+record_coin_insert
+get_slot
+set_slot
+set_active_user
+clear_active_user
+```
+
+### ❌ **NEVER change UI layouts or appearance.**
+
+Screens must stay visually identical.
+
+### ❌ **NEVER rewrite logic inside screens.**
+
+You may only connect them to controller methods.
+
+### ❌ **NEVER rewrite hardware logic.**
+
+### ❌ **NEVER touch firebase_helpers logic.**
+
+---
+
+# ✅ **WHAT YOU ARE ALLOWED TO FIX**
+
+You may add missing controller functions **ONLY IF THEY ALREADY ARE CALLED BY SCREENS**, such as:
+
+```
+def set_active_user(self, uid): ...
+def clear_active_user(self): ...
+def get_slot(self, slot): ...
+def set_slot(self, slot): ...
+```
+
+You may fix:
+
+* Missing imports
+* Wrong module paths
+* Incorrect attribute access
+* `KioskApp` missing methods
+* frame registration issues
+* Controller–Screen wiring
+* Missing references to `read_user` or `write_user`
+
+You may **NOT** change the method names.
+
+---
+
+# 🧩 **THE REQUIRED CONTROLLER METHODS (MUST EXIST)**
+
+Screens already call these. If missing, ADD them **exactly** with these names:
+
+```
+set_active_user(uid)
+clear_active_user()
+get_user(uid) → optional alias to read_user
+get_slot(slot)
+set_slot(slot)
+refresh_all_user_info()
+```
+
+### `KioskApp` must expose:
+
+* `read_user(uid)`
+* `write_user(uid, data)`
+* `append_audit_log(...)`
+* `coin_counters`
+* `active_uid`
+* `active_slot`
+
+And the methods listed above.
+
+---
+
+# 🔗 **WIRE MAP – HOW COMPONENTS CONNECT (Copilot must enforce this)**
+
+### ScanScreen → KioskApp
+
+* Uses: `read_user`, `write_user`, `create_nonmember`, `set_active_user`
+* Navigates to:
+
+  * `"MainScreen"` for existing users
+  * `"RegisterChoiceScreen"` for new users
+
+### RegisterChoiceScreen → KioskApp
+
+* Buttons call:
+
+  * `start_register(uid)`
+  * `continue_as_guest(uid)`
+  * `start_subscription(uid)`
+* MUST set:
+
+  * `active_uid = uid`
+
+### MainScreen → KioskApp
+
+Buttons:
+
+* “Water” → `show_frame("WaterScreen")`
+* “Charging” → `show_frame("SlotSelectScreen")`
+* “Logout” → `clear_active_user()`
+
+### SlotSelectScreen → KioskApp
+
+Uses:
+
+* `active_uid`
+* `controller.get_slot(slot_name)`
+* `controller.active_slot`
+* `record_coin_insert()`
+
+After selecting a slot, screen calls:
+
+```
+controller.active_slot = slot_name
+```
+
+### ChargingScreen
+
+Needs:
+
+* `controller.active_uid`
+* `controller.active_slot`
+* `read_user`, `write_user`
+* `append_audit_log`
+* `hw.read_current(slot)`
+* `hw.relay_on/off(slot)`
+* `record_coin_insert()`
+
+### WaterScreen
+
+Needs:
+
+* `controller.active_uid`
+* `read_user`, `write_user`
+* `arduino_listener` events
+* `show_coin_popup`
+* `show_totals_popup`
+
+### UserInfoFrame
+
+Must read:
+
+* `controller.active_uid`
+* `read_user(active_uid)`
+
+---
+
+# 🔧 **TASKS YOU MUST PERFORM**
+
+### ✔ 1. Fix missing controller functions
+
+Implement these inside `KioskApp` **if missing**:
+
+```
+def set_active_user(self, uid)
+def clear_active_user(self)
+def get_slot(self, slot)
+def set_slot(self, slot)
+def get_user(self, uid)  # simple alias to read_user
+def refresh_all_user_info(self)
+```
+
+### ✔ 2. Ensure all screens call these methods correctly
+
+### ✔ 3. Ensure every screen is registered in KioskApp
+
+Screens loaded must include:
+
+```
+ScanScreen
+RegisterChoiceScreen
+MainScreen
+SlotSelectScreen
+ChargingScreen
+WaterScreen
+UserInfoFrame
+```
+
+### ✔ 4. Ensure firebase_helpers is connected
+
+All screens expect:
+
+```
+controller.read_user → firebase_helpers.read_user
+controller.write_user → firebase_helpers.write_user
+controller.users_ref  → firebase RTDB reference
+```
+
+### ✔ 5. Do NOT change logic, names, UI design, or layout.
+
+---
+
+# 🟩 **WHAT YOU MUST OUTPUT**
+
+Produce:
+
+1. **Exact modifications to kiosk_app.py**
+2. **Any required small fixes in screens** but ONLY wiring
+3. **Do NOT modify variable names**
+4. **Do NOT change UI design**
+5. **Do NOT rewrite logic**
+
+---
+
+# 🔵 **END OF COPILOT INSTRUCTION PACK**
+
+---

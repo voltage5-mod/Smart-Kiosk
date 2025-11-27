@@ -2084,6 +2084,7 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
+# --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#2980b9")
@@ -2145,9 +2146,6 @@ class WaterScreen(tk.Frame):
         # Totals tracked for the popup display (stacking behavior)
         self.total_coins = 0    # sum of peso values inserted during this session
         self.total_credit = 0   # sum of added mL credited during this session
-        
-        # Note: Arduino callbacks will be registered by KioskApp.__init__() after ArduinoListener is created
-        # This avoids a timing issue where WaterScreen is initialized before ArduinoListener exists
 
     def refresh(self):
         # refresh user info header too
@@ -2155,6 +2153,16 @@ class WaterScreen(tk.Frame):
             self.user_info.refresh()
         except Exception:
             pass
+        
+        # CRITICAL: Ensure Arduino is in WATER mode when this screen is active
+        try:
+            al = getattr(self.controller, 'arduino_listener', None)
+            if al is not None:
+                al.send_command('MODE WATER')
+                print('INFO: Sent MODE WATER to Arduino for water service')
+        except Exception as e:
+            print(f"WARN: Failed to set Arduino to WATER mode: {e}")
+        
         # update hardware-present indicator in case hw was initialized after screen creation
         try:
             hw = getattr(self.controller, 'hw', None)
@@ -2165,11 +2173,13 @@ class WaterScreen(tk.Frame):
             )
         except Exception:
             pass
+        
         uid = self.controller.active_uid
         if not uid:
             self.time_var.set("0")
             self.status_lbl.config(text="Place cup to start")
             return
+            
         user = read_user(uid)
         if user.get("type") == "member":
             wb = user.get("water_balance", 0) or 0
@@ -2188,6 +2198,8 @@ class WaterScreen(tk.Frame):
                 self.status_lbl.config(text="Non-member: buy water with coins")
             else:
                 self.status_lbl.config(text="Place cup to start (Purchased time)")
+
+    # ... keep all your other WaterScreen methods the same (handle_arduino_event, insert_coin_water, place_cup, etc.)
 
     def handle_arduino_event(self, event, value):
         """Handle events coming from the ArduinoListener(event, value) interface.

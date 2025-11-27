@@ -1751,65 +1751,65 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def _poll_for_charging_start(self):
-    """Adaptive charging detection that adjusts to baseline current"""
-    self._wait_job = None
-    
-    # Safety checks
-    if not getattr(self, '_session_valid', False):
-        return
-        
-    my_session_id = getattr(self, '_current_session_id', None)
-    if my_session_id != self._current_session_id:
-        return
-        
-    slot = self.charging_slot or self.controller.active_slot
-    hw = getattr(self.controller, 'hw', None)
-    uid = self._get_session_uid()
-    
-    if not slot or not hw or not uid:
-        return
-
-    try:
-        # Read current with error handling
-        cur = hw.read_current(slot)
-        amps = float(cur.get('amps', 0) or 0)
-        
-        # Store baseline if not set
-        if not hasattr(self, '_baseline_amps'):
-            self._baseline_amps = amps
-            print(f"[CHG DETECT] Setting baseline: {amps:.3f}A")
-        
-        # Calculate difference from baseline
-        current_diff = amps - self._baseline_amps
-        
-        # Adaptive threshold - use relative increase instead of absolute value
-        adaptive_threshold = max(PLUG_THRESHOLD, self._baseline_amps * 2)
-        
-        # Debug output
-        print(f"[CHG DETECT] Slot: {slot}, Amps: {amps:.3f}A, Baseline: {self._baseline_amps:.3f}A, Diff: {current_diff:.3f}A, Adaptive Threshold: {adaptive_threshold:.3f}A")
-        
-        # Simple state machine for detection
-        if current_diff >= adaptive_threshold:
-            self._charge_consecutive += 1
-            print(f"[CHG DETECT] Above adaptive threshold - consecutive: {self._charge_consecutive}")
-        else:
-            self._charge_consecutive = 0
-            
-        # If we have enough consecutive detections, start charging
-        if self._charge_consecutive >= CONFIRM_SAMPLES and not self.is_charging:
-            print(f"[CHG DETECT] Starting charging session - detected {self._charge_consecutive} samples above adaptive threshold")
-            self._start_charging_confirmed(uid, slot, amps)
-            return
-            
-    except Exception as e:
-        print(f"[CHG DETECT] Error reading current: {e}")
-        self._charge_consecutive = 0
-    
-    # Continue polling
-    try:
-        self._wait_job = self.after(int(SAMPLE_INTERVAL * 1000), self._poll_for_charging_start)
-    except Exception:
+        """Adaptive charging detection that adjusts to baseline current"""
         self._wait_job = None
+
+        # Safety checks
+        if not getattr(self, '_session_valid', False):
+            return
+
+        my_session_id = getattr(self, '_current_session_id', None)
+        if my_session_id != self._current_session_id:
+            return
+
+        slot = self.charging_slot or self.controller.active_slot
+        hw = getattr(self.controller, 'hw', None)
+        uid = self._get_session_uid()
+
+        if not slot or not hw or not uid:
+            return
+
+        try:
+            # Read current with error handling
+            cur = hw.read_current(slot)
+            amps = float(cur.get('amps', 0) or 0)
+
+            # Store baseline if not set
+            if not hasattr(self, '_baseline_amps'):
+                self._baseline_amps = amps
+                print(f"[CHG DETECT] Setting baseline: {amps:.3f}A")
+
+            # Calculate difference from baseline
+            current_diff = amps - self._baseline_amps
+
+            # Adaptive threshold - use relative increase instead of absolute value
+            adaptive_threshold = max(PLUG_THRESHOLD, self._baseline_amps * 2)
+
+            # Debug output
+            print(f"[CHG DETECT] Slot: {slot}, Amps: {amps:.3f}A, Baseline: {self._baseline_amps:.3f}A, Diff: {current_diff:.3f}A, Adaptive Threshold: {adaptive_threshold:.3f}A")
+
+            # Simple state machine for detection
+            if current_diff >= adaptive_threshold:
+                self._charge_consecutive += 1
+                print(f"[CHG DETECT] Above adaptive threshold - consecutive: {self._charge_consecutive}")
+            else:
+                self._charge_consecutive = 0
+
+            # If we have enough consecutive detections, start charging
+            if self._charge_consecutive >= CONFIRM_SAMPLES and not self.is_charging:
+                print(f"[CHG DETECT] Starting charging session - detected {self._charge_consecutive} samples above adaptive threshold")
+                self._start_charging_confirmed(uid, slot, amps)
+                return
+
+        except Exception as e:
+            print(f"[CHG DETECT] Error reading current: {e}")
+            self._charge_consecutive = 0
+
+        # Continue polling
+        try:
+            self._wait_job = self.after(int(SAMPLE_INTERVAL * 1000), self._poll_for_charging_start)
+        except Exception:
+            self._wait_job = None
 
     def _start_charging_confirmed(self, uid, slot, amps):
         """Start charging once detection is confirmed"""

@@ -1654,6 +1654,10 @@ class ChargingScreen(tk.Frame):
         if self._tick_job is None:
             self._charging_tick()
 
+        # Reset the plug start time when charging starts successfully
+        if hasattr(self, '_plug_start_time'):
+            del self._plug_start_time
+
     def _charging_tick(self):
         """Improved charging tick with better state management"""
         self._tick_job = None
@@ -1751,7 +1755,7 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def _poll_for_charging_start(self):
-        """Faster charging detection for quicker response"""
+        """Aggressive plug detection with 30-second auto-fallback"""
         self._wait_job = None
         
         # Safety checks
@@ -1773,40 +1777,35 @@ class ChargingScreen(tk.Frame):
             cur = hw.read_current(slot)
             amps = float(cur.get('amps', 0) or 0)
             
-            # Use moving average for plug detection too
-            if not hasattr(self, 'plug_buffer'):
-                self.plug_buffer = []
+            print(f"[PLUG DETECT] Slot: {slot}, Amps: {amps:.3f}A, Threshold: {PLUG_THRESHOLD}A")
             
-            self.plug_buffer.append(amps)
-            if len(self.plug_buffer) > 2:  # Smaller buffer for faster response
-                self.plug_buffer.pop(0)
-            
-            filtered_amps = sum(self.plug_buffer) / len(self.plug_buffer)
-            
-            print(f"[PLUG DETECT] Slot: {slot}, Raw: {amps:.3f}A, Filtered: {filtered_amps:.3f}A, Threshold: {PLUG_THRESHOLD}A")
-            
-            # FASTER DETECTION - fewer samples required
-            if filtered_amps >= PLUG_THRESHOLD:
-                self._charge_consecutive += 1
-                print(f"[PLUG DETECT] Above threshold - consecutive: {self._charge_consecutive}")
-            else:
-                self._charge_consecutive = 0
-                
-            # Only require 2 consecutive samples for faster detection
-            if self._charge_consecutive >= 2 and not self.is_charging:
-                print(f"[PLUG DETECT] Starting charging session - detected {self._charge_consecutive} samples")
-                self._start_charging_confirmed(uid, slot, filtered_amps)
+            # AGGRESSIVE DETECTION: Any reading above threshold starts charging
+            if amps >= PLUG_THRESHOLD:
+                print(f"[PLUG DETECT] Current detected, starting charging immediately")
+                self._start_charging_confirmed(uid, slot, amps)
                 return
                 
         except Exception as e:
             print(f"[PLUG DETECT] Error reading current: {e}")
-            self._charge_consecutive = 0
         
-        # Continue polling with faster interval
-        try:
-            self._wait_job = self.after(300, self._poll_for_charging_start)  # Faster polling
-        except Exception:
-            self._wait_job = None
+        # 30-second auto-start fallback
+        if not hasattr(self, '_plug_start_time'):
+            self._plug_start_time = time.time()
+        
+        elapsed = time.time() - self._plug_start_time
+        remaining = 30 - int(elapsed)
+        
+        if remaining > 0:
+            print(f"[PLUG DETECT] Auto-start in {remaining}s if no detection...")
+            # Continue polling
+            try:
+                self._wait_job = self.after(1000, self._poll_for_charging_start)
+            except Exception:
+                self._wait_job = None
+        else:
+            # 30-second timeout reached - auto-start
+            print(f"[PLUG DETECT] Auto-start after 30s timeout (hardware may be unreliable)")
+            self._start_charging_confirmed(uid, slot, 0.1)  # Use dummy value
 
     def _start_charging_confirmed(self, uid, slot, amps):
         """Start charging once detection is confirmed"""
@@ -1843,7 +1842,7 @@ class ChargingScreen(tk.Frame):
             pass
 
     def _hardware_unplug_monitor(self):
-        """Optimized unplug detection for noisy sensors"""
+        """Robust unplug detection using PLUG_THRESHOLD for reliability"""
         self._hw_monitor_job = None
         
         # Safety checks
@@ -1869,27 +1868,14 @@ class ChargingScreen(tk.Frame):
             cur = hw.read_current(slot)
             amps = float(cur.get('amps', 0) or 0)
             
-            print(f"[UNPLUG MON] Slot: {slot}, Amps: {amps:.3f}A, Unplug threshold: {UNPLUG_THRESHOLD}A")
+            print(f"[UNPLUG MON] Slot: {slot}, Amps: {amps:.3f}A, Plug Threshold: {PLUG_THRESHOLD}A")
             
-            # OPTIMIZED HYSTERESIS FOR NOISY SENSORS
-            # Use moving average to reduce noise
-            if not hasattr(self, 'current_buffer'):
-                self.current_buffer = []
-            
-            self.current_buffer.append(amps)
-            if len(self.current_buffer) > 3:  # Keep last 3 readings
-                self.current_buffer.pop(0)
-            
-            filtered_amps = sum(self.current_buffer) / len(self.current_buffer)
-            
-            print(f"[UNPLUG MON] Filtered Amps: {filtered_amps:.3f}A")
-            
-            # QUICK UNPLUG DETECTION - less hysteresis for faster response
-            if filtered_amps < UNPLUG_THRESHOLD:
-                # Current below threshold - device unplugged
+            # SIMPLE & ROBUST: Use PLUG_THRESHOLD for both plug/unplug detection
+            if amps < PLUG_THRESHOLD:
+                # Definitely unplugged - current is below plug threshold
                 if not self.unplug_time:
                     self.unplug_time = time.time()
-                    print(f"[UNPLUG MON] Unplug detected, starting grace period")
+                    print(f"[UNPLUG MON] Unplug confirmed (below plug threshold), starting grace period")
                 else:
                     idle_time = time.time() - self.unplug_time
                     if idle_time >= UNPLUG_GRACE_SECONDS:
@@ -1898,22 +1884,15 @@ class ChargingScreen(tk.Frame):
                         return
                     else:
                         print(f"[UNPLUG MON] Still unplugged - {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
-            
-            # QUICK RE-PLUG DETECTION - require current to be clearly above threshold
-            elif filtered_amps > (UNPLUG_THRESHOLD + 0.03):  # Only 0.03A above threshold
-                # Current clearly above threshold - device plugged
+            else:
+                # Definitely plugged - current is above plug threshold
                 if self.unplug_time:
-                    print(f"[UNPLUG MON] Re-plug detected, resuming charging")
+                    print(f"[UNPLUG MON] Plug confirmed (above plug threshold), resuming charging")
                 self.unplug_time = None
-                self.current_buffer = []  # Reset buffer on state change
-                
-            # If between UNPLUG_THRESHOLD and (UNPLUG_THRESHOLD + 0.03), maintain state
                     
         except Exception as e:
             print(f"[UNPLUG MON] Error: {e}")
             self.unplug_time = None
-            if hasattr(self, 'current_buffer'):
-                self.current_buffer = []
 
         # Continue monitoring
         try:

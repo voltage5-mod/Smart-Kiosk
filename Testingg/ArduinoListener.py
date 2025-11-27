@@ -24,7 +24,7 @@ import logging
 
 # ----------------- CONFIGURATION -----------------
 # Update this if your Arduino shows up on a different USB path
-ARDUINO_PORT = "/dev/ttyACM0"   # Common: /dev/ttyACM0 or /dev/ttyUSB0
+ARDUINO_PORT = "/dev/ttyUSB0"   # Common: /dev/ttyACM0 or /dev/ttyUSB0
 ARDUINO_BAUD = 115200
 READ_INTERVAL = 0.05  # seconds between read cycles
 

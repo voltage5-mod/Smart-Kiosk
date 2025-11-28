@@ -654,8 +654,37 @@ class KioskApp(tk.Tk):
         print(f"DEBUG: Arduino event received: {event} = {value}")
         
         try:
-            # Route events to appropriate handlers based on event type
-            if event in ['coin', 'COIN', 'coin_inserted', 'cup_sensor', 'water_flow', 'cup_detected']:
+            # Handle COIN events centrally - they should work from any screen
+            if event == 'coin' and value is not None:
+                print(f"COIN DETECTED: ₱{value}")
+                uid = self.active_uid
+                if uid:
+                    # Convert coin value to water mL based on your coin map
+                    water_ml = {
+                        1: 50,   # ₱1 = 50mL
+                        5: 250,  # ₱5 = 250mL  
+                        10: 500  # ₱10 = 500mL
+                    }.get(value, 0)
+                    
+                    # Show the coin popup immediately
+                    self.show_coin_popup(uid, peso=value, added_ml=water_ml)
+                    
+                    # Also update the user's balance
+                    user = read_user(uid)
+                    if user and user.get("type") == "member":
+                        current_balance = user.get("water_balance", 0) or 0
+                        write_user(uid, {"water_balance": current_balance + water_ml})
+                    else:
+                        current_balance = user.get("temp_water_time", 0) or 0
+                        write_user(uid, {"temp_water_time": current_balance + water_ml})
+                    
+                    # Refresh UI
+                    self.refresh_all_user_info()
+                    
+                return  # Don't route coin events to screens
+            
+            # Route other events to appropriate screens
+            if event in ['cup_detected', 'cup_removed', 'dispense_start', 'dispense_done', 'credit_left']:
                 # Water-related events - forward to WaterScreen
                 ws = self.frames.get(WaterScreen)
                 if ws and hasattr(ws, 'handle_arduino_event'):
@@ -2389,6 +2418,58 @@ class WaterScreen(tk.Frame):
         # Test Arduino connection
         self.test_arduino_connection()
 
+    def handle_arduino_event(self, event, value):
+        """Handle Arduino events in WaterScreen"""
+        print(f"WaterScreen received: {event} = {value}")
+        
+        if event == 'coin' and value is not None:
+            # Convert coin to mL and update balance
+            coin_to_ml = {1: 50, 5: 250, 10: 500}
+            added_ml = coin_to_ml.get(value, 0)
+            
+            if added_ml > 0:
+                uid = self.controller.active_uid
+                if uid:
+                    user = read_user(uid)
+                    if user and user.get("type") == "member":
+                        current = user.get("water_balance", 0) or 0
+                        new_balance = current + added_ml
+                        write_user(uid, {"water_balance": new_balance})
+                    else:
+                        current = user.get("temp_water_time", 0) or 0
+                        new_balance = current + added_ml
+                        write_user(uid, {"temp_water_time": new_balance})
+                        self.temp_water_time = new_balance
+                    
+                    # Show popup
+                    self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
+                    self.refresh()
+                    
+        elif event == 'cup_detected':
+            self.cup_present = True
+            self.last_cup_time = time.time()
+            self.status_lbl.config(text="Cup detected - Ready to dispense")
+            self.debug_var.set("Cup placed automatically")
+            
+        elif event == 'cup_removed':
+            self.cup_present = False
+            self.is_dispensing = False
+            self.status_lbl.config(text="Cup removed")
+            self.debug_var.set("Cup removed - Session paused")
+            
+        elif event == 'dispense_start':
+            self.is_dispensing = True
+            self.status_lbl.config(text="DISPENSING WATER...")
+            self.debug_var.set("Dispensing started automatically")
+            
+        elif event == 'dispense_done':
+            self._end_dispensing("Dispensing completed")
+            
+        elif event == 'credit_left':
+            remaining_ml = value
+            self.debug_var.set(f"Credit left: {remaining_ml}mL")
+            # Update display with remaining credit
+
     def test_arduino_connection(self):
         """Test if Arduino is connected and working"""
         try:
@@ -2608,7 +2689,6 @@ class WaterScreen(tk.Frame):
             
         self.debug_var.set("Session stopped manually")
         self.controller.show_frame(MainScreen)
-        
 
 # ----------------- Run App -----------------
 if __name__ == "__main__":

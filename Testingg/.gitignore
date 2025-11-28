@@ -1,0 +1,3 @@
+*.json
+firebase*.json
+serviceAccountKey.json

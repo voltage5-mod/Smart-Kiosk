@@ -112,7 +112,6 @@ DEFAULT_CHARGE_BAL = 1200
 # ------------------------------------------------
 
 # Initialize Firebase Admin only if available
-# Initialize Firebase Admin only if available
 users_ref = None
 slots_ref = None
 firebase_app = None
@@ -135,26 +134,28 @@ if FIREBASE_AVAILABLE and SERVICE_KEY:
                 print(f"INFO: Firebase connection test successful. Found {len(test_slots)} slots.")
         except Exception as e:
             print(f"WARN: Firebase connection test failed: {e}")
-            # Don't fail completely - continue with initialization
-        
+            # Don't fail completely - continue with offline mode
+            FIREBASE_AVAILABLE = False
+            
         # Ensure slots node exists (slot1..slot4) with robust error handling
-        for i in range(1, 5):
-            slot_key = f"slot{i}"
-            try:
-                slot_data = slots_ref.child(slot_key).get()
-                if slot_data is None:
-                    slots_ref.child(slot_key).set({
-                        "status": "inactive", 
-                        "current_user": "none",
-                        "last_updated": int(time.time() * 1000)
-                    })
-                    print(f"INFO: Created slot {slot_key}")
-                else:
-                    print(f"INFO: Slot {slot_key} exists: {slot_data.get('status', 'unknown')}")
-            except Exception as e:
-                print(f"WARN: Could not initialize slot {slot_key}: {e}")
-                # Continue with other slots
-                
+        if FIREBASE_AVAILABLE:
+            for i in range(1, 5):
+                slot_key = f"slot{i}"
+                try:
+                    slot_data = slots_ref.child(slot_key).get()
+                    if slot_data is None:
+                        slots_ref.child(slot_key).set({
+                            "status": "inactive", 
+                            "current_user": "none",
+                            "last_updated": int(time.time() * 1000)
+                        })
+                        print(f"INFO: Created slot {slot_key}")
+                    else:
+                        print(f"INFO: Slot {slot_key} exists: {slot_data.get('status', 'unknown')}")
+                except Exception as e:
+                    print(f"WARN: Could not initialize slot {slot_key}: {e}")
+                    # Continue with other slots
+                    
     except Exception as e:
         print(f"ERROR: Firebase initialization failed: {e}")
         print("INFO: Falling back to offline mode")
@@ -336,7 +337,6 @@ class KioskApp(tk.Tk):
         self.minsize(640, 360)
         self.resizable(True, True)
 
-
         # current session variables
         self.active_uid = None
         self.active_slot = None
@@ -384,7 +384,7 @@ class KioskApp(tk.Tk):
             except Exception:
                 pass
 
-        # ========== IMPROVED ARDUINO LISTENER INITIALIZATION ==========
+        # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
         self.arduino_listener = None
         self.arduino_available = False
         
@@ -393,54 +393,18 @@ class KioskApp(tk.Tk):
             try:
                 from ArduinoListener import ArduinoListener
                 ARDUINO_MODULE = "ArduinoListener"
-            except ImportError:
-                try:
-                    from arduino_listener import ArduinoListener
-                    ARDUINO_MODULE = "arduino_listener"
-                except ImportError:
-                    try:
-                        from lib.ArduinoListener import ArduinoListener
-                        ARDUINO_MODULE = "lib.ArduinoListener"
-                    except ImportError:
-                        ARDUINO_MODULE = None
+            except ImportError as e:
+                print(f"WARN: ArduinoListener import failed: {e}")
+                ARDUINO_MODULE = None
             
             if ARDUINO_MODULE:
                 print(f"INFO: Found ArduinoListener module: {ARDUINO_MODULE}")
                 
-                # Try different initialization patterns
-                initialization_success = False
-                
-                # Pattern 1: Try with callback parameter
                 try:
-                    self.arduino_listener = ArduinoListener(callback=self._arduino_event_callback)
-                    print("INFO: ArduinoListener initialized with callback parameter")
-                    initialization_success = True
-                except Exception as e1:
-                    print(f"DEBUG: Pattern 1 failed: {e1}")
+                    # Use the correct parameter name 'event_callback'
+                    self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
+                    print("INFO: ArduinoListener initialized with event_callback")
                     
-                    # Pattern 2: Try without parameters
-                    try:
-                        self.arduino_listener = ArduinoListener()
-                        print("INFO: ArduinoListener initialized without parameters")
-                        initialization_success = True
-                        
-                        # If successful, try to set callback if method exists
-                        if hasattr(self.arduino_listener, 'set_callback'):
-                            self.arduino_listener.set_callback(self._arduino_event_callback)
-                            print("INFO: Set callback via set_callback method")
-                    except Exception as e2:
-                        print(f"DEBUG: Pattern 2 failed: {e2}")
-                        
-                        # Pattern 3: Try with different parameter names
-                        try:
-                            self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
-                            print("INFO: ArduinoListener initialized with event_callback parameter")
-                            initialization_success = True
-                        except Exception as e3:
-                            print(f"DEBUG: Pattern 3 failed: {e3}")
-                
-                if initialization_success and self.arduino_listener:
-                    # Try to start the listener
                     if hasattr(self.arduino_listener, 'start'):
                         try:
                             self.arduino_listener.start()
@@ -449,11 +413,8 @@ class KioskApp(tk.Tk):
                         except Exception as start_error:
                             print(f"WARN: ArduinoListener start() failed: {start_error}")
                             self.arduino_available = False
-                    else:
-                        print("WARN: ArduinoListener has no start() method")
-                        self.arduino_available = True  # Might not need start()
-                else:
-                    print("WARN: Could not initialize ArduinoListener with any pattern")
+                except Exception as e:
+                    print(f"ERROR: ArduinoListener initialization failed: {e}")
                     self.arduino_listener = None
                     
             else:
@@ -499,10 +460,10 @@ class KioskApp(tk.Tk):
                 return result
             else:
                 print(f"WARN: ArduinoListener has no send_command or write method")
-                return False  # ADDED THIS LINE
+                return False
         except Exception as e:
             print(f"ERROR sending command to Arduino: {e}")
-            return False  # ADDED THIS LINE
+            return False
     
     def is_arduino_connected(self):
         """Check if Arduino is connected and responsive."""
@@ -703,9 +664,14 @@ class KioskApp(tk.Tk):
         except Exception:
             self.current_frame = None
         frame = self.frames[cls]
+        
+        # Safe refresh - only if the frame has a refresh method
         if hasattr(frame, "refresh"):
-            frame.refresh()
-            
+            try:
+                frame.refresh()
+            except Exception as e:
+                print(f"WARN: Error refreshing {cls.__name__}: {e}")
+                
         # Enhanced Arduino mode switching with better error handling
         if self.arduino_available:
             try:
@@ -825,31 +791,23 @@ class ScanScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def refresh(self):
-        self.user_info.refresh()
+        # FIXED: Removed the problematic user_info refresh call
+        # self.user_info.refresh()  # This line was causing the AttributeError
+        
+        # Clear any existing messages
+        self.info.config(text="")
+        
+        # Test Arduino connection if needed
         self.test_arduino_connection()
         
-        uid = self.controller.active_uid
-        if not uid:
-            self.time_var.set("0")
-            self.status_lbl.config(text="Please scan RFID first")
-            return
-            
-        user = read_user(uid)
-        if user.get("type") == "member":
-            wb = user.get("water_balance", 0) or 0
-            self.time_var.set(str(wb))
-            self._water_remaining = wb  # ADD THIS LINE FOR CONSISTENCY
-            status_text = "Place cup to start" if wb > 0 else "No water balance"
-            self.status_lbl.config(text=status_text)
-        else:
-            temp = user.get("temp_water_time", 0) or 0
-            self.temp_water_time = temp
-            self.time_var.set(str(temp))
-            self._water_remaining = temp  # ADD THIS LINE FOR CONSISTENCY
-            if temp <= 0:
-                self.status_lbl.config(text="Insert coins to buy water")
-            else:
-                self.status_lbl.config(text="Place cup to start")
+    def test_arduino_connection(self):
+        """Test Arduino connection status"""
+        try:
+            if hasattr(self.controller, 'arduino_available'):
+                status = "Connected" if self.controller.arduino_available else "Disconnected"
+                print(f"Arduino Status: {status}")
+        except Exception:
+            pass
 
 # --------- Screen: RegisterChoice (for new UID) ----------
 class RegisterChoiceScreen(tk.Frame):
@@ -886,22 +844,28 @@ class RegisterChoiceScreen(tk.Frame):
         if not user_exists(uid):
             create_nonmember(uid)
         # write a subscription_requests entry with timestamp and pending status
-        req_ref = db.reference("subscription_requests")
-        # use epoch milliseconds for timestamps
-        ts = int(time.time() * 1000)
-        req_ref.child(uid).set({
-            "timestamp": ts,
-            "status": "pending"
-        })
-        # audit
-        try:
-            append_audit_log(actor=uid, action='subscription_request', meta={'uid': uid, 'ts': ts})
-        except Exception:
-            pass
-            # non-blocking notification
-            print("INFO: Subscription request sent. Admin has been notified.")
-            # go to main screen (user can still use guest flows)
-            self.controller.show_frame(MainScreen)
+        if FIREBASE_AVAILABLE:
+            try:
+                req_ref = db.reference("subscription_requests")
+                # use epoch milliseconds for timestamps
+                ts = int(time.time() * 1000)
+                req_ref.child(uid).set({
+                    "timestamp": ts,
+                    "status": "pending"
+                })
+                # audit
+                try:
+                    append_audit_log(actor=uid, action='subscription_request', meta={'uid': uid, 'ts': ts})
+                except Exception:
+                    pass
+                # non-blocking notification
+                print("INFO: Subscription request sent. Admin has been notified.")
+            except Exception as e:
+                print(f"ERROR: Failed to submit subscription request: {e}")
+        else:
+            print("INFO: Offline mode - subscription request simulated")
+        # go to main screen (user can still use guest flows)
+        self.controller.show_frame(MainScreen)
 
     def request_registration(self):
         """Called when a not-registered user taps Register on the kiosk.
@@ -916,21 +880,27 @@ class RegisterChoiceScreen(tk.Frame):
         if not user_exists(uid):
             create_nonmember(uid)
         # write a registration_requests entry with timestamp and pending status
-        req_ref = db.reference("registration_requests")
-        # use epoch milliseconds for timestamps
-        ts = int(time.time() * 1000)
-        req_ref.child(uid).set({
-            "timestamp": ts,
-            "status": "pending"
-        })
-        # audit
-        try:
-            append_audit_log(actor=uid, action='registration_request', meta={'uid': uid, 'ts': ts})
-        except Exception:
-            pass
-            print("INFO: Registration request sent. Admin has been notified.")
-            # return to main screen (user can still use guest flows)
-            self.controller.show_frame(MainScreen)
+        if FIREBASE_AVAILABLE:
+            try:
+                req_ref = db.reference("registration_requests")
+                # use epoch milliseconds for timestamps
+                ts = int(time.time() * 1000)
+                req_ref.child(uid).set({
+                    "timestamp": ts,
+                    "status": "pending"
+                })
+                # audit
+                try:
+                    append_audit_log(actor=uid, action='registration_request', meta={'uid': uid, 'ts': ts})
+                except Exception:
+                    pass
+                print("INFO: Registration request sent. Admin has been notified.")
+            except Exception as e:
+                print(f"ERROR: Failed to submit registration request: {e}")
+        else:
+            print("INFO: Offline mode - registration request simulated")
+        # return to main screen (user can still use guest flows)
+        self.controller.show_frame(MainScreen)
 
     def refresh(self):
         pass
@@ -984,8 +954,8 @@ class RegisterScreen(tk.Frame):
             append_audit_log(actor=uid, action='register_member', meta={'uid': uid, 'name': name, 'student_id': sid})
         except Exception:
             pass
-            print("INFO: Registration successful.")
-            self.controller.show_frame(MainScreen)
+        print("INFO: Registration successful.")
+        self.controller.show_frame(MainScreen)
 
     def cancel(self):
         # stay as nonmember and go to main
@@ -1080,31 +1050,43 @@ class MainScreen(tk.Frame):
         # Instead of opening a local registration UI, submit a registration request
         # to the admin dashboard via the Realtime Database so admins can approve.
         try:
-            req_ref = db.reference(f"registration_requests/{uid}")
-            existing = req_ref.get()
-            if existing and existing.get('status') == 'pending':
-                print("INFO: Registration request already pending.")
-                return
-            ts = int(time.time() * 1000)
-            req_ref.set({
-                'timestamp': ts,
-                'status': 'pending'
-            })
-            # add an audit entry so admins get a clear log
-            append_audit_log(actor=uid, action='registration_request', meta={'ts': ts, 'uid': uid})
-            print("INFO: Registration request submitted. An admin will review it shortly.")
-            # disable the button locally until admins process the request
-            self.register_small.config(text='Registration Requested', state='disabled')
+            if FIREBASE_AVAILABLE:
+                req_ref = db.reference(f"registration_requests/{uid}")
+                existing = req_ref.get()
+                if existing and existing.get('status') == 'pending':
+                    print("INFO: Registration request already pending.")
+                    return
+                ts = int(time.time() * 1000)
+                req_ref.set({
+                    'timestamp': ts,
+                    'status': 'pending'
+                })
+                # add an audit entry so admins get a clear log
+                append_audit_log(actor=uid, action='registration_request', meta={'ts': ts, 'uid': uid})
+                print("INFO: Registration request submitted. An admin will review it shortly.")
+                # disable the button locally until admins process the request
+                self.register_small.config(text='Registration Requested', state='disabled')
+            else:
+                print("INFO: Offline mode - registration request simulated")
+                self.register_small.config(text='Registration Requested', state='disabled')
         except Exception as e:
             print('Error submitting registration request:', e)
             print('ERROR: Failed to submit registration request. Please try again later.')
 
     def logout(self):
-        # Only clear the active UID; keep any assigned/active slot so charging sessions
-        # continue running even if the user logs out at the kiosk UI.
+        """Safe logout that handles refresh errors"""
+        # Clear the active UID
         self.controller.active_uid = None
-        # do not clear controller.active_slot here; background charging should continue
-        self.controller.show_frame(ScanScreen)
+        
+        # Use try-except to handle any refresh errors
+        try:
+            self.controller.show_frame(ScanScreen)
+        except Exception as e:
+            print(f"WARN: Error during logout: {e}")
+            # Fallback: directly show the scan screen
+            scan_frame = self.controller.frames.get(ScanScreen)
+            if scan_frame:
+                scan_frame.tkraise()
 
     def refresh(self):
         self.user_info.refresh()
@@ -1113,9 +1095,12 @@ class MainScreen(tk.Frame):
         if uid:
             user = read_user(uid)
             # check registration request status to update button text/state
-            try:
-                req = db.reference(f"registration_requests/{uid}").get()
-            except Exception:
+            if FIREBASE_AVAILABLE:
+                try:
+                    req = db.reference(f"registration_requests/{uid}").get()
+                except Exception:
+                    req = None
+            else:
                 req = None
 
             if user and user.get("type") == "nonmember":
@@ -1191,7 +1176,8 @@ class MainScreen(tk.Frame):
         write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
         if slot != "none":
             write_slot(slot, {"status": "inactive", "current_user": "none"})
-            users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+            if FIREBASE_AVAILABLE and users_ref:
+                users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         self.controller.active_slot = None
         print("INFO: Charging session ended.")
 
@@ -1217,7 +1203,8 @@ class MainScreen(tk.Frame):
             return
         # Update DB to unlock the slot but keep the user's charging_status untouched
         write_slot(slot, {"status": "inactive", "current_user": "none"})
-        users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+        if FIREBASE_AVAILABLE and users_ref:
+            users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         write_user(uid, {"occupied_slot": "none"})
         print(f"INFO: {slot} unlocked. You may unplug your device.")
         # update controller and UI
@@ -1368,7 +1355,8 @@ class SlotSelectScreen(tk.Frame):
                 return
         # assign slot to user (assigned, not active)
         write_user(uid, {"occupied_slot": slot_key})
-        users_ref.child(uid).child("slot_status").update({slot_key: "inactive"})
+        if FIREBASE_AVAILABLE and users_ref:
+            users_ref.child(uid).child("slot_status").update({slot_key: "inactive"})
         write_slot(slot_key, {"status": "inactive", "current_user": uid})
         try:
             append_audit_log(actor=uid, action='assign_slot', meta={'slot': slot_key})
@@ -1676,7 +1664,8 @@ class ChargingScreen(tk.Frame):
         except Exception:
             pass
         if slot:
-            users_ref.child(uid).child("slot_status").update({slot: "active"})
+            if FIREBASE_AVAILABLE and users_ref:
+                users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
 
         # prepare local state but if hardware available for slot1, enable power and wait for current
@@ -1849,7 +1838,7 @@ class ChargingScreen(tk.Frame):
             self.db_acc += 1
             if self.db_acc >= CHARGE_DB_WRITE_INTERVAL:
                 try:
-                    users_ref.child(uid).update({"charge_balance": self.remaining})
+                    write_user(uid, {"charge_balance": self.remaining})
                     self.db_acc = 0
                 except Exception as e:
                     print(f"[TICK] DB update error: {e}")
@@ -1872,7 +1861,8 @@ class ChargingScreen(tk.Frame):
             write_user(uid, {"charging_status": "idle", "charge_balance": 0, "occupied_slot": "none"})
             if slot:
                 write_slot(slot, {"status": "inactive", "current_user": "none"})
-                users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                if FIREBASE_AVAILABLE and users_ref:
+                    users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         except Exception as e:
             print(f"Error updating DB: {e}")
         
@@ -2172,7 +2162,7 @@ class ChargingScreen(tk.Frame):
             return
             
         # ADD SAFETY CHECK:
-        if users_ref is not None:
+        if FIREBASE_AVAILABLE and users_ref:
             try:
                 users_ref.child(uid).child("slot_status").update({slot: "inactive"})
                 print(f"INFO: {slot} unlocked. Please unplug your device when ready.")
@@ -2202,7 +2192,8 @@ class ChargingScreen(tk.Frame):
             write_user(uid, {"occupied_slot": "none"})
             if slot:
                 write_slot(slot, {"status": "inactive", "current_user": "none"})
-                users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                if FIREBASE_AVAILABLE and users_ref:
+                    users_ref.child(uid).child("slot_status").update({slot: "inactive"})
                 # clear assigned slot
                 self.controller.active_slot = None
             # turn off hardware relays and cancel monitors if hardware is present
@@ -2274,7 +2265,6 @@ class ChargingScreen(tk.Frame):
         print("INFO: Charging session stopped.")
         self.controller.show_frame(MainScreen)
 
-# --------- Screen: Water ----------
 # --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):

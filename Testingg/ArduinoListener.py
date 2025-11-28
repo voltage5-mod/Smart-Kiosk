@@ -40,7 +40,7 @@ class ArduinoListener:
         self.callbacks = []
         self.actual_port = None
         
-        # Set up logging
+        # Set up logging without Unicode emojis
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -66,7 +66,7 @@ class ArduinoListener:
             self.logger.info(f"Unregistered callback: {fn.__name__ if hasattr(fn, '__name__') else 'anonymous'}")
 
     # -------------------------------------------------
-    # 🔌 SERIAL CONNECTION SETUP
+    # SERIAL CONNECTION SETUP
     # -------------------------------------------------
     def connect(self):
         """Attempt to connect to the Arduino via USB serial."""
@@ -81,21 +81,26 @@ class ArduinoListener:
                 self.ser = serial.Serial(port, self.baud_rate, timeout=1)
                 time.sleep(2)  # Allow Arduino reset after serial connection
                 
+                # Clear any existing data
+                self.ser.reset_input_buffer()
+                
                 # Test communication by sending a status request
-                self.ser.write(b"STATUS\n")
+                self.ser.write(b"PING\n")
                 time.sleep(0.5)
                 
                 # Try to read response to verify connection
                 if self.ser.in_waiting > 0:
                     test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     self.logger.info(f"Arduino responded: {test_response}")
+                else:
+                    self.logger.info("Arduino connected (no response to PING)")
                 
                 self.connected = True
                 self.actual_port = port
-                self.logger.info(f"✅ ArduinoListener connected on {port} @ {self.baud_rate} baud")
+                self.logger.info(f"SUCCESS: ArduinoListener connected on {port} @ {self.baud_rate} baud")
                 return True
                 
-            except serial.SerialException as e:
+            except (serial.SerialException, OSError) as e:
                 self.logger.debug(f"Failed to connect to {port}: {e}")
                 continue
             except Exception as e:
@@ -103,12 +108,12 @@ class ArduinoListener:
                 continue
         
         # If we get here, no ports worked
-        self.logger.error("❌ Failed to connect to Arduino on any port")
+        self.logger.error("ERROR: Failed to connect to Arduino on any port")
         self.connected = False
         return False
 
     # -------------------------------------------------
-    # ▶️ START LISTENING THREAD
+    # START LISTENING THREAD
     # -------------------------------------------------
     def start(self):
         """Start a background thread to continuously read serial data."""
@@ -121,7 +126,7 @@ class ArduinoListener:
             self.running = True
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
-            self.logger.info("🟢 ArduinoListener started and running")
+            self.logger.info("STARTED: ArduinoListener started and running")
             return True
         else:
             self.logger.warning("Listener already running or not connected")
@@ -131,6 +136,7 @@ class ArduinoListener:
     # Stop Listener
     # --------------------------------------------------------
     def stop(self):
+        """Stop the listener and close serial connection."""
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
@@ -143,10 +149,10 @@ class ArduinoListener:
                 self.logger.error(f"Error closing serial port: {e}")
         
         self.connected = False
-        self.logger.info("🔴 ArduinoListener stopped completely")
+        self.logger.info("STOPPED: ArduinoListener stopped completely")
 
     # -------------------------------------------------
-    # 🧠 READ LOOP
+    # READ LOOP
     # -------------------------------------------------
     def _read_loop(self):
         """Continuously read from Arduino and parse messages."""
@@ -161,7 +167,7 @@ class ArduinoListener:
                 time.sleep(READ_INTERVAL)
                 
             except serial.SerialException as e:
-                self.logger.error(f"⚠️ Serial read error: {e}")
+                self.logger.error(f"Serial read error: {e}")
                 self.connected = False
                 # Try to reconnect
                 self._attempt_reconnect()
@@ -177,17 +183,17 @@ class ArduinoListener:
         for attempt in range(retries):
             try:
                 if self.connect():
-                    self.logger.info("✅ Reconnected to Arduino successfully")
+                    self.logger.info("SUCCESS: Reconnected to Arduino successfully")
                     return True
                 time.sleep(2)  # Wait before retry
             except Exception as e:
                 self.logger.warning(f"Reconnection attempt {attempt + 1} failed: {e}")
         
-        self.logger.error("❌ Failed to reconnect to Arduino after multiple attempts")
+        self.logger.error("ERROR: Failed to reconnect to Arduino after multiple attempts")
         return False
 
     # -------------------------------------------------
-    # 🧩 MESSAGE PARSER
+    # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
         """Parse and dispatch Arduino messages."""
@@ -249,7 +255,7 @@ class ArduinoListener:
                 self.logger.error(f"Error in callback {callback}: {e}")
 
     # -------------------------------------------------
-    # 📤 SEND COMMANDS TO ARDUINO
+    # SEND COMMANDS TO ARDUINO
     # -------------------------------------------------
     def send_command(self, cmd):
         """
@@ -261,20 +267,20 @@ class ArduinoListener:
             send_command("STATUS")
         """
         if not self.ser or not self.ser.is_open:
-            self.logger.warning("⚠️ Cannot send command — serial not connected.")
+            self.logger.warning("WARNING: Cannot send command - serial not connected.")
             return False
 
         try:
             full_cmd = cmd + "\n"
             self.ser.write(full_cmd.encode())
-            self.logger.info(f"➡️ Sent command to Arduino: {cmd}")
+            self.logger.info(f"SENT: Command to Arduino: {cmd}")
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error sending command to Arduino: {e}")
+            self.logger.error(f"ERROR: Error sending command to Arduino: {e}")
             return False
 
     # -------------------------------------------------
-    # 🔍 UTILITY METHODS
+    # UTILITY METHODS
     # -------------------------------------------------
     def is_connected(self):
         """Return True if Arduino is connected."""
@@ -300,9 +306,18 @@ class ArduinoListener:
         time.sleep(1)
         return self.connect() and self.start()
 
+    def set_callback(self, callback):
+        """Alternative method to set the main event callback."""
+        self.event_callback = callback
+        self.logger.info("Main event callback set")
+
+    def write(self, command):
+        """Alternative method name for send_command for compatibility."""
+        return self.send_command(command)
+
 
 # -------------------------------------------------
-# 🧪 TEST FUNCTION
+# TEST FUNCTION
 # -------------------------------------------------
 def test_arduino_listener():
     """Test function to verify Arduino communication."""
@@ -313,35 +328,35 @@ def test_arduino_listener():
     def test_payload_callback(payload):
         print(f"[TEST PAYLOAD] {payload}")
     
-    print("🧪 Testing ArduinoListener...")
+    print("TESTING: Testing ArduinoListener...")
     
     listener = ArduinoListener(event_callback=test_callback)
     listener.register_callback(test_payload_callback)
     
     if listener.connect():
-        print("✅ Connected to Arduino")
+        print("SUCCESS: Connected to Arduino")
         if listener.start():
-            print("✅ Listener started")
+            print("SUCCESS: Listener started")
             
             # Test sending commands
             listener.send_command("STATUS")
             listener.send_command("MODE WATER")
             
             # Run for 30 seconds to capture events
-            print("📡 Listening for Arduino events for 30 seconds...")
+            print("LISTENING: Listening for Arduino events for 30 seconds...")
             try:
                 for i in range(30):
                     time.sleep(1)
-                    print(f"⏰ {29-i} seconds remaining...")
+                    print(f"TIME: {29-i} seconds remaining...")
             except KeyboardInterrupt:
-                print("🛑 Stopped by user")
+                print("STOPPED: Stopped by user")
             
             listener.stop()
-            print("✅ Test completed")
+            print("COMPLETED: Test completed")
         else:
-            print("❌ Failed to start listener")
+            print("ERROR: Failed to start listener")
     else:
-        print("❌ Failed to connect to Arduino")
+        print("ERROR: Failed to connect to Arduino")
 
 
 if __name__ == "__main__":

@@ -213,7 +213,7 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
                 return
 
-        # Handle COIN_WATER events
+        # Handle COIN_WATER events  
         if line.startswith("COIN_WATER"):
             try:
                 parts = line.split()
@@ -227,6 +227,7 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
                 return
 
+    # ... rest of your existing parsing code ...
         # Handle COIN_CHARGE events (charging credit in pesos)
         if line.startswith("COIN_CHARGE"):
             try:

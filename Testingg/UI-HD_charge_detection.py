@@ -593,16 +593,22 @@ class KioskApp(tk.Tk):
     def show_coin_popup(self, uid, peso: int = None, added_ml: int = None, total_ml: int = None):
         """Display a simple coin popup using only Arduino-provided values."""
         def _do():
+            # ONLY show popup for valid coins (1, 5, 10)
+            valid_coins = [1, 5, 10]
+            if peso not in valid_coins:
+                print(f"DEBUG: Skipping popup for invalid coin: P{peso}")
+                return
+                
             parts = []
             if peso is not None:
-                parts.append(f"Inserted: P{peso}")  # Use 'P' instead of '₱'
-            if added_ml is not None:
+                parts.append(f"Inserted: P{peso}")
+            if added_ml is not None and added_ml > 0:
                 parts.append(f"Added: {added_ml} mL")
             if total_ml is not None:
                 parts.append(f"Total: {total_ml} mL")
             msg = "\n".join(parts) if parts else "Coin event"
             
-            # persist to DB if added_ml provided
+            # Update balance only for valid coins with positive mL
             try:
                 if uid and added_ml is not None and added_ml > 0:
                     user = read_user(uid) or {}
@@ -615,7 +621,7 @@ class KioskApp(tk.Tk):
                         write_user(uid, {'temp_water_time': cur + added_ml})
                         print(f"DB: Updated guest temp_water_time to {cur + added_ml}mL")
                     
-                    # refresh UI to show updated balances
+                    # Force immediate UI refresh
                     self.refresh_all_user_info()
             except Exception as e:
                 print(f"Error updating balance: {e}")
@@ -2486,29 +2492,37 @@ class WaterScreen(tk.Frame):
             self.debug_var.set(f"Arduino: Error - {str(e)}")
 
     def refresh(self):
-        self.user_info.refresh()
-        self.test_arduino_connection()
-        
-        uid = self.controller.active_uid
-        if not uid:
-            self.time_var.set("0")
-            self.status_lbl.config(text="Please scan RFID first")
-            return
+        try:
+            self.user_info.refresh()
+            self.test_arduino_connection()
             
-        user = read_user(uid)
-        if user.get("type") == "member":
-            wb = user.get("water_balance", 0) or 0
-            self.time_var.set(str(wb))
-            status_text = "Place cup to start" if wb > 0 else "No water balance"
-            self.status_lbl.config(text=status_text)
-        else:
-            temp = user.get("temp_water_time", 0) or 0
-            self.temp_water_time = temp
-            self.time_var.set(str(temp))
-            if temp <= 0:
-                self.status_lbl.config(text="Insert coins to buy water")
+            uid = self.controller.active_uid
+            if not uid:
+                self.time_var.set("0")
+                self.status_lbl.config(text="Please scan RFID first")
+                return
+                
+            user = read_user(uid)
+            if user.get("type") == "member":
+                wb = user.get("water_balance", 0) or 0
+                self.time_var.set(str(wb))
+                status_text = "Place cup to start" if wb > 0 else "No water balance"
+                self.status_lbl.config(text=status_text)
             else:
-                self.status_lbl.config(text="Place cup to start")
+                temp = user.get("temp_water_time", 0) or 0
+                self.temp_water_time = temp  # Ensure local variable is updated
+                self.time_var.set(str(temp))
+                if temp <= 0:
+                    self.status_lbl.config(text="Insert coins to buy water")
+                else:
+                    self.status_lbl.config(text="Place cup to start")
+                    
+            # Force UI update
+            self.update_idletasks()
+            
+        except Exception as e:
+            print(f"Error in WaterScreen.refresh(): {e}")
+            self.debug_var.set(f"Refresh error: {e}")
 
     def insert_coin_water(self, amount):
         """Add water credit when coins are inserted"""

@@ -204,18 +204,139 @@ class ArduinoListener:
             self.logger.info(f"Arduino Debug: {line}")
             return
 
-        # Handle special MODE command format
+        # Handle COIN_INSERTED events (from your Arduino code)
+        if line.startswith("COIN_INSERTED"):
+            try:
+                # Format: "COIN_INSERTED 5"
+                parts = line.split()
+                if len(parts) >= 2:
+                    coin_value = int(parts[1])
+                    event = "coin"
+                    value = coin_value
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
+                return
+
+        # Handle COIN_WATER events (water credit in mL)
+        if line.startswith("COIN_WATER"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ml_value = int(parts[1])
+                    event = "coin_water"
+                    value = ml_value
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
+                return
+
+        # Handle COIN_CHARGE events (charging credit in pesos)
+        if line.startswith("COIN_CHARGE"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    peso_value = int(parts[1])
+                    event = "coin_charge"
+                    value = peso_value
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
+                return
+
+        # Handle COIN events with better detection
+        if "COIN" in line.upper() or line.startswith("COIN:"):
+            # Extract coin value - handle various formats
+            coin_value = None
+            try:
+                if ":" in line:
+                    # Format: "COIN:10" or "COIN: 10"
+                    value_str = line.split(":", 1)[1].strip()
+                    coin_value = int(value_str)
+                else:
+                    # Format: "COIN 10" or just "10" (if COIN is implied)
+                    parts = line.split()
+                    if len(parts) > 1:
+                        coin_value = int(parts[1])
+                    else:
+                        coin_value = 1  # Default coin value
+                        
+                event = "coin"
+                value = coin_value
+                self._dispatch_event(event, value, line)
+                return
+                
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse coin value from: {line}")
+                # Still dispatch as coin event with None value
+                event = "coin"
+                value = None
+                self._dispatch_event(event, value, line)
+                return
+
+        # Handle MODE command format
         if line.startswith("MODE:"):
             event = "MODE"
             value = line.split(":", 1)[1].strip()
             self._dispatch_event(event, value, line)
             return
 
+        # Handle CUP events
+        if line.startswith("CUP_DETECTED"):
+            event = "cup_detected"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+            
+        if line.startswith("CUP_REMOVED"):
+            event = "cup_removed"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle DISPENSE events
+        if line.startswith("DISPENSE_START"):
+            event = "dispense_start"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+            
+        if line.startswith("DISPENSE_DONE"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ml_dispensed = float(parts[1])
+                    event = "dispense_done"
+                    value = ml_dispensed
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
+                return
+
+        # Handle CREDIT_LEFT events
+        if line.startswith("CREDIT_LEFT"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    remaining_ml = float(parts[1])
+                    event = "credit_left"
+                    value = remaining_ml
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse CREDIT_LEFT value from: {line}")
+                return
+
+        # Rest of your existing parsing logic...
         parts = line.split()
         if not parts:
             return
 
-        event = parts[0].strip()
+        event = parts[0].strip().lower()  # Convert to lowercase for consistency
         value = None
 
         if len(parts) > 1:

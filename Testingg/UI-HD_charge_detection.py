@@ -112,6 +112,7 @@ DEFAULT_CHARGE_BAL = 1200
 # ------------------------------------------------
 
 # Initialize Firebase Admin only if available
+# Initialize Firebase Admin only if available
 users_ref = None
 slots_ref = None
 firebase_app = None
@@ -125,28 +126,47 @@ if FIREBASE_AVAILABLE and SERVICE_KEY:
         slots_ref = db.reference("slots")
         print("INFO: Firebase initialized successfully")
         
-        # Test connection by reading slots
+        # Test connection with better error handling
         try:
             test_slots = slots_ref.get()
-            print(f"INFO: Firebase connection test successful. Found {len(test_slots) if test_slots else 0} slots.")
+            if test_slots is None:
+                print("INFO: No existing slots found - initializing fresh database")
+            else:
+                print(f"INFO: Firebase connection test successful. Found {len(test_slots)} slots.")
         except Exception as e:
             print(f"WARN: Firebase connection test failed: {e}")
+            # Don't fail completely - continue with initialization
         
-        # Ensure slots node exists (slot1..slot4)
+        # Ensure slots node exists (slot1..slot4) with robust error handling
         for i in range(1, 5):
             slot_key = f"slot{i}"
             try:
-                if slots_ref.child(slot_key).get() is None:
-                    slots_ref.child(slot_key).set({"status": "inactive", "current_user": "none"})
+                slot_data = slots_ref.child(slot_key).get()
+                if slot_data is None:
+                    slots_ref.child(slot_key).set({
+                        "status": "inactive", 
+                        "current_user": "none",
+                        "last_updated": int(time.time() * 1000)
+                    })
                     print(f"INFO: Created slot {slot_key}")
+                else:
+                    print(f"INFO: Slot {slot_key} exists: {slot_data.get('status', 'unknown')}")
             except Exception as e:
                 print(f"WARN: Could not initialize slot {slot_key}: {e}")
+                # Continue with other slots
                 
     except Exception as e:
         print(f"ERROR: Firebase initialization failed: {e}")
+        print("INFO: Falling back to offline mode")
         FIREBASE_AVAILABLE = False
         users_ref = None
         slots_ref = None
+        if firebase_app:
+            try:
+                firebase_admin.delete_app(firebase_app)
+            except:
+                pass
+            firebase_app = None
 else:
     print("INFO: Running in offline mode - no Firebase connectivity")
 

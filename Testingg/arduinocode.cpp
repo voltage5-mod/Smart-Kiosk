@@ -109,7 +109,7 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 
 // ---------------- GLOBAL VARIABLES ----------------
 int currentMode = WATER_MODE; // Default mode (Pi can change this)
-float pulsesPerLiter = 450.0; // Flow calibration (YF-S201 ~450/L)
+float pulsesPerLiter = 4305.0; // Flow calibration (YF-S201 ~450/L)
 
 // Coin settings (EEPROM stored)
 int coin1P_pulses = 1;

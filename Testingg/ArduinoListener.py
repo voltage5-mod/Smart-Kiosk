@@ -199,9 +199,22 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
-        # Skip debug lines (optional)
-        if line.startswith("[DEBUG]") or line.startswith("DEBUG:"):
+        # Skip debug lines but log them
+        if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or "Coin detected" in line:
             self.logger.info(f"Arduino Debug: {line}")
+            
+            # Try to extract coin value from debug messages like "Coin detected, new credit: 300 ml"
+            if "Coin detected" in line:
+                try:
+                    # Extract number from "Coin detected, new credit: 300 ml"
+                    import re
+                    match = re.search(r'credit:\s*(\d+)', line)
+                    if match:
+                        credit_ml = int(match.group(1))
+                        # We can't determine coin value from this, but we know credit changed
+                        self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
+                except:
+                    pass
             return
 
         # Handle COIN_INSERTED events (from your Arduino code)
@@ -218,6 +231,9 @@ class ArduinoListener:
             except (ValueError, IndexError) as e:
                 self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
                 return
+
+        # Handle other events...
+        # ... rest of your existing parsing code ...
 
         # Handle COIN_WATER events (water credit in mL)
         if line.startswith("COIN_WATER"):

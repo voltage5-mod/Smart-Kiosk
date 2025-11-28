@@ -591,19 +591,17 @@ class KioskApp(tk.Tk):
             pass
 
     def show_coin_popup(self, uid, peso: int = None, added_ml: int = None, total_ml: int = None):
-        """Display a simple coin popup using only Arduino-provided values.
-        This is the canonical popup used by hardware-driven flows. It will also
-        persist added_ml (delta) into the user's water balance.
-        """
+        """Display a simple coin popup using only Arduino-provided values."""
         def _do():
             parts = []
             if peso is not None:
-                parts.append(f"Inserted: \u20B1{peso}")
+                parts.append(f"Inserted: P{peso}")  # Use 'P' instead of '₱'
             if added_ml is not None:
                 parts.append(f"Added: {added_ml} mL")
             if total_ml is not None:
                 parts.append(f"Total: {total_ml} mL")
             msg = "\n".join(parts) if parts else "Coin event"
+            
             # persist to DB if added_ml provided
             try:
                 if uid and added_ml is not None and added_ml > 0:
@@ -611,24 +609,27 @@ class KioskApp(tk.Tk):
                     if user.get('type') == 'member':
                         cur = user.get('water_balance') or 0
                         write_user(uid, {'water_balance': cur + added_ml})
+                        print(f"DB: Updated member water_balance to {cur + added_ml}mL")
                     else:
                         cur = user.get('temp_water_time') or 0
                         write_user(uid, {'temp_water_time': cur + added_ml})
-                    try:
-                        # refresh UI to show updated balances
-                        self.refresh_all_user_info()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        print(f"DB: Updated guest temp_water_time to {cur + added_ml}mL")
+                    
+                    # refresh UI to show updated balances
+                    self.refresh_all_user_info()
+            except Exception as e:
+                print(f"Error updating balance: {e}")
+            
             try:
                 messagebox.showinfo("Coin Inserted", msg)
-            except Exception:
-                print("POPUP:", msg)
+                print(f"POPUP SHOWN: {msg}")
+            except Exception as e:
+                print(f"POPUP ERROR: {e} - {msg}")
 
         try:
             self.after(0, _do)
-        except Exception:
+        except Exception as e:
+            print(f"Error scheduling popup: {e}")
             _do()
 
     def show_totals_popup(self, uid, total_coins: int, total_credit_ml: int):
@@ -656,7 +657,7 @@ class KioskApp(tk.Tk):
         try:
             # Handle COIN events centrally - they should work from any screen
             if event == 'coin' and value is not None:
-                print(f"COIN DETECTED: ₱{value}")
+                print(f"COIN DETECTED: P{value}")  # Use 'P' instead of '₱' to avoid encoding issues
                 uid = self.active_uid
                 if uid:
                     # Convert coin value to water mL based on your coin map
@@ -666,19 +667,24 @@ class KioskApp(tk.Tk):
                         10: 500  # ₱10 = 500mL
                     }.get(value, 0)
                     
-                    # Show the coin popup immediately
+                    # Show the coin popup immediately (without peso symbol to avoid encoding issues)
                     self.show_coin_popup(uid, peso=value, added_ml=water_ml)
                     
-                    # Also update the user's balance
+                    # Update the user's balance
                     user = read_user(uid)
-                    if user and user.get("type") == "member":
-                        current_balance = user.get("water_balance", 0) or 0
-                        write_user(uid, {"water_balance": current_balance + water_ml})
-                    else:
-                        current_balance = user.get("temp_water_time", 0) or 0
-                        write_user(uid, {"temp_water_time": current_balance + water_ml})
+                    if user:
+                        if user.get("type") == "member":
+                            current_balance = user.get("water_balance", 0) or 0
+                            new_balance = current_balance + water_ml
+                            write_user(uid, {"water_balance": new_balance})
+                            print(f"Updated member balance: {current_balance} + {water_ml} = {new_balance}mL")
+                        else:
+                            current_balance = user.get("temp_water_time", 0) or 0
+                            new_balance = current_balance + water_ml
+                            write_user(uid, {"temp_water_time": new_balance})
+                            print(f"Updated guest balance: {current_balance} + {water_ml} = {new_balance}mL")
                     
-                    # Refresh UI
+                    # Refresh UI immediately
                     self.refresh_all_user_info()
                     
                 return  # Don't route coin events to screens
@@ -705,13 +711,6 @@ class KioskApp(tk.Tk):
                         print(f"ERROR in ChargingScreen event handler: {e}")
                 else:
                     print(f"WARN: ChargingScreen not available for event: {event}")
-                    
-            elif event in ['error', 'connection_status']:
-                # System events - handle centrally
-                print(f"SYSTEM: Arduino {event}: {value}")
-                if event == 'connection_status' and value == 'disconnected':
-                    self.arduino_available = False
-                    print("ALERT: Arduino disconnected!")
                     
             else:
                 print(f"INFO: Unhandled Arduino event type: {event} = {value}")

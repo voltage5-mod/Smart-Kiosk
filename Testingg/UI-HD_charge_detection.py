@@ -2760,26 +2760,27 @@ class WaterScreen(tk.Frame):
             
         user = read_user(uid)
         if user.get("type") == "member":
-            self._water_remaining = user.get("water_balance", 0) or 0
+            balance = user.get("water_balance", 0) or 0
         else:
-            self._water_remaining = self.temp_water_time
+            balance = user.get("temp_water_time", 0) or 0
             
-        if self._water_remaining <= 0:
+        if balance <= 0:
             self.debug_var.set("ERROR: No water credit")
             return
             
-        print(f"Starting dispensing with {self._water_remaining}mL")
+        print(f"Starting dispensing with {balance}mL")
         
-        # SEND COMMAND TO ARDUINO TO START DISPENSING
+        # CRITICAL: Send START command to Arduino (like your test script does)
         if self.controller.send_arduino_command("START"):
-            self.debug_var.set("Sent START command to Arduino")
-        else:
-            self.debug_var.set("Failed to send START command")
+            self.debug_var.set("START command sent to Arduino")
+            self.is_dispensing = True
+            self.status_lbl.config(text="DISPENSING WATER...")
             
-        self.is_dispensing = True
-        self.status_lbl.config(text="DISPENSING WATER...")
-        self.debug_var.set(f"Dispensing started - {self._water_remaining}mL remaining")
-
+            # Also update ArduinoListener to handle this
+            print("DISPENSE_START triggered from UI")
+        else:
+            self.debug_var.set("Failed to send START command to Arduino")
+            
     def _dispense_tick(self):
         """Timer tick for water dispensing"""
         if not self.cup_present or not self.is_dispensing:

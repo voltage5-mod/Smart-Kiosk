@@ -16,75 +16,34 @@ It interfaces with the Raspberry Pi via Serial (USB), and manages:
  - Real-time feedback via Serial for Pi UI updates
 
 =====================================================================
-🔄 NEW CHANGES FROM PREVIOUS VERSION:
+🔄 UPDATES:
 =====================================================================
-🆕 1. Added "COIN_INSERTED" event
-    → Sent immediately when a coin is recognized (before crediting).
-    → Allows Raspberry Pi to trigger instant popup window.
-
-🆕 2. Added "currentMode" variable and Serial control:
-    → Pi can send "MODE WATER" or "MODE CHARGE".
-    → Controls logic for credit computation and messaging.
-
-🆕 3. Expanded serial protocol:
-    → All system messages standardized into clear event types.
-    → Example events:
-       - COIN_INSERTED 5
-       - COIN_WATER 500
-       - COIN_CHARGE 10
-       - CUP_DETECTED
-       - DISPENSE_START / DISPENSE_DONE
-       - CREDIT_LEFT 150
-
-🆕 4. Improved calibration reporting:
-    → Outputs "CAL_DONE 1=1 5=3 10=5" for verification.
-
-🆕 5. Enhanced safety and clarity:
-    → Ensures solenoid/pump off during idle/reset.
-    → Flow and coin timeouts for noise immunity.
+✅ 1. Fixed cup detection to only run in WATER mode
+✅ 2. Added manual START/STOP commands for testing
+✅ 3. Improved debugging output
+✅ 4. Better mode separation between WATER and CHARGE
+✅ 5. Added force dispensing capability
 
 =====================================================================
-🔗 SERIAL COMMUNICATION SUMMARY:
+🔗 SERIAL COMMANDS:
 =====================================================================
-Arduino → Pi messages (examples):
-
-  - COIN_INSERTED 5          → physical coin detected
-  - COIN_WATER 500           → +500mL credit (WATER mode)
-  - COIN_CHARGE 10           → ₱10 for charging (CHARGE mode)
-  - CUP_DETECTED             → cup placed under nozzle
-  - DISPENSE_START           → water dispensing started
-  - DISPENSE_PROGRESS ml=300 remaining=200
-  - DISPENSE_DONE 500.0      → complete
-  - CREDIT_LEFT 150          → unused mL balance after removal
-  - MODE: WATER              → confirmation after Pi command
-  - SYSTEM_RESET             → after RESET
-
 Pi → Arduino commands:
-
-  - MODE WATER
-  - MODE CHARGE
-  - RESET
+  - MODE WATER / MODE CHARGE
+  - START (manual start dispensing)
+  - STOP (manual stop)
+  - ADD100 / ADD500 (add credit)
   - STATUS
-  - CAL
-  - FLOWCAL
+  - RESET
 
-=====================================================================
-WIRING SUMMARY:
-=====================================================================
-Arduino Pin  →  Component              →  Notes
----------------------------------------------------------------------
-D2           →  Coin Acceptor Signal   →  5V logic pulse (interrupt)
-D3           →  Flow Sensor (YF-S201)  →  5V pulse output (interrupt)
-D7           →  Solenoid Valve Relay   →  Active HIGH
-D8           →  Pump Relay             →  Active HIGH
-D9           →  Ultrasonic Trigger     →  HC-SR04 TRIG
-D10          →  Ultrasonic Echo        →  HC-SR04 ECHO
-GND          →  Common Ground with Pi  →  Required for serial logic
-VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
+Arduino → Pi events:
+  - COIN_INSERTED [value]
+  - COIN_WATER [ml]
+  - COIN_CHARGE [peso]
+  - CUP_DETECTED / CUP_REMOVED
+  - DISPENSE_START / DISPENSE_DONE [ml]
+  - CREDIT_LEFT [ml]
+  - MANUAL_START / MANUAL_STOP
 
-=====================================================================
- Author: VoltageV (Cedrick L.)
- Collaborators: R4A_EUC / Smart Kiosk Group 2
 =====================================================================
 */
 
@@ -137,11 +96,6 @@ unsigned long lastActivity = 0;
 unsigned long cupRemovedTime = 0;
 bool cupRemovedFlag = false;
 
-// Serial change detection
-int last_creditML = -1;
-bool last_dispensing = false;
-unsigned long last_flowCount = 0;
-
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
   unsigned long now = millis();
@@ -192,7 +146,12 @@ void setup() {
 void loop() {
   handleSerialCommand();
   handleCoin();
-  handleCup();
+  
+  // Only handle cup detection in WATER mode
+  if (currentMode == WATER_MODE) {
+    handleCup();
+  }
+  
   handleDispensing();
 
   if (millis() - lastActivity > INACTIVITY_TIMEOUT && !dispensing) {
@@ -217,23 +176,12 @@ bool detectCup() {
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
   
-  // DEBUG: Print raw sensor reading
-  Serial.print("[DEBUG] Ultrasonic duration: ");
-  Serial.println(duration);
-  
   if (duration == 0) {
     // Timeout - no echo received
-    Serial.println("[DEBUG] No echo received - sensor issue");
     return false;
   }
   
   float distance = duration * 0.034 / 2;
-  
-  // DEBUG: Print calculated distance
-  Serial.print("[DEBUG] Calculated distance: ");
-  Serial.print(distance);
-  Serial.println(" cm");
-  
   return (distance > 0 && distance < CUP_DISTANCE_CM);
 }
 
@@ -308,8 +256,8 @@ void startDispense(int ml) {
 void handleDispensing() {
   if (!dispensing) return;
 
-  // Check if cup has been removed for too long
-  if (cupRemovedFlag && (millis() - cupRemovedTime > CUP_REMOVED_GRACE_MS)) {
+  // Check if cup has been removed for too long (only in WATER mode)
+  if (currentMode == WATER_MODE && cupRemovedFlag && (millis() - cupRemovedTime > CUP_REMOVED_GRACE_MS)) {
     Serial.println("[DEBUG] Cup removal grace period expired in handleDispensing");
     stopDispenseEarly();
     return;
@@ -319,18 +267,12 @@ void handleDispensing() {
   float dispensedML = pulsesToML(dispensedPulses);
   float remainingML = creditML - dispensedML;
 
-  // Send progress updates more frequently for better monitoring
-  if (dispensedPulses % 30 == 0) {  // More frequent updates
+  // Send progress updates
+  if (dispensedPulses % 30 == 0) {
     Serial.print("DISPENSE_PROGRESS ml=");
     Serial.print(dispensedML, 1);
     Serial.print(" remaining=");
     Serial.println(remainingML, 1);
-    
-    // Also show pulse info for debugging
-    Serial.print("[DEBUG] Pulses: ");
-    Serial.print(dispensedPulses);
-    Serial.print("/");
-    Serial.println(targetPulses);
   }
 
   if (dispensedPulses >= targetPulses) {
@@ -447,13 +389,42 @@ void handleSerialCommand() {
     currentMode = CHARGE_MODE;
     Serial.println("MODE: CHARGE");
   }
+  else if (cmd.equalsIgnoreCase("START")) {
+    if (currentMode == WATER_MODE && creditML > 0 && !dispensing) {
+      startDispense(creditML);
+      Serial.println("MANUAL_START");
+    } else {
+      Serial.println("ERROR: Cannot start - check mode, credit, or dispensing status");
+    }
+  }
+  else if (cmd.equalsIgnoreCase("STOP")) {
+    if (dispensing) {
+      stopDispenseEarly();
+      Serial.println("MANUAL_STOP");
+    }
+  }
+  else if (cmd.equalsIgnoreCase("ADD100")) {
+    if (currentMode == WATER_MODE) {
+      creditML += 100;
+      Serial.print("ADDED_CREDIT ");
+      Serial.println(creditML);
+    }
+  }
+  else if (cmd.equalsIgnoreCase("ADD500")) {
+    if (currentMode == WATER_MODE) {
+      creditML += 500;
+      Serial.print("ADDED_CREDIT ");
+      Serial.println(creditML);
+    }
+  }
   else if (cmd.equalsIgnoreCase("STATUS")) {
-    Serial.print("CREDIT_ML "); Serial.println(creditML);
-    Serial.print("DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
-    Serial.print("FLOW_PULSES "); Serial.println(flowPulseCount);
-    Serial.print("CUP_REMOVED_FLAG "); Serial.println(cupRemovedFlag ? "YES" : "NO");
+    Serial.print("STATUS_MODE "); Serial.println(currentMode == WATER_MODE ? "WATER" : "CHARGE");
+    Serial.print("STATUS_CREDIT_ML "); Serial.println(creditML);
+    Serial.print("STATUS_DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
+    Serial.print("STATUS_FLOW_PULSES "); Serial.println(flowPulseCount);
+    Serial.print("STATUS_CUP_REMOVED_FLAG "); Serial.println(cupRemovedFlag ? "YES" : "NO");
     if (cupRemovedFlag) {
-      Serial.print("TIME_SINCE_REMOVAL "); 
+      Serial.print("STATUS_TIME_SINCE_REMOVAL "); 
       Serial.println(millis() - cupRemovedTime);
     }
   }

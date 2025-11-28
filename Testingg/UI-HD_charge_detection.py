@@ -40,7 +40,7 @@ UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before terminat
 NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
 # Charging detection tuning (simplified and more reliable)
-PLUG_THRESHOLD = 0.08  # Increased slightly for better detection
+PLUG_THRESHOLD = 0.15  # Increased slightly for better detection
 UNPLUG_THRESHOLD = 0.07  # Lower than plug threshold for hysteresis
 CONFIRM_SAMPLES = 3  # Require 3 consecutive samples for state change
 SAMPLE_INTERVAL = 0.5  # Sample every 500ms

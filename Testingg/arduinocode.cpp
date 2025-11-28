@@ -103,7 +103,7 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 #define COIN_DEBOUNCE_MS  50
 #define COIN_TIMEOUT_MS   800
 #define INACTIVITY_TIMEOUT 300000 // 5 minutes
-#define CUP_DISTANCE_CM   10.0
+#define CUP_DISTANCE_CM   6.0
 #define WATER_MODE 1
 #define CHARGE_MODE 2
 

@@ -1,10 +1,5 @@
 # kiosk_ui_full_v2.py
 # Full UI prototype for: Solar-Powered Smart Vending and Charging Station (UI-only)
-# - Manual UID textbox (no RFID hardware)
-# - Register or Skip flow for new UID
-# - Existing non-member goes to Main with Register-as-Member option
-# - Coin slot simulation inside service screens (charging & water)
-# - Slot selection (1-5), charging session simulation, water cup simulation
 
 import tkinter as tk
 from tkinter import messagebox
@@ -14,10 +9,24 @@ import time
 import json
 import os
 import re
-from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
+import sys
+import glob
+
+# Try to import firebase_helpers, but continue if not available
+try:
+    from firebase_helpers import append_audit_log, deduct_charge_balance_transactionally
+    FIREBASE_HELPERS_AVAILABLE = True
+except ImportError:
+    print("WARN: firebase_helpers not available - running in offline mode")
+    FIREBASE_HELPERS_AVAILABLE = False
+
 # hardware integration
-from hardware_gpio import HardwareGPIO
-import threading
+try:
+    from hardware_gpio import HardwareGPIO
+    HARDWARE_GPIO_AVAILABLE = True
+except ImportError:
+    print("WARN: hardware_gpio not available - using simulation mode")
+    HARDWARE_GPIO_AVAILABLE = False
 
 # load pinmap for hardware_gpio
 BASE = os.path.dirname(__file__)
@@ -29,317 +38,214 @@ except Exception:
     _pinmap = None
 
 # ---------------- Configuration ----------------
-DATABASE_URL = "https://kiosk-testing-22bf4-default-rtdb.firebaseio.com/"  # <-- CHANGE to your DB URL
-SERVICE_KEY = "firebase-key.json"                  # placed in same folder
+DATABASE_URL = "https://kiosk-testing-22bf4-default-rtdb.firebaseio.com/"
 
-# Timing / conversion constants (tweak as needed)
-WATER_SECONDS_PER_LITER = 10       # example: 10 seconds -> 1 liter (for display only)
-WATER_DB_WRITE_INTERVAL = 2        # write water balance every 2 seconds
-CHARGE_DB_WRITE_INTERVAL = 10      # write charge balance every 10 seconds
-UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before termination
-NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
+# AUTO-DETECT FIREBASE SERVICE KEY
+def find_firebase_key():
+    """Automatically find the Firebase service account key file."""
+    possible_names = [
+        "firebase-key.json",
+        "kiosk-testing-22bf4-firebase-adminsdk-fbsvc-2c5b11e75d.json",  # Your actual file
+        "serviceAccountKey.json",
+        "firebase-adminsdk*.json"
+    ]
+    
+    for name in possible_names:
+        if name.endswith('*.json'):
+            # Handle wildcard patterns
+            matches = glob.glob(name)
+            if matches:
+                return matches[0]
+        elif os.path.exists(name):
+            return name
+    
+    # Try to find any JSON file that looks like a Firebase key
+    for file in os.listdir('.'):
+        if file.endswith('.json') and ('firebase' in file.lower() or 'admin' in file.lower()):
+            return file
+    
+    return None
 
-# Charging detection tuning (simplified and more reliable)
-PLUG_THRESHOLD = 0.10  # Increased slightly for better detection
+SERVICE_KEY = find_firebase_key()
+
+if SERVICE_KEY and os.path.exists(SERVICE_KEY):
+    print(f"INFO: Found Firebase key file: {SERVICE_KEY}")
+    try:
+        # Test if the key file is valid
+        with open(SERVICE_KEY, 'r') as f:
+            key_data = json.load(f)
+        FIREBASE_AVAILABLE = True
+        print("INFO: Firebase key file is valid JSON")
+    except Exception as e:
+        print(f"ERROR: Firebase key file is invalid: {e}")
+        FIREBASE_AVAILABLE = False
+        SERVICE_KEY = None
+else:
+    print("WARN: No Firebase key file found")
+    FIREBASE_AVAILABLE = False
+    SERVICE_KEY = None
+
+# Timing / conversion constants
+WATER_SECONDS_PER_LITER = 10
+WATER_DB_WRITE_INTERVAL = 2
+CHARGE_DB_WRITE_INTERVAL = 10
+UNPLUG_GRACE_SECONDS = 60
+NO_CUP_TIMEOUT = 10
+
+# Charging detection tuning
+PLUG_THRESHOLD = 0.10
 UNPLUG_THRESHOLD = 0.07
-UNPLUG_GRACE_SECONDS = 30  # Lower than plug threshold for hysteresis
-CONFIRM_SAMPLES = 3  # Require 3 consecutive samples for state change
-SAMPLE_INTERVAL = 0.5  # Sample every 500ms
+UNPLUG_GRACE_SECONDS = 30
+CONFIRM_SAMPLES = 3
+SAMPLE_INTERVAL = 0.5
 
 # Coin to seconds mapping (charging)
-COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
+COIN_MAP = {1: 60, 5: 300, 10: 600}
 
-# Coin to ml mapping (water). Keep this separate from COIN_MAP which is for charging.
-# Per user request: 1P = 50 mL, 5P = 250 mL, 10P = 500 mL
+# Coin to ml mapping (water)
 WATER_COIN_MAP = {1: 50, 5: 250, 10: 500}
 
 # Default starting balances for newly registered members (seconds)
-DEFAULT_WATER_BAL = 600   # 10 min
-DEFAULT_CHARGE_BAL = 1200 # 20 min
+DEFAULT_WATER_BAL = 600
+DEFAULT_CHARGE_BAL = 1200
 
 # ------------------------------------------------
 
+# Initialize Firebase Admin only if available
+users_ref = None
+slots_ref = None
+firebase_app = None
 
-class SessionManager:
-    """Manage charging sessions per-slot so each slot has its own timer/monitor.
-    Sessions are keyed by slot name (e.g. 'slot1'). This runs per-slot after() jobs
-    on the Tk root (controller) so multiple sessions can run concurrently.
-    """
-    def __init__(self, controller):
-        self.controller = controller
-        self.sessions = {}  # slot -> session dict
-
-    def start_session(self, uid, slot):
-        # avoid duplicate
-        if slot in self.sessions:
-            print(f"WARN: session already running for {slot}")
-            return
-        hw = getattr(self.controller, 'hw', None)
-        # read initial remaining from DB
-        user = read_user(uid) or {}
-        remaining = user.get('charge_balance', 0) or 0
-        sess = {
-            'uid': uid,
-            'slot': slot,
-            'remaining': remaining,
-            'is_charging': False,
-            'tick_job': None,
-            'poll_job': None,
-            'monitor_job': None,
-            'plug_hits': [],
-            'unplug_time': None,
-        }
-        self.sessions[slot] = sess
-        # mark pending in DB
+if FIREBASE_AVAILABLE and SERVICE_KEY:
+    try:
+        print(f"INFO: Initializing Firebase with {SERVICE_KEY}...")
+        cred = credentials.Certificate(SERVICE_KEY)
+        firebase_app = firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
+        users_ref = db.reference("users")
+        slots_ref = db.reference("slots")
+        print("INFO: Firebase initialized successfully")
+        
+        # Test connection by reading slots
         try:
-            write_user(uid, {'charging_status': 'pending'})
-            users_ref.child(uid).child('slot_status').update({slot: 'active'})
-            write_slot(slot, {'status': 'active', 'current_user': uid})
-        except Exception:
-            pass
-        # power on
-        try:
-            if hw is not None:
-                hw.relay_on(slot)
-        except Exception:
-            pass
-        # begin poll for device draw (if hw present) otherwise start tick immediately
-        if hw is None:
-            self._begin_charging(sess)
-        else:
-            # schedule polling every 500ms
-            self._schedule_poll_start(slot, delay=500)
-
-    def _schedule_poll_start(self, slot, delay=500):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        try:
-            # use controller.after
-            sess['poll_job'] = self.controller.after(delay, lambda: self._poll_for_start(slot))
-        except Exception:
-            sess['poll_job'] = None
-
-    def _poll_for_start(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        hw = getattr(self.controller, 'hw', None)
-        if not hw:
-            self._begin_charging(sess)
-            return
-        try:
-            cur = hw.read_current(slot)
-            amps = float(cur.get('amps', 0) or 0)
-        except Exception:
-            amps = 0.0
-        now = time.time()
-        if amps >= PLUG_THRESHOLD:
-            sess['plug_hits'].append(now)
-            # prune
-            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= 2.0]
-        else:
-            sess['plug_hits'] = [t for t in sess['plug_hits'] if (now - t) <= 2.0]
-        if len(sess['plug_hits']) >= 3:
-            # device detected -> begin charging
+            test_slots = slots_ref.get()
+            print(f"INFO: Firebase connection test successful. Found {len(test_slots) if test_slots else 0} slots.")
+        except Exception as e:
+            print(f"WARN: Firebase connection test failed: {e}")
+        
+        # Ensure slots node exists (slot1..slot4)
+        for i in range(1, 5):
+            slot_key = f"slot{i}"
             try:
-                write_user(sess['uid'], {'charging_status': 'charging'})
-            except Exception:
-                pass
-            try:
-                append_audit_log(actor=sess['uid'], action='charging_detected', meta={'slot': slot})
-            except Exception:
-                pass
-            self._begin_charging(sess)
-            return
-        # reschedule
-        self._schedule_poll_start(slot, delay=500)
-
-    def _begin_charging(self, sess):
-        slot = sess['slot']
-        uid = sess['uid']
-        sess['is_charging'] = True
-        sess['plug_hits'] = []
-        sess['unplug_time'] = None
-        # schedule tick loop
-        self._schedule_tick(slot)
-        # schedule unplug monitor
-        try:
-            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
-        except Exception:
-            sess['monitor_job'] = None
-
-    def _schedule_tick(self, slot, delay=1000):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        try:
-            sess['tick_job'] = self.controller.after(delay, lambda: self._tick(slot))
-        except Exception:
-            sess['tick_job'] = None
-
-    def _tick(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        if not sess.get('is_charging'):
-            # do not decrement while paused
-            self._schedule_tick(slot)
-            return
-        sess['remaining'] = max(0, sess['remaining'] - 1)
-        # persist to DB periodically
-        try:
-            users_ref.child(sess['uid']).update({'charge_balance': sess['remaining']})
-        except Exception:
-            pass
-        # update any visible UI
-        try:
-            self.controller.refresh_all_user_info()
-        except Exception:
-            pass
-        if sess['remaining'] <= 0:
-            self.end_session(slot, reason='time_up')
-            return
-        # schedule next tick
-        self._schedule_tick(slot, delay=1000)
-
-    def _monitor_unplug(self, slot):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        hw = getattr(self.controller, 'hw', None)
-        if not hw:
-            # no hardware to monitor
-            return
-        try:
-            cur = hw.read_current(slot)
-            amps = float(cur.get('amps', 0) or 0)
-        except Exception:
-            amps = 0.0
-        now = time.time()
-        if amps >= PLUG_THRESHOLD:
-            # device drawing current -> clear idle timer and ensure charging continues
-            sess['unplug_time'] = None
-            if not sess['is_charging']:
-                sess['is_charging'] = True
-                # restart tick loop
-                self._schedule_tick(slot)
-                try:
-                    write_user(sess['uid'], {'charging_status': 'charging'})
-                except Exception:
-                    pass
-        else:
-            if not sess['unplug_time']:
-                sess['unplug_time'] = now
-                sess['is_charging'] = False
-            else:
-                if (now - sess['unplug_time']) >= UNPLUG_GRACE_SECONDS:
-                    self.end_session(slot, reason='unplug_timeout')
-                    return
-        # reschedule monitor
-        try:
-            sess['monitor_job'] = self.controller.after(500, lambda: self._monitor_unplug(slot))
-        except Exception:
-            sess['monitor_job'] = None
-
-    def end_session(self, slot, reason='manual'):
-        sess = self.sessions.get(slot)
-        if not sess:
-            return
-        uid = sess['uid']
-        # cancel jobs
-        try:
-            if sess.get('tick_job') is not None:
-                self.controller.after_cancel(sess['tick_job'])
-        except Exception:
-            pass
-        try:
-            if sess.get('poll_job') is not None:
-                self.controller.after_cancel(sess['poll_job'])
-        except Exception:
-            pass
-        try:
-            if sess.get('monitor_job') is not None:
-                self.controller.after_cancel(sess['monitor_job'])
-        except Exception:
-            pass
-        # turn off hardware and unlock
-        try:
-            hw = getattr(self.controller, 'hw', None)
-            if hw is not None:
-                try:
-                    hw.relay_off(slot)
-                except Exception:
-                    pass
-                try:
-                    hw.lock_slot(slot, lock=False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # update DB
-        try:
-            write_user(uid, {'charging_status': 'idle', 'occupied_slot': 'none', 'charge_balance': 0})
-            write_slot(slot, {'status': 'inactive', 'current_user': 'none'})
-            users_ref.child(uid).child('slot_status').update({slot: 'inactive'})
-        except Exception:
-            pass
-        try:
-            append_audit_log(actor=uid, action='charging_finished', meta={'slot': slot, 'reason': reason})
-        except Exception:
-            pass
-        # cleanup
-        try:
-            del self.sessions[slot]
-        except Exception:
-            pass
-        # refresh UI
-        try:
-            self.controller.refresh_all_user_info()
-        except Exception:
-            pass
-
-
-# Initialize Firebase Admin
-cred = credentials.Certificate(SERVICE_KEY)
-firebase_admin.initialize_app(cred, {"databaseURL": DATABASE_URL})
-users_ref = db.reference("users")
-slots_ref = db.reference("slots")
-
-# Ensure slots node exists (slot1..slot4)
-for i in range(1, 5):
-    slot_key = f"slot{i}"
-    if slots_ref.child(slot_key).get() is None:
-        slots_ref.child(slot_key).set({"status": "inactive", "current_user": "none"})
+                if slots_ref.child(slot_key).get() is None:
+                    slots_ref.child(slot_key).set({"status": "inactive", "current_user": "none"})
+                    print(f"INFO: Created slot {slot_key}")
+            except Exception as e:
+                print(f"WARN: Could not initialize slot {slot_key}: {e}")
+                
+    except Exception as e:
+        print(f"ERROR: Firebase initialization failed: {e}")
+        FIREBASE_AVAILABLE = False
+        users_ref = None
+        slots_ref = None
+else:
+    print("INFO: Running in offline mode - no Firebase connectivity")
 
 # ----------------- Helper Functions -----------------
 def user_exists(uid):
-    return users_ref.child(uid).get() is not None
+    if not FIREBASE_AVAILABLE or users_ref is None:
+        return False
+    try:
+        return users_ref.child(uid).get() is not None
+    except Exception as e:
+        print(f"ERROR checking user existence: {e}")
+        return False
 
 def create_nonmember(uid):
     """Create a minimal user node as non-member (Guest)."""
-    users_ref.child(uid).set({
-        "type": "nonmember",
-        "name": "Guest",
-        "student_id": "",
-        "water_balance": None,    # members only
-        "charge_balance": 0,
-        "occupied_slot": "none",
-        "charging_status": "idle",
-        "slot_status": {}
-    })
+    if not FIREBASE_AVAILABLE or users_ref is None:
+        print(f"INFO: Offline mode - would create nonmember: {uid}")
+        return
+        
+    try:
+        users_ref.child(uid).set({
+            "type": "nonmember",
+            "name": "Guest",
+            "student_id": "",
+            "water_balance": None,
+            "charge_balance": 0,
+            "occupied_slot": "none",
+            "charging_status": "idle",
+            "slot_status": {}
+        })
+        print(f"INFO: Created nonmember user: {uid}")
+    except Exception as e:
+        print(f"ERROR creating nonmember: {e}")
 
 def read_user(uid):
-    return users_ref.child(uid).get()
+    if not FIREBASE_AVAILABLE or users_ref is None:
+        # Return a mock user for offline testing
+        return {
+            "type": "nonmember",
+            "name": "Guest",
+            "student_id": "",
+            "water_balance": None,
+            "charge_balance": 0,
+            "occupied_slot": "none",
+            "charging_status": "idle",
+            "slot_status": {}
+        }
+    
+    try:
+        user_data = users_ref.child(uid).get()
+        if user_data is None:
+            return {
+                "type": "nonmember", 
+                "name": "Guest",
+                "student_id": "",
+                "water_balance": None,
+                "charge_balance": 0,
+                "occupied_slot": "none",
+                "charging_status": "idle",
+                "slot_status": {}
+            }
+        return user_data
+    except Exception as e:
+        print(f"ERROR reading user {uid}: {e}")
+        return None
 
 def write_user(uid, data: dict):
-    users_ref.child(uid).update(data)
+    if not FIREBASE_AVAILABLE or users_ref is None:
+        print(f"INFO: Offline mode - would update user {uid}: {data}")
+        return
+        
+    try:
+        users_ref.child(uid).update(data)
+    except Exception as e:
+        print(f"ERROR writing user {uid}: {e}")
 
 def read_slot(slot):
-    return slots_ref.child(slot).get()
+    if not FIREBASE_AVAILABLE or slots_ref is None:
+        # Return mock slot data for offline testing
+        return {"status": "inactive", "current_user": "none"}
+    
+    try:
+        slot_data = slots_ref.child(slot).get()
+        if slot_data is None:
+            return {"status": "inactive", "current_user": "none"}
+        return slot_data
+    except Exception as e:
+        print(f"ERROR reading slot {slot}: {e}")
+        return {"status": "inactive", "current_user": "none"}
 
 def write_slot(slot, data: dict):
-    slots_ref.child(slot).update(data)
+    if not FIREBASE_AVAILABLE or slots_ref is None:
+        print(f"INFO: Offline mode - would update slot {slot}: {data}")
+        return
+        
+    try:
+        slots_ref.child(slot).update(data)
+    except Exception as e:
+        print(f"ERROR writing slot {slot}: {e}")
 
 def seconds_to_min_display(sec):
     if sec is None:
@@ -349,15 +255,18 @@ def seconds_to_min_display(sec):
 def water_seconds_to_liters(sec):
     if sec is None:
         return "N/A"
-    # Historically this function converted 'seconds' -> liters. The app now stores
-    # water balances as milliliters (mL). Interpret the input as mL and convert
-    # to liters for display.
     try:
         ml = float(sec or 0)
         liters = ml / 1000.0
         return f"{liters:.2f} L"
     except Exception:
         return "N/A"
+
+# Mock append_audit_log if not available
+if not FIREBASE_HELPERS_AVAILABLE:
+    def append_audit_log(actor, action, meta=None):
+        print(f"AUDIT: {actor} - {action} - {meta}")
+
 
 # ----------------- Tkinter UI -----------------
 class KioskApp(tk.Tk):

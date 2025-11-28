@@ -248,11 +248,13 @@ class ArduinoListener:
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
 
-        # ----------------- Water Mode Events ---------------------------
-        elif line == "CUP_DETECTED":
-            if self.callback:
-                self.callback("CUP_DETECTED", {})
-
+    # -------------------------------------------------
+    # 📤 SEND COMMANDS TO ARDUINO
+    # -------------------------------------------------
+    def send_command(self, cmd):
+        """
+        Send a command string to Arduino.
+        
         Example:
             send_command("MODE WATER")
             send_command("RESET")

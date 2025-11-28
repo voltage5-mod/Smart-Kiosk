@@ -287,6 +287,37 @@ if not FIREBASE_HELPERS_AVAILABLE:
     def append_audit_log(actor, action, meta=None):
         print(f"AUDIT: {actor} - {action} - {meta}")
 
+# ----------------- Session Manager -----------------
+class SessionManager:
+    def __init__(self, controller):
+        self.controller = controller
+        self.sessions = {}  # slot -> session data
+        
+    def start_session(self, slot, uid, initial_balance):
+        """Start a new charging session"""
+        self.sessions[slot] = {
+            'uid': uid,
+            'remaining': initial_balance,
+            'start_time': time.time(),
+            'active': True
+        }
+        
+    def stop_session(self, slot):
+        """Stop a charging session"""
+        if slot in self.sessions:
+            self.sessions[slot]['active'] = False
+            # Don't delete immediately for audit purposes
+            
+    def get_remaining_time(self, slot):
+        """Get remaining time for a session"""
+        if slot in self.sessions and self.sessions[slot]['active']:
+            return self.sessions[slot]['remaining']
+        return 0
+        
+    def update_remaining_time(self, slot, new_remaining):
+        """Update remaining time for a session"""
+        if slot in self.sessions:
+            self.sessions[slot]['remaining'] = new_remaining
 
 # ----------------- Tkinter UI -----------------
 class KioskApp(tk.Tk):
@@ -468,11 +499,11 @@ class KioskApp(tk.Tk):
                 return result
             else:
                 print(f"WARN: ArduinoListener has no send_command or write method")
-                return False
+                return False  # ADDED THIS LINE
         except Exception as e:
             print(f"ERROR sending command to Arduino: {e}")
-            return False
-
+            return False  # ADDED THIS LINE
+    
     def is_arduino_connected(self):
         """Check if Arduino is connected and responsive."""
         if not self.arduino_available or not self.arduino_listener:
@@ -696,9 +727,47 @@ class KioskApp(tk.Tk):
     
     def cleanup(self):
         """Gracefully shutdown resources on app exit."""
+        # Stop all background jobs in all frames
+        try:
+            for frame in self.frames.values():
+                # Stop charging-related jobs
+                if hasattr(frame, '_tick_job') and frame._tick_job:
+                    try:
+                        self.after_cancel(frame._tick_job)
+                    except Exception:
+                        pass
+                if hasattr(frame, '_wait_job') and frame._wait_job:
+                    try:
+                        self.after_cancel(frame._wait_job)
+                    except Exception:
+                        pass
+                if hasattr(frame, '_hw_monitor_job') and frame._hw_monitor_job:
+                    try:
+                        self.after_cancel(frame._hw_monitor_job)
+                    except Exception:
+                        pass
+                if hasattr(frame, '_poll_timeout_job') and frame._poll_timeout_job:
+                    try:
+                        self.after_cancel(frame._poll_timeout_job)
+                    except Exception:
+                        pass
+                # Stop water-related jobs
+                if hasattr(frame, '_water_job') and frame._water_job:
+                    try:
+                        self.after_cancel(frame._water_job)
+                    except Exception:
+                        pass
+                if hasattr(frame, '_water_nocup_job') and frame._water_nocup_job:
+                    try:
+                        self.after_cancel(frame._water_nocup_job)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"WARN: Error stopping background jobs: {e}")
+        
+        # Stop Arduino listener
         try:
             if self.arduino_available and self.arduino_listener is not None:
-                # Try to stop the listener
                 if hasattr(self.arduino_listener, 'stop'):
                     self.arduino_listener.stop()
                     print("INFO: ArduinoListener stopped.")
@@ -707,7 +776,6 @@ class KioskApp(tk.Tk):
                     print("INFO: ArduinoListener closed.")
         except Exception as e:
             print(f"WARN: Error stopping ArduinoListener: {e}")
-
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):
@@ -757,13 +825,31 @@ class ScanScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def refresh(self):
-        self.uid_entry.delete(0, tk.END)
-        self.info.config(text="")
-        # ensure the entry has focus so a scanner's automatic Enter is received
-        try:
-            self.uid_entry.focus_set()
-        except Exception:
-            pass
+        self.user_info.refresh()
+        self.test_arduino_connection()
+        
+        uid = self.controller.active_uid
+        if not uid:
+            self.time_var.set("0")
+            self.status_lbl.config(text="Please scan RFID first")
+            return
+            
+        user = read_user(uid)
+        if user.get("type") == "member":
+            wb = user.get("water_balance", 0) or 0
+            self.time_var.set(str(wb))
+            self._water_remaining = wb  # ADD THIS LINE FOR CONSISTENCY
+            status_text = "Place cup to start" if wb > 0 else "No water balance"
+            self.status_lbl.config(text=status_text)
+        else:
+            temp = user.get("temp_water_time", 0) or 0
+            self.temp_water_time = temp
+            self.time_var.set(str(temp))
+            self._water_remaining = temp  # ADD THIS LINE FOR CONSISTENCY
+            if temp <= 0:
+                self.status_lbl.config(text="Insert coins to buy water")
+            else:
+                self.status_lbl.config(text="Place cup to start")
 
 # --------- Screen: RegisterChoice (for new UID) ----------
 class RegisterChoiceScreen(tk.Frame):
@@ -1977,7 +2063,7 @@ class ChargingScreen(tk.Frame):
                     if idle_time >= UNPLUG_GRACE_SECONDS:
                         print(f"[UNPLUG MON] Grace period expired ({idle_time:.0f}s), stopping session")
                         self.stop_session()
-                        return
+                        # DON'T RETURN HERE - let the method continue to schedule next monitor
                     else:
                         print(f"[UNPLUG MON] Still unplugged - {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
             
@@ -2004,7 +2090,7 @@ class ChargingScreen(tk.Frame):
             if hasattr(self, 'unplug_readings'):
                 self.unplug_readings = []
 
-        # Continue monitoring
+        # Continue monitoring - THIS MUST ALWAYS EXECUTE
         try:
             self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
         except Exception:
@@ -2084,8 +2170,17 @@ class ChargingScreen(tk.Frame):
         if not uid or not slot:
             print("WARN: No slot assigned.")
             return
-        users_ref.child(uid).child("slot_status").update({slot: "inactive"})
-        print(f"INFO: {slot} unlocked. Please unplug your device when ready.")
+            
+        # ADD SAFETY CHECK:
+        if users_ref is not None:
+            try:
+                users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                print(f"INFO: {slot} unlocked. Please unplug your device when ready.")
+            except Exception as e:
+                print(f"ERROR unlocking slot: {e}")
+        else:
+            print("INFO: Offline mode - slot unlocked locally")
+            
         # update header info but do not stop charging; unlocking does not equal unplug
         try:
             self.user_info.refresh()

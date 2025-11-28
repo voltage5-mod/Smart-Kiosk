@@ -2417,7 +2417,7 @@ class WaterScreen(tk.Frame):
         # Test Arduino connection
         self.test_arduino_connection()
 
-    def handle_arduino_event(self, event, value):
+def handle_arduino_event(self, event, value):
         """Handle Arduino events in WaterScreen"""
         print(f"WaterScreen received: {event} = {value}")
         
@@ -2440,9 +2440,13 @@ class WaterScreen(tk.Frame):
                         write_user(uid, {"temp_water_time": new_balance})
                         self.temp_water_time = new_balance
                     
-                    # Show popup
-                    self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
+                    # IMMEDIATELY refresh the UI
                     self.refresh()
+                    
+                    # Show popup AFTER refresh
+                    self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
+                    
+        # ... rest of your existing event handling ...
                     
         elif event == 'cup_detected':
             self.cup_present = True

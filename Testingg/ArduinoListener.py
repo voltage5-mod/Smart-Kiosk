@@ -195,32 +195,13 @@ class ArduinoListener:
     # -------------------------------------------------
     # MESSAGE PARSER
     # -------------------------------------------------
-    def _process_line(self, line):
+   def _process_line(self, line):
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
-        # Skip debug lines but log them
-        if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or "Coin detected" in line:
-            self.logger.info(f"Arduino Debug: {line}")
-            
-            # Try to extract coin value from debug messages like "Coin detected, new credit: 300 ml"
-            if "Coin detected" in line:
-                try:
-                    # Extract number from "Coin detected, new credit: 300 ml"
-                    import re
-                    match = re.search(r'credit:\s*(\d+)', line)
-                    if match:
-                        credit_ml = int(match.group(1))
-                        # We can't determine coin value from this, but we know credit changed
-                        self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
-                except:
-                    pass
-            return
-
-        # Handle COIN_INSERTED events (from your Arduino code)
+        # Handle COIN_INSERTED events FIRST (highest priority)
         if line.startswith("COIN_INSERTED"):
             try:
-                # Format: "COIN_INSERTED 5"
                 parts = line.split()
                 if len(parts) >= 2:
                     coin_value = int(parts[1])
@@ -232,10 +213,7 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
                 return
 
-        # Handle other events...
-        # ... rest of your existing parsing code ...
-
-        # Handle COIN_WATER events (water credit in mL)
+        # Handle COIN_WATER events
         if line.startswith("COIN_WATER"):
             try:
                 parts = line.split()
@@ -263,7 +241,39 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
                 return
 
-        # Handle COIN events with better detection
+        # Handle debug messages with coin detection
+        if "Coin detected" in line or "new credit:" in line:
+            self.logger.info(f"Arduino Debug: {line}")
+            
+            # Try to extract coin value from various debug formats
+            try:
+                import re
+                # Format: "Coin detected, new credit: 300 ml"
+                credit_match = re.search(r'credit:\s*(\d+)', line)
+                if credit_match:
+                    credit_ml = int(credit_match.group(1))
+                    self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
+                    
+                    # Try to determine coin value from credit amount
+                    coin_value = None
+                    if credit_ml % 50 == 0:  # 1 peso = 50ml
+                        coin_value = 1
+                    elif credit_ml % 250 == 0:  # 5 peso = 250ml  
+                        coin_value = 5
+                    elif credit_ml % 500 == 0:  # 10 peso = 500ml
+                        coin_value = 10
+                        
+                    if coin_value:
+                        event = "coin"
+                        value = coin_value
+                        self._dispatch_event(event, value, line)
+                        return
+                        
+            except Exception as e:
+                self.logger.debug(f"Could not extract coin from debug: {e}")
+            return
+
+        # Handle other COIN events with better detection
         if "COIN" in line.upper() or line.startswith("COIN:"):
             # Extract coin value - handle various formats
             coin_value = None
@@ -295,7 +305,7 @@ class ArduinoListener:
 
         # Handle MODE command format
         if line.startswith("MODE:"):
-            event = "MODE"
+            event = "mode"
             value = line.split(":", 1)[1].strip()
             self._dispatch_event(event, value, line)
             return
@@ -347,7 +357,45 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse CREDIT_LEFT value from: {line}")
                 return
 
-        # Rest of your existing parsing logic...
+        # Handle DISPENSE_PROGRESS events
+        if line.startswith("DISPENSE_PROGRESS"):
+            try:
+                # Format: "DISPENSE_PROGRESS ml=300.0 remaining=200.0"
+                import re
+                ml_match = re.search(r'ml=([\d.]+)', line)
+                remaining_match = re.search(r'remaining=([\d.]+)', line)
+                
+                if ml_match and remaining_match:
+                    ml_dispensed = float(ml_match.group(1))
+                    ml_remaining = float(remaining_match.group(1))
+                    event = "dispense_progress"
+                    value = {"dispensed": ml_dispensed, "remaining": ml_remaining}
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse DISPENSE_PROGRESS value from: {line}")
+                return
+
+        # Handle CALIBRATION events
+        if line.startswith("CAL_DONE"):
+            event = "calibration_done"
+            value = line
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle SYSTEM events
+        if line.startswith("System Ready") or line.startswith("System reset"):
+            event = "system_ready"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+
+        # Skip other debug lines but log them
+        if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or line.startswith("Calibrating") or line.startswith("FLOW CALIBRATION"):
+            self.logger.info(f"Arduino Debug: {line}")
+            return
+
+        # Parse generic events (fallback)
         parts = line.split()
         if not parts:
             return

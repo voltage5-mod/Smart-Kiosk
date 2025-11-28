@@ -430,7 +430,7 @@ class KioskApp(tk.Tk):
                 from ArduinoListener import ArduinoListener
             except Exception:
                 # fallback to older module name if present
-                from arduino_listener import ArduinoListener
+                from ArduinoListener import ArduinoListener
 
             # create central listener and dispatch events to screens
             self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)

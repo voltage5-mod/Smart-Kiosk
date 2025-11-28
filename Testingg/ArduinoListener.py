@@ -199,10 +199,6 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
-        # Add debug output for cup-related messages
-        if "CUP" in line.upper() or "[DEBUG]" in line:
-            self.logger.info(f"CUP DEBUG: {line}")
-
         # Handle CUP_DETECTED events
         if line.startswith("CUP_DETECTED"):
             self.logger.info("CUP DETECTED - Dispensing should start")
@@ -231,9 +227,7 @@ class ArduinoListener:
             self.logger.info(f"DISTANCE: {line}")
             return
 
-        # ... rest of your existing parsing code ...
-
-        # Handle COIN_INSERTED events FIRST (highest priority)
+        # Handle COIN_INSERTED events (highest priority)
         if line.startswith("COIN_INSERTED"):
             try:
                 parts = line.split()
@@ -261,7 +255,6 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
                 return
 
-    # ... rest of your existing parsing code ...
         # Handle COIN_CHARGE events (charging credit in pesos)
         if line.startswith("COIN_CHARGE"):
             try:
@@ -276,95 +269,14 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
                 return
 
-        # Handle debug messages with coin detection
-        if "Coin detected" in line or "new credit:" in line:
-            self.logger.info(f"Arduino Debug: {line}")
-            
-            # Try to extract coin value from various debug formats
-            try:
-                import re
-                # Format: "Coin detected, new credit: 300 ml"
-                credit_match = re.search(r'credit:\s*(\d+)', line)
-                if credit_match:
-                    credit_ml = int(credit_match.group(1))
-                    self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
-                    
-                    # Try to determine coin value from credit amount
-                    coin_value = None
-                    if credit_ml % 50 == 0:  # 1 peso = 50ml
-                        coin_value = 1
-                    elif credit_ml % 250 == 0:  # 5 peso = 250ml  
-                        coin_value = 5
-                    elif credit_ml % 500 == 0:  # 10 peso = 500ml
-                        coin_value = 10
-                        
-                    if coin_value:
-                        event = "coin"
-                        value = coin_value
-                        self._dispatch_event(event, value, line)
-                        return
-                        
-            except Exception as e:
-                self.logger.debug(f"Could not extract coin from debug: {e}")
-            return
-
-        # Handle other COIN events with better detection
-        if "COIN" in line.upper() or line.startswith("COIN:"):
-            # Extract coin value - handle various formats
-            coin_value = None
-            try:
-                if ":" in line:
-                    # Format: "COIN:10" or "COIN: 10"
-                    value_str = line.split(":", 1)[1].strip()
-                    coin_value = int(value_str)
-                else:
-                    # Format: "COIN 10" or just "10" (if COIN is implied)
-                    parts = line.split()
-                    if len(parts) > 1:
-                        coin_value = int(parts[1])
-                    else:
-                        coin_value = 1  # Default coin value
-                        
-                event = "coin"
-                value = coin_value
-                self._dispatch_event(event, value, line)
-                return
-                
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse coin value from: {line}")
-                # Still dispatch as coin event with None value
-                event = "coin"
-                value = None
-                self._dispatch_event(event, value, line)
-                return
-
-        # Handle MODE command format
-        if line.startswith("MODE:"):
-            event = "mode"
-            value = line.split(":", 1)[1].strip()
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle CUP events
-        if line.startswith("CUP_DETECTED"):
-            event = "cup_detected"
-            value = True
-            self._dispatch_event(event, value, line)
-            return
-            
-        if line.startswith("CUP_REMOVED"):
-            event = "cup_removed"
-            value = True
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle DISPENSE events
+        # Handle DISPENSE_START events
         if line.startswith("DISPENSE_START"):
             event = "dispense_start"
             value = True
             self._dispatch_event(event, value, line)
             return
             
+        # Handle DISPENSE_DONE events
         if line.startswith("DISPENSE_DONE"):
             try:
                 parts = line.split()
@@ -411,6 +323,13 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse DISPENSE_PROGRESS value from: {line}")
                 return
 
+        # Handle MODE command format
+        if line.startswith("MODE:"):
+            event = "mode"
+            value = line.split(":", 1)[1].strip()
+            self._dispatch_event(event, value, line)
+            return
+
         # Handle CALIBRATION events
         if line.startswith("CAL_DONE"):
             event = "calibration_done"
@@ -424,6 +343,68 @@ class ArduinoListener:
             value = True
             self._dispatch_event(event, value, line)
             return
+
+        # Handle debug messages with coin detection (legacy format)
+        if "Coin detected" in line or "new credit:" in line:
+            self.logger.info(f"Arduino Debug: {line}")
+            
+            # Try to extract coin value from various debug formats
+            try:
+                import re
+                # Format: "Coin detected, new credit: 300 ml"
+                credit_match = re.search(r'credit:\s*(\d+)', line)
+                if credit_match:
+                    credit_ml = int(credit_match.group(1))
+                    self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
+                    
+                    # Try to determine coin value from credit amount
+                    coin_value = None
+                    if credit_ml % 50 == 0:  # 1 peso = 50ml
+                        coin_value = 1
+                    elif credit_ml % 250 == 0:  # 5 peso = 250ml  
+                        coin_value = 5
+                    elif credit_ml % 500 == 0:  # 10 peso = 500ml
+                        coin_value = 10
+                        
+                    if coin_value:
+                        event = "coin"
+                        value = coin_value
+                        self._dispatch_event(event, value, line)
+                        return
+                        
+            except Exception as e:
+                self.logger.debug(f"Could not extract coin from debug: {e}")
+            return
+
+        # Handle other COIN events with better detection (legacy format)
+        if "COIN" in line.upper() and not line.startswith("COIN_INSERTED") and not line.startswith("COIN_WATER") and not line.startswith("COIN_CHARGE"):
+            # Extract coin value - handle various formats
+            coin_value = None
+            try:
+                if ":" in line:
+                    # Format: "COIN:10" or "COIN: 10"
+                    value_str = line.split(":", 1)[1].strip()
+                    coin_value = int(value_str)
+                else:
+                    # Format: "COIN 10" or just "10" (if COIN is implied)
+                    parts = line.split()
+                    if len(parts) > 1:
+                        coin_value = int(parts[1])
+                    else:
+                        coin_value = 1  # Default coin value
+                        
+                event = "coin"
+                value = coin_value
+                self._dispatch_event(event, value, line)
+                return
+                
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse coin value from: {line}")
+                # Still dispatch as coin event with None value
+                event = "coin"
+                value = None
+                self._dispatch_event(event, value, line)
+                return
 
         # Skip other debug lines but log them
         if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or line.startswith("Calibrating") or line.startswith("FLOW CALIBRATION"):

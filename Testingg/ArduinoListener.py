@@ -195,7 +195,7 @@ class ArduinoListener:
     # -------------------------------------------------
     # MESSAGE PARSER
     # -------------------------------------------------
-   def _process_line(self, line):
+    def _process_line(self, line):
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
@@ -415,7 +415,7 @@ class ArduinoListener:
 
         # Dispatch the event
         self._dispatch_event(event, value, line)
-
+        
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
         payload = {

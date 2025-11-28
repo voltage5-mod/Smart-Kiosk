@@ -117,9 +117,10 @@ slots_ref = None
 firebase_app = None
 
 # Add this diagnostic code before your Firebase initialization
+# Replace the diagnose_firebase_issue function with this version:
 def diagnose_firebase_issue():
     if not SERVICE_KEY or not os.path.exists(SERVICE_KEY):
-        print("❌ ERROR: Firebase key file not found")
+        print("ERROR: Firebase key file not found")
         return False
     
     try:
@@ -130,23 +131,24 @@ def diagnose_firebase_issue():
         missing = [field for field in required_fields if field not in key_data]
         
         if missing:
-            print(f"❌ ERROR: Firebase key missing fields: {missing}")
+            print(f"ERROR: Firebase key missing fields: {missing}")
             return False
             
-        print("✅ Firebase key structure is valid")
+        print("SUCCESS: Firebase key structure is valid")
         return True
         
     except json.JSONDecodeError:
-        print("❌ ERROR: Firebase key is not valid JSON")
+        print("ERROR: Firebase key is not valid JSON")
         return False
     except Exception as e:
-        print(f"❌ ERROR: Could not read Firebase key: {e}")
+        print(f"ERROR: Could not read Firebase key: {e}")
         return False
 
-# Run the diagnostic
+# Also replace the diagnostic call section:
+# Run the diagnostic (remove Unicode characters from print statements)
 if not diagnose_firebase_issue():
-    print("🚨 Firebase will not be available")
-    
+    print("FIREBASE ERROR: Firebase will not be available")
+
 if FIREBASE_AVAILABLE and SERVICE_KEY:
     try:
         print(f"INFO: Initializing Firebase with {SERVICE_KEY}...")

@@ -2539,7 +2539,8 @@ class WaterScreen(tk.Frame):
                 self.debug_var.set("Dispensing started automatically")
                 
             elif event == 'dispense_done':
-                self._end_dispensing("Dispensing completed")
+                dispensed_ml = value
+                self._end_dispensing(f"Dispensing completed: {dispensed_ml}mL")
                 
             elif event == 'credit_left':
                 remaining_ml = value
@@ -2583,6 +2584,44 @@ class WaterScreen(tk.Frame):
             elif event == 'calibration_done':
                 self.debug_var.set("Calibration completed")
                 
+            elif event == 'coin_water':
+                # Direct coin water event from Arduino
+                added_ml = value
+                uid = self.controller.active_uid
+                if uid and added_ml > 0:
+                    user = read_user(uid)
+                    new_balance = 0
+                    
+                    if user and user.get("type") == "member":
+                        current = user.get("water_balance", 0) or 0
+                        new_balance = current + added_ml
+                        write_user(uid, {"water_balance": new_balance})
+                    else:
+                        current = user.get("temp_water_time", 0) or 0
+                        new_balance = current + added_ml
+                        write_user(uid, {"temp_water_time": new_balance})
+                        self.temp_water_time = new_balance
+                    
+                    # Update UI
+                    self.time_var.set(str(new_balance))
+                    self.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
+                    self.update_idletasks()
+                    self.controller.refresh_all_user_info()
+                    
+            elif event == 'coin_inserted':
+                # Coin inserted event (before credit)
+                peso = value
+                self.debug_var.set(f"Coin detected: ₱{peso}")
+                
+            # Handle debug messages from Arduino
+            elif 'debug' in event.lower() or '[debug]' in str(value).lower():
+                # Extract the debug message for display
+                debug_msg = str(value)
+                if 'ultrasonic' in debug_msg.lower() or 'distance' in debug_msg.lower():
+                    self.debug_var.set(f"Sensor: {debug_msg[-20:]}")
+                elif 'cup detected' in debug_msg.lower():
+                    self.debug_var.set(f"Cup: {debug_msg[-15:]}")
+                    
         except Exception as e:
             print(f"ERROR in WaterScreen event handler: {e}")
             self.debug_var.set(f"Event error: {e}")
@@ -2749,25 +2788,33 @@ class WaterScreen(tk.Frame):
     def _end_dispensing(self, message):
         """End the dispensing session"""
         self.is_dispensing = False
+        self.cup_present = False
         self.status_lbl.config(text=message)
         self.debug_var.set("Dispensing complete")
         
         uid = self.controller.active_uid
         if uid:
             user = read_user(uid)
-            if user.get("type") == "member":
-                write_user(uid, {"water_balance": 0})
-            else:
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                
+            # Only set balance to zero if this is a completion, not a pause
+            if "completed" in message.lower() or "finished" in message.lower():
+                if user and user.get("type") == "member":
+                    write_user(uid, {"water_balance": 0})
+                else:
+                    write_user(uid, {"temp_water_time": 0})
+                    self.temp_water_time = 0
+                    
         if self._water_job:
             self.after_cancel(self._water_job)
             self._water_job = None
             
-        # Auto-return to main after 3 seconds
-        self.after(3000, lambda: self.controller.show_frame(MainScreen))
-
+        if self._water_nocup_job:
+            self.after_cancel(self._water_nocup_job)
+            self._water_nocup_job = None
+            
+        # Auto-return to main after 3 seconds only if dispensing completed
+        if "completed" in message.lower():
+            self.after(3000, lambda: self.controller.show_frame(MainScreen))
+            
     def remove_cup(self):
         """Simulate removing the cup"""
         self.cup_present = False

@@ -88,7 +88,6 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 =====================================================================
 */
 
-
 #include <EEPROM.h>
 
 // ---------------- PIN DEFINITIONS ----------------
@@ -103,7 +102,8 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 #define COIN_DEBOUNCE_MS  50
 #define COIN_TIMEOUT_MS   800
 #define INACTIVITY_TIMEOUT 300000 // 5 minutes
-#define CUP_DISTANCE_CM   4.0
+#define CUP_DISTANCE_CM   10.0
+#define CUP_REMOVED_GRACE_MS 3000  // 3 seconds grace period when cup is removed
 #define WATER_MODE 1
 #define CHARGE_MODE 2
 
@@ -132,6 +132,10 @@ int creditML = 0;
 unsigned long targetPulses = 0;
 unsigned long startFlowCount = 0;
 unsigned long lastActivity = 0;
+
+// Cup detection variables
+unsigned long cupRemovedTime = 0;
+bool cupRemovedFlag = false;
 
 // Serial change detection
 int last_creditML = -1;
@@ -175,6 +179,10 @@ void setup() {
 
   if (isnan(pulsesPerLiter) || pulsesPerLiter < 200 || pulsesPerLiter > 1000)
     pulsesPerLiter = 450.0;
+
+  // Initialize cup detection variables
+  cupRemovedFlag = false;
+  cupRemovedTime = 0;
 
   Serial.println("System Ready. Waiting for Pi signal...");
   lastActivity = millis();
@@ -232,20 +240,51 @@ bool detectCup() {
 void handleCup() {
   bool cupDetected = detectCup();
   
-  // DEBUG: Print cup status
+  // DEBUG: Print cup status for monitoring
   Serial.print("[DEBUG] Cup detected: ");
   Serial.println(cupDetected ? "YES" : "NO");
   Serial.print("[DEBUG] Credit ML: ");
   Serial.println(creditML);
   Serial.print("[DEBUG] Dispensing: ");
   Serial.println(dispensing ? "YES" : "NO");
+  Serial.print("[DEBUG] Cup removed flag: ");
+  Serial.println(cupRemovedFlag ? "YES" : "NO");
   
   if (cupDetected && creditML > 0 && !dispensing) {
+    // Cup placed with credit - start dispensing
     Serial.println("CUP_DETECTED");
+    cupRemovedFlag = false;  // Reset the flag
     startDispense(creditML);
-  } else if (!cupDetected && dispensing) {
-    Serial.println("CUP_REMOVED");
-    stopDispenseEarly();
+  } 
+  else if (!cupDetected && dispensing) {
+    // Cup removed during dispensing
+    if (!cupRemovedFlag) {
+      // First time detecting cup removal - start grace period
+      cupRemovedFlag = true;
+      cupRemovedTime = millis();
+      Serial.println("CUP_REMOVED - Grace period started (3 seconds)");
+    } else {
+      // Cup already removed, check if grace period expired
+      unsigned long timeSinceRemoval = millis() - cupRemovedTime;
+      Serial.print("[DEBUG] Time since cup removal: ");
+      Serial.print(timeSinceRemoval);
+      Serial.println(" ms");
+      
+      if (timeSinceRemoval > CUP_REMOVED_GRACE_MS) {
+        Serial.println("CUP_REMOVED - Grace period expired, stopping dispensing");
+        stopDispenseEarly();
+        cupRemovedFlag = false;
+      }
+    }
+  }
+  else if (cupDetected && dispensing && cupRemovedFlag) {
+    // Cup placed back during grace period - resume normally
+    cupRemovedFlag = false;
+    Serial.println("CUP_DETECTED - Cup replaced, continuing dispensing");
+  }
+  else if (!cupDetected && !dispensing && cupRemovedFlag) {
+    // Cup still removed but not dispensing - reset flag
+    cupRemovedFlag = false;
   }
 }
 
@@ -256,37 +295,66 @@ void startDispense(int ml) {
   digitalWrite(PUMP_PIN, HIGH);
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
+  cupRemovedFlag = false;  // Ensure flag is reset when starting
   lastActivity = millis();
 
   Serial.println("DISPENSE_START");
+  Serial.print("[DEBUG] Target pulses: ");
+  Serial.println(targetPulses);
+  Serial.print("[DEBUG] Starting flow count: ");
+  Serial.println(startFlowCount);
 }
 
 void handleDispensing() {
   if (!dispensing) return;
 
+  // Check if cup has been removed for too long
+  if (cupRemovedFlag && (millis() - cupRemovedTime > CUP_REMOVED_GRACE_MS)) {
+    Serial.println("[DEBUG] Cup removal grace period expired in handleDispensing");
+    stopDispenseEarly();
+    return;
+  }
+
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
   float dispensedML = pulsesToML(dispensedPulses);
+  float remainingML = creditML - dispensedML;
 
-  if (dispensedPulses % 100 == 0) {
+  // Send progress updates more frequently for better monitoring
+  if (dispensedPulses % 30 == 0) {  // More frequent updates
     Serial.print("DISPENSE_PROGRESS ml=");
     Serial.print(dispensedML, 1);
     Serial.print(" remaining=");
-    Serial.println(creditML - dispensedML, 1);
+    Serial.println(remainingML, 1);
+    
+    // Also show pulse info for debugging
+    Serial.print("[DEBUG] Pulses: ");
+    Serial.print(dispensedPulses);
+    Serial.print("/");
+    Serial.println(targetPulses);
   }
 
-  if (dispensedPulses >= targetPulses) stopDispense();
+  if (dispensedPulses >= targetPulses) {
+    Serial.println("[DEBUG] Target pulses reached, stopping dispense");
+    stopDispense();
+  }
 }
 
 void stopDispense() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   dispensing = false;
+  cupRemovedFlag = false;
 
-  float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
+  unsigned long dispensedPulses = flowPulseCount - startFlowCount;
+  float dispensedML = pulsesToML(dispensedPulses);
+  
   Serial.print("DISPENSE_DONE ");
   Serial.println(dispensedML, 1);
+  Serial.print("[DEBUG] Actual dispensed: ");
+  Serial.print(dispensedML);
+  Serial.println(" mL");
 
-  creditML = 0;
+  creditML = 0;  // All credit used
   lastActivity = millis();
 }
 
@@ -294,13 +362,24 @@ void stopDispenseEarly() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   dispensing = false;
+  cupRemovedFlag = false;
 
-  float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
+  unsigned long dispensedPulses = flowPulseCount - startFlowCount;
+  float dispensedML = pulsesToML(dispensedPulses);
   float remaining = creditML - dispensedML;
+  
+  // Ensure we don't have negative remaining
+  if (remaining < 0) remaining = 0;
+  
   Serial.print("CREDIT_LEFT ");
   Serial.println(remaining, 1);
+  Serial.print("[DEBUG] Dispensed so far: ");
+  Serial.print(dispensedML);
+  Serial.print(" mL, Remaining: ");
+  Serial.print(remaining);
+  Serial.println(" mL");
 
-  creditML = remaining;
+  creditML = remaining;  // Save remaining credit for next time
   lastActivity = millis();
 }
 
@@ -351,7 +430,6 @@ void handleCoin() {
   }
 }
 
-
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {
   if (!Serial.available()) return;
@@ -373,6 +451,11 @@ void handleSerialCommand() {
     Serial.print("CREDIT_ML "); Serial.println(creditML);
     Serial.print("DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES "); Serial.println(flowPulseCount);
+    Serial.print("CUP_REMOVED_FLAG "); Serial.println(cupRemovedFlag ? "YES" : "NO");
+    if (cupRemovedFlag) {
+      Serial.print("TIME_SINCE_REMOVAL "); 
+      Serial.println(millis() - cupRemovedTime);
+    }
   }
 }
 
@@ -438,9 +521,9 @@ void calibrateFlow() {
 void resetSystem() {
   creditML = 0;
   dispensing = false;
+  cupRemovedFlag = false;
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   Serial.println("System reset.");
   lastActivity = millis();
 }
-

@@ -208,15 +208,42 @@ bool detectCup() {
   digitalWrite(CUP_TRIG_PIN, LOW);
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
+  
+  // DEBUG: Print raw sensor reading
+  Serial.print("[DEBUG] Ultrasonic duration: ");
+  Serial.println(duration);
+  
+  if (duration == 0) {
+    // Timeout - no echo received
+    Serial.println("[DEBUG] No echo received - sensor issue");
+    return false;
+  }
+  
   float distance = duration * 0.034 / 2;
+  
+  // DEBUG: Print calculated distance
+  Serial.print("[DEBUG] Calculated distance: ");
+  Serial.print(distance);
+  Serial.println(" cm");
+  
   return (distance > 0 && distance < CUP_DISTANCE_CM);
 }
 
 void handleCup() {
-  if (detectCup() && creditML > 0 && !dispensing) {
+  bool cupDetected = detectCup();
+  
+  // DEBUG: Print cup status
+  Serial.print("[DEBUG] Cup detected: ");
+  Serial.println(cupDetected ? "YES" : "NO");
+  Serial.print("[DEBUG] Credit ML: ");
+  Serial.println(creditML);
+  Serial.print("[DEBUG] Dispensing: ");
+  Serial.println(dispensing ? "YES" : "NO");
+  
+  if (cupDetected && creditML > 0 && !dispensing) {
     Serial.println("CUP_DETECTED");
     startDispense(creditML);
-  } else if (!detectCup() && dispensing) {
+  } else if (!cupDetected && dispensing) {
     Serial.println("CUP_REMOVED");
     stopDispenseEarly();
   }

@@ -199,6 +199,40 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
+        # Add debug output for cup-related messages
+        if "CUP" in line.upper() or "[DEBUG]" in line:
+            self.logger.info(f"CUP DEBUG: {line}")
+
+        # Handle CUP_DETECTED events
+        if line.startswith("CUP_DETECTED"):
+            self.logger.info("CUP DETECTED - Dispensing should start")
+            event = "cup_detected"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+            
+        if line.startswith("CUP_REMOVED"):
+            self.logger.info("CUP REMOVED - Dispensing stopped")
+            event = "cup_removed" 
+            value = True
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle DEBUG messages for cup sensor
+        if "[DEBUG] Cup detected:" in line:
+            self.logger.info(f"CUP SENSOR STATUS: {line}")
+            return
+            
+        if "[DEBUG] Ultrasonic duration:" in line:
+            self.logger.info(f"ULTRASONIC RAW: {line}")
+            return
+            
+        if "[DEBUG] Calculated distance:" in line:
+            self.logger.info(f"DISTANCE: {line}")
+            return
+
+        # ... rest of your existing parsing code ...
+
         # Handle COIN_INSERTED events FIRST (highest priority)
         if line.startswith("COIN_INSERTED"):
             try:

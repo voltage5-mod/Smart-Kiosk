@@ -1,3 +1,5 @@
 *.json
 firebase*.json
 serviceAccountKey.json
+.env
+config.py

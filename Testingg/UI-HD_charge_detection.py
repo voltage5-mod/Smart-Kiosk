@@ -423,37 +423,90 @@ class KioskApp(tk.Tk):
                 self.hw.setup()
             except Exception:
                 pass
-        
-        # Initialize ArduinoListener for water service hardware integration
-        try:
-            # prefer the new ArduinoListener.py implementation (capitalized filename)
-            try:
-                from ArduinoListener import ArduinoListener
-            except Exception:
-                # fallback to older module name if present
-                from ArduinoListener import ArduinoListener
 
-            # create central listener and dispatch events to screens
-            self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
-            try:
-                self.arduino_listener.start()
-                print("INFO: ArduinoListener started (centralized event callback)")
-            except Exception:
-                print("WARN: ArduinoListener failed to start")
-        except ImportError:
-            print("WARN: ArduinoListener module not found; water service will use simulation buttons only")
-            self.arduino_listener = None
-        except Exception as e:
-            print(f"WARN: Failed to initialize ArduinoListener: {e}")
-            self.arduino_listener = None
+        # ========== IMPROVED ARDUINO LISTENER INITIALIZATION ==========
+        self.arduino_listener = None
+        self.arduino_available = False
         
-        # NOW that ArduinoListener is created, register WaterScreen callbacks
         try:
-            # WaterScreen will receive events via the central dispatcher; no per-screen registration required
-            pass
+            # Try multiple possible import paths
+            try:
+                from ArduinoListener import ArduinoListener
+                ARDUINO_MODULE = "ArduinoListener"
+            except ImportError:
+                try:
+                    from arduino_listener import ArduinoListener
+                    ARDUINO_MODULE = "arduino_listener"
+                except ImportError:
+                    try:
+                        from lib.ArduinoListener import ArduinoListener
+                        ARDUINO_MODULE = "lib.ArduinoListener"
+                    except ImportError:
+                        ARDUINO_MODULE = None
+            
+            if ARDUINO_MODULE:
+                print(f"INFO: Found ArduinoListener module: {ARDUINO_MODULE}")
+                
+                # Try different initialization patterns
+                initialization_success = False
+                
+                # Pattern 1: Try with callback parameter
+                try:
+                    self.arduino_listener = ArduinoListener(callback=self._arduino_event_callback)
+                    print("INFO: ArduinoListener initialized with callback parameter")
+                    initialization_success = True
+                except Exception as e1:
+                    print(f"DEBUG: Pattern 1 failed: {e1}")
+                    
+                    # Pattern 2: Try without parameters
+                    try:
+                        self.arduino_listener = ArduinoListener()
+                        print("INFO: ArduinoListener initialized without parameters")
+                        initialization_success = True
+                        
+                        # If successful, try to set callback if method exists
+                        if hasattr(self.arduino_listener, 'set_callback'):
+                            self.arduino_listener.set_callback(self._arduino_event_callback)
+                            print("INFO: Set callback via set_callback method")
+                    except Exception as e2:
+                        print(f"DEBUG: Pattern 2 failed: {e2}")
+                        
+                        # Pattern 3: Try with different parameter names
+                        try:
+                            self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
+                            print("INFO: ArduinoListener initialized with event_callback parameter")
+                            initialization_success = True
+                        except Exception as e3:
+                            print(f"DEBUG: Pattern 3 failed: {e3}")
+                
+                if initialization_success and self.arduino_listener:
+                    # Try to start the listener
+                    if hasattr(self.arduino_listener, 'start'):
+                        try:
+                            self.arduino_listener.start()
+                            self.arduino_available = True
+                            print("INFO: ArduinoListener started successfully")
+                        except Exception as start_error:
+                            print(f"WARN: ArduinoListener start() failed: {start_error}")
+                            self.arduino_available = False
+                    else:
+                        print("WARN: ArduinoListener has no start() method")
+                        self.arduino_available = True  # Might not need start()
+                else:
+                    print("WARN: Could not initialize ArduinoListener with any pattern")
+                    self.arduino_listener = None
+                    
+            else:
+                print("WARN: ArduinoListener module not found in any location")
+                
         except Exception as e:
-            print(f"WARN: Failed to register WaterScreen callbacks: {e}")
-        
+            print(f"ERROR: Unexpected error during ArduinoListener initialization: {e}")
+            self.arduino_listener = None
+
+        # Initialize ArduinoListener for water service hardware integration
+        if not self.arduino_listener:
+            print("INFO: ArduinoListener not available - using simulation mode for water service")
+
         # session manager for per-slot sessions
         try:
             self.session_manager = SessionManager(self)
@@ -467,6 +520,45 @@ class KioskApp(tk.Tk):
             self.show_frame(ScanScreen)
         except Exception:
             pass
+
+    def send_arduino_command(self, command):
+        """Safely send command to Arduino if available."""
+        if not self.arduino_available or not self.arduino_listener:
+            print(f"DEBUG: Arduino not available, cannot send: {command}")
+            return False
+            
+        try:
+            if hasattr(self.arduino_listener, 'send_command'):
+                result = self.arduino_listener.send_command(command)
+                print(f"INFO: Sent Arduino command: {command} -> {result}")
+                return result
+            elif hasattr(self.arduino_listener, 'write'):
+                # Alternative method name
+                result = self.arduino_listener.write(command)
+                print(f"INFO: Sent Arduino command via write(): {command} -> {result}")
+                return result
+            else:
+                print(f"WARN: ArduinoListener has no send_command or write method")
+                return False
+        except Exception as e:
+            print(f"ERROR sending command to Arduino: {e}")
+            return False
+
+    def is_arduino_connected(self):
+        """Check if Arduino is connected and responsive."""
+        if not self.arduino_available or not self.arduino_listener:
+            return False
+            
+        try:
+            if hasattr(self.arduino_listener, 'is_connected'):
+                return self.arduino_listener.is_connected()
+            elif hasattr(self.arduino_listener, 'connected'):
+                return self.arduino_listener.connected
+            else:
+                # If no connection check method, assume connected if initialized
+                return True
+        except Exception:
+            return False
 
     def refresh_all_user_info(self):
         # iterate frames and refresh embedded UserInfoFrame instances
@@ -604,19 +696,45 @@ class KioskApp(tk.Tk):
             _do_totals()
 
     def _arduino_event_callback(self, event, value):
-        """Central dispatcher for ArduinoListener events.
-        For now we forward events to the WaterScreen instance if present.
-        The external ArduinoListener calls this with (event, value).
-        """
+        """Enhanced central dispatcher for ArduinoListener events."""
+        print(f"DEBUG: Arduino event received: {event} = {value}")
+        
         try:
-            ws = self.frames.get(WaterScreen)
-            if ws and hasattr(ws, 'handle_arduino_event'):
-                try:
-                    ws.handle_arduino_event(event, value)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            # Route events to appropriate handlers based on event type
+            if event in ['coin', 'COIN', 'coin_inserted', 'cup_sensor', 'water_flow', 'cup_detected']:
+                # Water-related events - forward to WaterScreen
+                ws = self.frames.get(WaterScreen)
+                if ws and hasattr(ws, 'handle_arduino_event'):
+                    try:
+                        ws.handle_arduino_event(event, value)
+                    except Exception as e:
+                        print(f"ERROR in WaterScreen event handler: {e}")
+                else:
+                    print(f"WARN: WaterScreen not available for event: {event}")
+                    
+            elif event in ['current_sensor', 'plug_status', 'charging_event']:
+                # Charging-related events - forward to ChargingScreen  
+                cs = self.frames.get(ChargingScreen)
+                if cs and hasattr(cs, 'handle_arduino_event'):
+                    try:
+                        cs.handle_arduino_event(event, value)
+                    except Exception as e:
+                        print(f"ERROR in ChargingScreen event handler: {e}")
+                else:
+                    print(f"WARN: ChargingScreen not available for event: {event}")
+                    
+            elif event in ['error', 'connection_status']:
+                # System events - handle centrally
+                print(f"SYSTEM: Arduino {event}: {value}")
+                if event == 'connection_status' and value == 'disconnected':
+                    self.arduino_available = False
+                    print("ALERT: Arduino disconnected!")
+                    
+            else:
+                print(f"INFO: Unhandled Arduino event type: {event} = {value}")
+                
+        except Exception as e:
+            print(f"ERROR in Arduino event dispatcher: {e}")
 
     def show_frame(self, cls):
         # record current frame name for context (used by coin popups)
@@ -627,33 +745,37 @@ class KioskApp(tk.Tk):
         frame = self.frames[cls]
         if hasattr(frame, "refresh"):
             frame.refresh()
-        # If switching to hardware-backed screens, notify Arduino to switch mode
-        try:
-            al = getattr(self, 'arduino_listener', None)
-            if al is not None:
+            
+        # Enhanced Arduino mode switching with better error handling
+        if self.arduino_available:
+            try:
                 # Water screen -> MODE WATER, Charging flow -> MODE CHARGE
                 if cls.__name__ == 'WaterScreen':
-                    try:
-                        al.send_command('MODE WATER')
-                        print('INFO: Sent MODE WATER to Arduino')
-                    except Exception:
-                        pass
+                    if self.send_arduino_command('MODE WATER'):
+                        print('INFO: Switched Arduino to WATER mode')
+                    else:
+                        print('WARN: Failed to switch Arduino to WATER mode')
                 elif cls.__name__ in ('SlotSelectScreen', 'ChargingScreen'):
-                    try:
-                        al.send_command('MODE CHARGE')
-                        print('INFO: Sent MODE CHARGE to Arduino')
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    if self.send_arduino_command('MODE CHARGE'):
+                        print('INFO: Switched Arduino to CHARGE mode')
+                    else:
+                        print('WARN: Failed to switch Arduino to CHARGE mode')
+            except Exception as e:
+                print(f'ERROR during Arduino mode switch: {e}')
+                
         frame.tkraise()
     
     def cleanup(self):
         """Gracefully shutdown resources on app exit."""
         try:
-            if hasattr(self, 'arduino_listener') and self.arduino_listener is not None:
-                self.arduino_listener.stop()
-                print("INFO: ArduinoListener stopped.")
+            if self.arduino_available and self.arduino_listener is not None:
+                # Try to stop the listener
+                if hasattr(self.arduino_listener, 'stop'):
+                    self.arduino_listener.stop()
+                    print("INFO: ArduinoListener stopped.")
+                elif hasattr(self.arduino_listener, 'close'):
+                    self.arduino_listener.close()
+                    print("INFO: ArduinoListener closed.")
         except Exception as e:
             print(f"WARN: Error stopping ArduinoListener: {e}")
 

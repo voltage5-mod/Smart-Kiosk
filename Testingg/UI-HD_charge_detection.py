@@ -40,20 +40,12 @@ UNPLUG_GRACE_SECONDS = 60          # 1 minute grace after unplug before terminat
 NO_CUP_TIMEOUT = 10                # 10s no-cup => terminate water session
 
 # Charging detection tuning (simplified and more reliable)
-# Faster charging detection parameters
-CHARGE_SAMPLE_WINDOW = 3          # Smaller window for faster response
-CHARGE_AVG_THRESHOLD = 0.08       # Lower threshold to detect sooner  
-CHARGE_COUNT_THRESHOLD = 2        # Fewer samples needed
-CHARGE_CONSECUTIVE_REQUIRED = 2   # Faster consecutive requirement
+PLUG_THRESHOLD = 0.10  # Increased slightly for better detection
+UNPLUG_THRESHOLD = 0.07
+UNPLUG_GRACE_SECONDS = 30  # Lower than plug threshold for hysteresis
+CONFIRM_SAMPLES = 3  # Require 3 consecutive samples for state change
+SAMPLE_INTERVAL = 0.5  # Sample every 500ms
 
-# Faster plug/unplug detection
-PLUG_THRESHOLD = 0.08            # Lower threshold to detect charging sooner
-PLUG_CONFIRM_COUNT = 2           # Only need 2 confirmations
-PLUG_CONFIRM_WINDOW = 1.5        # Shorter window
-
-UNPLUG_THRESHOLD = 0.06          # Much lower threshold for unplug detection
-UNPLUG_CONFIRM_COUNT = 2         # Only need 2 confirmations  
-UNPLUG_CONFIRM_WINDOW = 1.5      # Shorter window
 # Coin to seconds mapping (charging)
 COIN_MAP = {1: 60, 5: 300, 10: 600}  # 1 peso = 60s, 5 -> 300s, 10 -> 600s
 

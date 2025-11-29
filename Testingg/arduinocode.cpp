@@ -4,91 +4,7 @@
  Version: Final Integrated Build (Arduino–Raspberry Pi)
  Date: November 2025
 =====================================================================
-
-⚙️ PURPOSE:
-This firmware controls the water vending subsystem of the Smart Solar Kiosk.
-It interfaces with the Raspberry Pi via Serial (USB), and manages:
- - Coin acceptor pulse input
- - Water flow sensor (YF-S201)
- - Ultrasonic cup detection
- - Pump and solenoid valve relays
- - EEPROM calibration for coins and flow rate
- - Real-time feedback via Serial for Pi UI updates
-
-=====================================================================
-🔄 NEW CHANGES FROM PREVIOUS VERSION:
-=====================================================================
-🆕 1. Added "COIN_INSERTED" event
-    → Sent immediately when a coin is recognized (before crediting).
-    → Allows Raspberry Pi to trigger instant popup window.
-
-🆕 2. Added "currentMode" variable and Serial control:
-    → Pi can send "MODE WATER" or "MODE CHARGE".
-    → Controls logic for credit computation and messaging.
-
-🆕 3. Expanded serial protocol:
-    → All system messages standardized into clear event types.
-    → Example events:
-       - COIN_INSERTED 5
-       - COIN_WATER 500
-       - COIN_CHARGE 10
-       - CUP_DETECTED
-       - DISPENSE_START / DISPENSE_DONE
-       - CREDIT_LEFT 150
-
-🆕 4. Improved calibration reporting:
-    → Outputs "CAL_DONE 1=1 5=3 10=5" for verification.
-
-🆕 5. Enhanced safety and clarity:
-    → Ensures solenoid/pump off during idle/reset.
-    → Flow and coin timeouts for noise immunity.
-
-=====================================================================
-🔗 SERIAL COMMUNICATION SUMMARY:
-=====================================================================
-Arduino → Pi messages (examples):
-
-  - COIN_INSERTED 5          → physical coin detected
-  - COIN_WATER 500           → +500mL credit (WATER mode)
-  - COIN_CHARGE 10           → ₱10 for charging (CHARGE mode)
-  - CUP_DETECTED             → cup placed under nozzle
-  - CUP_REMOVED              → cup removed
-  - DISPENSE_START           → water dispensing started
-  - DISPENSE_PROGRESS ml=300 remaining=200
-  - DISPENSE_DONE 500.0      → complete
-  - CREDIT_LEFT 150          → unused mL balance after removal
-  - MODE: WATER              → confirmation after Pi command
-  - SYSTEM_RESET             → after RESET
-
-Pi → Arduino commands:
-
-  - MODE WATER
-  - MODE CHARGE
-  - RESET
-  - STATUS
-  - CAL
-  - FLOWCAL
-
-=====================================================================
-WIRING SUMMARY:
-=====================================================================
-Arduino Pin  →  Component              →  Notes
----------------------------------------------------------------------
-D2           →  Coin Acceptor Signal   →  5V logic pulse (interrupt)
-D3           →  Flow Sensor (YF-S201)  →  5V pulse output (interrupt)
-D7           →  Solenoid Valve Relay   →  Active HIGH
-D8           →  Pump Relay             →  Active HIGH
-D9           →  Ultrasonic Trigger     →  HC-SR04 TRIG
-D10          →  Ultrasonic Echo        →  HC-SR04 ECHO
-GND          →  Common Ground with Pi  →  Required for serial logic
-VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
-
-=====================================================================
- Author: VoltageV (Cedrick L.)
- Collaborators: R4A_EUC / Smart Kiosk Group 2
-=====================================================================
 */
-
 
 #include <EEPROM.h>
 
@@ -104,13 +20,12 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 #define COIN_DEBOUNCE_MS  50
 #define COIN_TIMEOUT_MS   800
 #define INACTIVITY_TIMEOUT 300000 // 5 minutes
-#define CUP_DISTANCE_CM   10.0
 #define WATER_MODE 1
 #define CHARGE_MODE 2
 
-// Cup detection constants
+// Cup detection constants - SINGLE DETECTION MODE
 #define CUP_DETECTION_THRESHOLD 8.0    // Maximum distance to consider as cup detection (cm)
-#define CUP_CONFIRMATION_COUNT 3       // Number of consecutive detections needed
+#define COUNTDOWN_DELAY_MS 5000        // 5 second countdown before starting
 #define CUP_READ_INTERVAL 200          // Time between ultrasonic readings (ms)
 
 // ---------------- GLOBAL VARIABLES ----------------
@@ -127,9 +42,11 @@ int creditML_1P = 50;
 int creditML_5P = 250;
 int creditML_10P = 500;
 
-// Cup detection variables
+// Cup detection variables - SINGLE DETECTION MODE
 bool cupDetected = false;
-int cupConfirmationCount = 0;
+bool cupDetectionTriggered = false;
+bool countdownStarted = false;
+unsigned long cupDetectionTime = 0;
 unsigned long lastCupReadTime = 0;
 float lastValidDistance = 0.0;
 
@@ -197,6 +114,7 @@ void loop() {
   handleSerialCommand();
   handleCoin();
   handleCup();
+  handleCountdown();
   handleDispensing();
 
   if (millis() - lastActivity > INACTIVITY_TIMEOUT && !dispensing) {
@@ -211,7 +129,7 @@ float pulsesToML(unsigned long pulses) {
   return (pulses / pulsesPerLiter) * 1000.0;
 }
 
-// ---------------- ENHANCED CUP DETECTION ----------------
+// ---------------- SINGLE DETECTION CUP HANDLER ----------------
 bool detectCup() {
   digitalWrite(CUP_TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -246,38 +164,45 @@ void handleCup() {
 
   bool currentDetection = detectCup();
   
-  if (currentDetection) {
-    cupConfirmationCount++;
+  // SINGLE DETECTION LOGIC: Only trigger once per session
+  if (currentDetection && !cupDetectionTriggered && creditML > 0) {
+    // First time detecting cup with credit available
+    cupDetectionTriggered = true;
+    cupDetectionTime = now;
+    countdownStarted = true;
     
-    // Only trigger cup detection after multiple confirmations
-    if (cupConfirmationCount >= CUP_CONFIRMATION_COUNT && !cupDetected) {
-      cupDetected = true;
-      Serial.println("CUP_DETECTED");
-      
-      // Start dispensing immediately if we have credit
-      if (creditML > 0 && !dispensing) {
-        startDispense(creditML);
-      }
-    }
-  } else {
-    // Reset confirmation count if no detection
-    cupConfirmationCount = 0;
+    Serial.println("CUP_DETECTED");
+    Serial.println("COUNTDOWN_START 5");
     
-    // Only trigger cup removal if we previously had a cup
-    if (cupDetected) {
-      cupDetected = false;
-      Serial.println("CUP_REMOVED");
-      
-      // Stop dispensing if cup is removed during dispensing
-      if (dispensing) {
-        stopDispenseEarly();
-      }
+    // Send countdown updates
+    for (int i = 5; i > 0; i--) {
+      Serial.print("COUNTDOWN ");
+      Serial.println(i);
+      delay(1000);
     }
+    
+    Serial.println("COUNTDOWN_END");
+    
+    // Start dispensing ALL remaining water after countdown
+    startDispense(creditML);
+    
+  } else if (!currentDetection && cupDetectionTriggered && !dispensing) {
+    // Cup was removed before dispensing started
+    cupDetectionTriggered = false;
+    countdownStarted = false;
+    Serial.println("CUP_REMOVED");
   }
+}
+
+void handleCountdown() {
+  // Countdown is handled in handleCup() with delays
+  // This function is kept for future expansion if needed
 }
 
 // ---------------- DISPENSING ----------------
 void startDispense(int ml) {
+  if (ml <= 0) return;
+  
   startFlowCount = flowPulseCount;
   targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
   digitalWrite(PUMP_PIN, HIGH);
@@ -287,7 +212,7 @@ void startDispense(int ml) {
 
   Serial.println("DISPENSE_START");
   
-  // Send initial progress
+  // Send initial progress with ALL remaining water
   Serial.print("DISPENSE_PROGRESS ml=0 remaining=");
   Serial.println(ml);
 }
@@ -299,15 +224,15 @@ void handleDispensing() {
   float dispensedML = pulsesToML(dispensedPulses);
   float remainingML = creditML - dispensedML;
 
-  // Send progress updates more frequently for better feedback
-  if (dispensedPulses % 50 == 0) { // More frequent updates
+  // Send progress updates frequently
+  if (dispensedPulses % 50 == 0) {
     Serial.print("DISPENSE_PROGRESS ml=");
     Serial.print(dispensedML, 1);
     Serial.print(" remaining=");
     Serial.println(remainingML, 1);
   }
 
-  if (dispensedPulses >= targetPulses) {
+  if (dispensedPulses >= targetPulses || remainingML <= 0) {
     stopDispense();
   }
 }
@@ -316,14 +241,13 @@ void stopDispense() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   dispensing = false;
+  cupDetectionTriggered = false; // Reset for next session
 
   float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
   Serial.print("DISPENSE_DONE ");
   Serial.println(dispensedML, 1);
 
-  creditML = 0;
-  cupDetected = false; // Reset cup detection
-  cupConfirmationCount = 0;
+  creditML = 0; // All water dispensed
   lastActivity = millis();
 }
 
@@ -331,15 +255,19 @@ void stopDispenseEarly() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   dispensing = false;
+  cupDetectionTriggered = false;
 
   float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
   float remaining = creditML - dispensedML;
-  Serial.print("CREDIT_LEFT ");
-  Serial.println(remaining, 1);
-
-  creditML = remaining;
-  cupDetected = false; // Reset cup detection
-  cupConfirmationCount = 0;
+  
+  if (remaining > 0) {
+    Serial.print("CREDIT_LEFT ");
+    Serial.println(remaining, 1);
+    creditML = remaining;
+  } else {
+    creditML = 0;
+  }
+  
   lastActivity = millis();
 }
 
@@ -411,6 +339,7 @@ void handleSerialCommand() {
     Serial.print("CREDIT_ML "); Serial.println(creditML);
     Serial.print("DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES "); Serial.println(flowPulseCount);
+    Serial.print("CUP_DETECTED "); Serial.println(cupDetectionTriggered ? "YES" : "NO");
   }
 }
 
@@ -476,8 +405,8 @@ void calibrateFlow() {
 void resetSystem() {
   creditML = 0;
   dispensing = false;
-  cupDetected = false;
-  cupConfirmationCount = 0;
+  cupDetectionTriggered = false;
+  countdownStarted = false;
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   Serial.println("System reset.");

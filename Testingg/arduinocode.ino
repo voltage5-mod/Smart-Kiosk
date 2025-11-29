@@ -115,6 +115,12 @@ void loop() {
       dispensing != last_dispensing ||
       flowPulseCount != last_flowCount) {
 
+        static unsigned long lastDispensingUpdate = 0;
+  if (dispensing && (millis() - lastDispensingUpdate < 500)) {
+    // Skip frequent updates during dispensing
+    return;
+  }
+
     Serial.print("CREDIT_ML:"); Serial.println(creditML);
     Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
@@ -123,6 +129,10 @@ void loop() {
     last_creditML = creditML;
     last_dispensing = dispensing;
     last_flowCount = flowPulseCount;
+
+      if (dispensing) {
+    lastDispensingUpdate = millis();
+    }
   }
 
   delay(80);
@@ -201,8 +211,11 @@ void handleDispensing() {
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
 
-  if (dispensedPulses >= targetPulses)
+  // Only stop when we've reached the target OR credit is zero
+  if (dispensedPulses >= targetPulses || creditML <= 0) {
     stopDispense();
+  }
+  // Continue dispensing as long as we have credit and haven't reached target
 }
 
 void stopDispense() {
@@ -222,6 +235,9 @@ void stopDispense() {
 
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
+
+  if (dispensing) return;
+        
   if (coinPulseCount == 0) return;
   if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
 

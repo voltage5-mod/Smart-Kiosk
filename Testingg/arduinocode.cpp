@@ -110,22 +110,27 @@ void loop() {
   if (Serial.available())
     handleSerialCommand();
 
-  // UI Updates
-  if (creditML != last_creditML ||
-      dispensing != last_dispensing ||
-      flowPulseCount != last_flowCount) {
+  // REDUCED UI Updates - Only send when something actually changes
+  static unsigned long lastStatusUpdate = 0;
+  if (millis() - lastStatusUpdate > 1000) { // Only update every second
+    if (creditML != last_creditML || dispensing != last_dispensing) {
+      Serial.print("CREDIT_ML: "); Serial.println(creditML);
+      Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
+      
+      last_creditML = creditML;
+      last_dispensing = dispensing;
+    }
+    lastStatusUpdate = millis();
+  }
 
-    Serial.print("CREDIT_ML: "); Serial.println(creditML);
-    Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
+  // Only send flow updates during active dispensing
+  if (dispensing && flowPulseCount != last_flowCount) {
     Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
     Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
-
-    last_creditML = creditML;
-    last_dispensing = dispensing;
     last_flowCount = flowPulseCount;
   }
 
-  delay(80);
+  delay(50); // Reduced delay for more responsive cup detection
 }
 
 // ---------------- HELPER FUNCTIONS ----------------
@@ -249,6 +254,26 @@ void handleSerialCommand() {
 
   if (cmd.equalsIgnoreCase("RESET"))
     resetSystem();
+  else if (cmd.equalsIgnoreCase("DEBUG_CUP")) {
+    bool cupPresent = rawCupReading();
+    Serial.print("DEBUG: Cup reading: ");
+    Serial.println(cupPresent ? "PRESENT" : "ABSENT");
+    Serial.print("DEBUG: cupDetected=");
+    Serial.println(cupDetected);
+    Serial.print("DEBUG: creditML=");
+    Serial.println(creditML);
+    Serial.print("DEBUG: countdownActive=");
+    Serial.println(countdownActive);
+  }
+  else if (cmd.equalsIgnoreCase("FORCE_COUNTDOWN")) {
+    if (creditML > 0 && !dispensing && !countdownActive) {
+      cupDetected = true;
+      countdownActive = true;
+      countdownStart = millis();
+      countdownValue = 3;
+      Serial.println("COUNTDOWN 3");
+    }
+  }
 }
 
 // ---------------- RESET ----------------

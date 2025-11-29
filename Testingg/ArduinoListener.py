@@ -199,303 +199,127 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
-        # Filter out ultrasonic debug messages
-        if line.startswith("ultrasonic:") or "ultrasonic" in line.lower():
-            self.logger.debug(f"[Ultrasonic Debug] {line}")
+        # Skip empty lines
+        if not line.strip():
             return
 
-        # Handle COIN_INSERTED events FIRST (highest priority)
-        if line.startswith("COIN_INSERTED"):
+        # Handle COIN events in various formats
+        if "Coin accepted: pulses=" in line:
             try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    coin_value = int(parts[1])
-                    event = "coin"
-                    value = coin_value
-                    self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
+                # Extract pulse count from "Coin accepted: pulses=1"
+                pulse_str = line.split("pulses=")[1].strip()
+                pulses = int(pulse_str)
+                
+                # Map pulses to coin values
+                if pulses == 1:
+                    coin_value = 1
+                elif pulses == 3:  
+                    coin_value = 5
+                elif pulses == 5:
+                    coin_value = 10
                 else:
-                    # Even if no value, still dispatch as coin event
-                    event = "coin"
-                    value = 1  # Default to 1 peso
-                    self.logger.info(f"COIN DETECTED (default): {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
-                # Still dispatch as coin event with default value
-                event = "coin"
-                value = 1
-                self.logger.info(f"COIN DETECTED (fallback): {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-
-        # Handle COIN_CHARGE events
-        if line.startswith("COIN_CHARGE"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    peso_value = int(parts[1])
-                    event = "coin_charge"
-                    value = peso_value
-                    self.logger.info(f"CHARGING COIN: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
-                return
-
-        # Handle COIN_WATER events
-        if line.startswith("COIN_WATER"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    ml_value = int(parts[1])
-                    event = "coin_water"
-                    value = ml_value
-                    self.logger.info(f"WATER COIN: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
-                return
-
-        # Handle COUNTDOWN_START events
-        if line.startswith("COUNTDOWN_START"):
-            event = "countdown_start"
-            value = int(line.split()[1]) if len(line.split()) > 1 else 5
-            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle COUNTDOWN events
-        if line.startswith("COUNTDOWN"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    countdown_value = int(parts[1])
-                    event = "countdown"
-                    value = countdown_value
-                    self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
-                return
-
-        # Handle COUNTDOWN_END events
-        if line.startswith("COUNTDOWN_END"):
-            event = "countdown_end"
-            value = True
-            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle debug messages with coin detection
-        if "Coin detected" in line or "new credit:" in line:
-            self.logger.info(f"Arduino Debug: {line}")
-            
-            # Try to extract coin value from various debug formats
-            try:
-                import re
-                # Format: "Coin detected, new credit: 300 ml"
-                credit_match = re.search(r'credit:\s*(\d+)', line)
-                if credit_match:
-                    credit_ml = int(credit_match.group(1))
-                    self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
-                    
-                    # Try to determine coin value from credit amount
-                    coin_value = None
-                    if credit_ml == 50:  # 1 peso = 50ml
-                        coin_value = 1
-                    elif credit_ml == 250:  # 5 peso = 250ml  
-                        coin_value = 5
-                    elif credit_ml == 500:  # 10 peso = 500ml
-                        coin_value = 10
-                        
-                    if coin_value:
-                        event = "coin"
-                        value = coin_value
-                        self.logger.info(f"COIN FROM DEBUG: {event} = {value} from: {line}")
-                        self._dispatch_event(event, value, line)
-                        return
-                        
-            except Exception as e:
-                self.logger.debug(f"Could not extract coin from debug: {e}")
-            return
-
-        # Handle other COIN events
-        if "COIN" in line.upper() or line.startswith("COIN:"):
-            # Extract coin value - handle various formats
-            coin_value = None
-            try:
-                if ":" in line:
-                    # Format: "COIN:10" or "COIN: 10"
-                    value_str = line.split(":", 1)[1].strip()
-                    coin_value = int(value_str)
-                else:
-                    # Format: "COIN 10" or just "10" (if COIN is implied)
-                    parts = line.split()
-                    if len(parts) > 1:
-                        coin_value = int(parts[1])
-                    else:
-                        coin_value = 1  # Default coin value
-                        
+                    coin_value = 1  # Default
+                
                 event = "coin"
                 value = coin_value
-                self.logger.info(f"COIN EVENT: {event} = {value} from: {line}")
+                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
                 
             except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse coin value from: {line}")
-                # Still dispatch as coin event with default value
-                event = "coin"
-                value = 1
-                self.logger.info(f"COIN EVENT (fallback): {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
+                self.logger.warning(f"Could not parse coin pulses from: {line}")
                 return
 
-        # Handle MODE command format
-        if line.startswith("MODE:"):
-            event = "mode"
-            value = line.split(":", 1)[1].strip()
-            self.logger.info(f"MODE EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
+        # Handle COIN: format
+        elif line.startswith("COIN:"):
+            try:
+                coin_value = int(line.split(":")[1].strip())
+                event = "coin"
+                value = coin_value
+                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN: value from: {line}")
+                return
 
-        # Handle CUP events
-        if line.startswith("CUP_DETECTED"):
+        # Handle CUP_DETECTED
+        elif line.startswith("CUP_DETECTED"):
             event = "cup_detected"
             value = True
             self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
-        
-                # Handle COUNTDOWN events
-        if line.startswith("COUNTDOWN "):
+
+        # Handle COUNTDOWN events
+        elif line.startswith("COUNTDOWN "):
             try:
-                value = int(line.split()[1])
+                countdown_value = int(line.split()[1])
                 event = "countdown"
+                value = countdown_value
+                self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
-            except:
-                pass
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
+                return
 
         # Handle COUNTDOWN_END
-        if line.startswith("COUNTDOWN_END"):
+        elif line.startswith("COUNTDOWN_END"):
             event = "countdown_end"
-            self._dispatch_event(event, True, line)
-            return
-
-            
-        if line.startswith("CUP_REMOVED"):
-            event = "cup_removed"
             value = True
-            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
+            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
-        # Handle DISPENSE events
-        if line.startswith("DISPENSE_START"):
+        # Handle DISPENSE_START
+        elif line.startswith("DISPENSE_START"):
             event = "dispense_start"
             value = True
             self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
-            
-        if line.startswith("DISPENSE_DONE"):
+
+        # Handle DISPENSE_DONE
+        elif line.startswith("DISPENSE_DONE"):
             try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    ml_dispensed = float(parts[1])
-                    event = "dispense_done"
-                    value = ml_dispensed
-                    self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
+                # Format: "DISPENSE_DONE 100.82"
+                ml_dispensed = float(line.split()[1])
+                event = "dispense_done"
+                value = ml_dispensed
+                self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
             except (ValueError, IndexError) as e:
                 self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
                 return
 
-        # Handle CREDIT_LEFT events
-        if line.startswith("CREDIT_LEFT"):
+        # Handle CREDIT_ML updates (for debugging)
+        elif line.startswith("CREDIT_ML:"):
             try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    remaining_ml = float(parts[1])
-                    event = "credit_left"
-                    value = remaining_ml
-                    self.logger.info(f"CREDIT EVENT: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse CREDIT_LEFT value from: {line}")
+                credit_ml = int(line.split(":")[1].strip())
+                self.logger.info(f"Credit ML updated: {credit_ml}mL")
+                # You could dispatch this as an event if needed
                 return
-
-        # Handle DISPENSE_PROGRESS events
-        if line.startswith("DISPENSE_PROGRESS"):
-            try:
-                # Format: "DISPENSE_PROGRESS ml=300.0 remaining=200.0"
-                import re
-                ml_match = re.search(r'ml=([\d.]+)', line)
-                remaining_match = re.search(r'remaining=([\d.]+)', line)
-                
-                if ml_match and remaining_match:
-                    ml_dispensed = float(ml_match.group(1))
-                    ml_remaining = float(remaining_match.group(1))
-                    event = "dispense_progress"
-                    value = {"dispensed": ml_dispensed, "remaining": ml_remaining}
-                    self.logger.info(f"PROGRESS EVENT: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
             except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse DISPENSE_PROGRESS value from: {line}")
-                return
+                pass
 
-        # Handle CALIBRATION events
-        if line.startswith("CAL_DONE"):
-            event = "calibration_done"
-            value = line
-            self.logger.info(f"CALIBRATION EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle SYSTEM events
-        if line.startswith("System Ready") or line.startswith("System reset"):
+        # Handle SYSTEM READY
+        elif "System Ready" in line or "READY" in line:
             event = "system_ready"
             value = True
             self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
-        # Skip other debug lines but log them
-        if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or line.startswith("Calibrating") or line.startswith("FLOW CALIBRATION"):
-            self.logger.info(f"Arduino Debug: {line}")
+        # Skip debug status lines (they're too frequent)
+        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+            self.logger.debug(f"Status update: {line}")
             return
 
-        # Parse generic events (fallback)
-        parts = line.split()
-        if not parts:
-            return
-
-        event = parts[0].strip().lower()
-        value = None
-
-        if len(parts) > 1:
-            # Try to convert to number if possible
-            try:
-                value = int(parts[1])
-            except ValueError:
-                try:
-                    value = float(parts[1])
-                except ValueError:
-                    value = parts[1]  # Keep as string
-
-        # Dispatch the event
-        self.logger.info(f"GENERIC EVENT: {event} = {value} from: {line}")
-        self._dispatch_event(event, value, line)
+        # Log unhandled lines for debugging
+        else:
+            self.logger.info(f"UNHANDLED: {line}")
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""

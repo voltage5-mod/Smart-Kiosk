@@ -2669,13 +2669,30 @@ class WaterScreen(tk.Frame):
                 print(f"CREDIT_LEFT: {remaining_ml}mL remaining")
                 
             elif event == 'dispense_progress':
-                # Handle progress updates during dispensing
                 if isinstance(value, dict):
                     dispensed_ml = value.get('dispensed', 0)
                     remaining_ml = value.get('remaining', 0)
                     
-                    # Update display with progress
-                    self.time_var.set(str(int(remaining_ml)))
+                    # DEDUCT FROM BALANCE
+                    uid = self.controller.active_uid
+                    if uid and dispensed_ml > 0:
+                        user = read_user(uid)
+                        if user:
+                            if user.get("type") == "member":
+                                current_balance = user.get("water_balance", 0) or 0
+                                new_balance = max(0, current_balance - dispensed_ml)
+                                write_user(uid, {"water_balance": new_balance})
+                            else:
+                                current_balance = user.get("temp_water_time", 0) or 0
+                                new_balance = max(0, current_balance - dispensed_ml)
+                                write_user(uid, {"temp_water_time": new_balance})
+                                self.temp_water_time = new_balance
+                            
+                            # Update UI
+                            self.time_var.set(str(int(new_balance)))
+                            self.controller.refresh_all_user_info()
+                    
+                    # Update display
                     self.status_lbl.config(text=f"Dispensing... {remaining_ml:.0f}mL left")
                     self.debug_var.set(f"Progress: {dispensed_ml:.1f}mL dispensed")
                     print(f"DISPENSE_PROGRESS: {dispensed_ml:.1f}mL dispensed, {remaining_ml:.1f}mL left")

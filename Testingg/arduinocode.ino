@@ -115,10 +115,10 @@ void loop() {
       dispensing != last_dispensing ||
       flowPulseCount != last_flowCount) {
 
-    Serial.print("CREDIT_ML: "); Serial.println(creditML);
+    Serial.print("CREDIT_ML:"); Serial.println(creditML);
     Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
-    Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
+    Serial.print("DISPENSED_ML:"); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
 
     last_creditML = creditML;
     last_dispensing = dispensing;

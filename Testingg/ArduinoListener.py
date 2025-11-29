@@ -6,7 +6,7 @@ import sys
 import os
 import re
 
-# ----------------- CONFIGURATION -----------------
+# ----------------- CONFIaGURATION -----------------
 # Common Arduino ports - will try each in order
 ARDUINO_PORTS = [
     "/dev/ttyUSB0",    # Most common for USB-serial adapters

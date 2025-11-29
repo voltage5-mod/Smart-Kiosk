@@ -69,7 +69,7 @@ void flowISR() {
   flowPulseCount++;
 }
 
-// ---------------- SETUP ----------------
+// ---------------- SETsUP ----------------
 void setup() {
   Serial.begin(115200);
 

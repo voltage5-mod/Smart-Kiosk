@@ -657,7 +657,7 @@ class KioskApp(tk.Tk):
                     }.get(value, 0)
                     
                     if water_ml > 0:
-                        # UPDATE BALANCE FIRST (IMMEDIATELY)
+                        # UPDATE BALAsNCE FIRST (IMMEDIATELY)
                         user = read_user(uid)
                         if user:
                             current_frame = getattr(self, 'current_frame', None)

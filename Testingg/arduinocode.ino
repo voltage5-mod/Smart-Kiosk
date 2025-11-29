@@ -191,7 +191,20 @@ void handleCountdown() {
 // ---------------- DISPENSING ENGINE ----------------
 void startDispense(int ml) {
   startFlowCount = flowPulseCount;
-  targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
+  
+  // DEBUG: Calculate target pulses
+  float liters = ml / 1000.0;
+  targetPulses = (unsigned long)(liters * pulsesPerLiter);
+  
+  Serial.print("DEBUG START DISPENSE: ");
+  Serial.print("ml=");
+  Serial.print(ml);
+  Serial.print(", liters=");
+  Serial.print(liters, 4);
+  Serial.print(", pulsesPerLiter=");
+  Serial.print(pulsesPerLiter);
+  Serial.print(", targetPulses=");
+  Serial.println(targetPulses);
 
   digitalWrite(PUMP_PIN, HIGH);
   digitalWrite(VALVE_PIN, HIGH);
@@ -205,6 +218,18 @@ void handleDispensing() {
   if (!dispensing) return;
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
+  float dispensedML = pulsesToML(dispensedPulses);
+
+  // DEBUG: Show progress every 100 pulses
+  if (dispensedPulses % 100 == 0) {
+    Serial.print("DEBUG DISPENSING: ");
+    Serial.print("dispensedPulses=");
+    Serial.print(dispensedPulses);
+    Serial.print(", dispensedML=");
+    Serial.print(dispensedML);
+    Serial.print(", targetPulses=");
+    Serial.println(targetPulses);
+  }
 
   if (dispensedPulses >= targetPulses)
     stopDispense();
@@ -233,17 +258,35 @@ void handleCoin() {
   int pulses = coinPulseCount;
   coinPulseCount = 0;
 
-  if (abs(pulses - coin1P_pulses) <= 1) creditML += creditML_1P;
-  else if (abs(pulses - coin5P_pulses) <= 1) creditML += creditML_5P;
-  else if (abs(pulses - coin10P_pulses) <= 1) creditML += creditML_10P;
+  Serial.print("DEBUG: Raw pulses detected: ");
+  Serial.println(pulses);
+
+  // NON-OVERLAPPING RANGES
+  if (pulses == 1) {  // 1-peso coin: exactly 1 pulse
+    creditML += creditML_1P;
+    Serial.print("1 Peso coin: ");
+  }
+  else if (pulses >= 2 && pulses <= 4) {  // 5-peso coin: 2-4 pulses (center: 3)
+    creditML += creditML_5P; 
+    Serial.print("5 Peso coin: ");
+  }
+  else if (pulses >= 5 && pulses <= 7) {  // 10-peso coin: 5-7 pulses (center: 5)
+    creditML += creditML_10P;
+    Serial.print("10 Peso coin: ");
+  }
   else {
-    Serial.print("Unknown coin pattern: ");
+    Serial.print("Unknown coin pattern (rejected): ");
     Serial.println(pulses);
     return;
   }
 
-  Serial.print("Coin accepted: pulses=");
-  Serial.println(pulses);
+  Serial.print(pulses);
+  Serial.print(" pulses -> +");
+  Serial.print(creditML_1P); // Show what was added
+  Serial.print("mL, Total: ");
+  Serial.print(creditML);
+  Serial.println("mL");
+
   lastActivity = millis();
 }
 

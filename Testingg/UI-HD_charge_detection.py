@@ -643,7 +643,15 @@ class KioskApp(tk.Tk):
         """Enhanced central dispatcher for ArduinoListener events with real-time UI updates."""
         print(f"DEBUG: Arduino event received: {event} = {value}")
         
+        
         try:
+                # Handle CREDIT_UPDATE events for water mode
+            if event == 'credit_update' and value is not None:
+                print(f"WATER CREDIT DETECTED: {value}mL")
+                uid = self.active_uid
+                if uid:
+                    user = read_user(uid)
+                    
             # Handle COIN events centrally - they should work from any screen
             if event == 'coin' and value is not None:
                 print(f"COIN DETECTED: P{value}")

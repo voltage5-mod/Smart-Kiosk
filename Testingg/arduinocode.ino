@@ -1,6 +1,6 @@
 #include <EEPROM.h>
 
-// ---------------- PIN DEFINITIONS ----------------
+// ---------------- PIN DEFINITIONaS ----------------
 #define COIN_PIN          2     // Coin slot signal pin (interrupt)
 #define FLOW_SENSOR_PIN   3     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger

@@ -1,11 +1,3 @@
-/*
-=====================================================================
- arduinocode.cpp - Smart Solar Kiosk Water Vending Subsystem
- Version: Final Integrated Build (Arduino–Raspberry Pi)
- Date: November 2025
-=====================================================================
-*/
-
 #include <EEPROM.h>
 
 // ---------------- PIN DEFINITIONS ----------------
@@ -17,45 +9,48 @@
 #define VALVE_PIN         7     // Solenoid valve relay
 
 // ---------------- CONSTANTS ----------------
-#define COIN_DEBOUNCE_MS  50
-#define COIN_TIMEOUT_MS   800
-#define INACTIVITY_TIMEOUT 300000 // 5 minutes
-#define WATER_MODE 1
-#define CHARGE_MODE 2
+#define COIN_DEBOUNCE_MS       40
+#define COIN_MIN_PULSE_SPACING 30
+#define COIN_ISR_RATE_LIMIT    3
+#define COIN_TIMEOUT_MS        700
+#define INACTIVITY_TIMEOUT     300000 // 5 minutes
 
-// Cup detection constants - SINGLE DETECTION MODE
-#define CUP_DETECTION_THRESHOLD 8.0    // Maximum distance to consider as cup detection (cm)
-#define COUNTDOWN_DELAY_MS 5000        // 5 second countdown before starting
-#define CUP_READ_INTERVAL 200          // Time between ultrasonic readings (ms)
+// Cup detection
+#define CUP_DETECT_THRESHOLD_CM 20.0
 
-// ---------------- GLOBAL VARIABLES ----------------
-int currentMode = WATER_MODE; // Default mode (Pi can change this)
-float pulsesPerLiter = 4305.0; // Flow calibration (YF-S201 ~450/L)
+// Button-style cup detection variables
+unsigned long cupLastStateChange = 0;
+bool cupStableState = false;
+const unsigned long CUP_STABLE_MS = 200;
+bool cupLatched = false;
+const unsigned long CUP_RETURN_TIMEOUT_MS = 10000;
+unsigned long cupRemovedAt = 0;
+bool pauseOnRemove = true;
 
-// Coin settings (EEPROM stored)
+// Countdown variables
+bool countdownActive = false;
+unsigned long countdownStartTime = 0;
+const unsigned long COUNTDOWN_DURATION_MS = 5000; // 5 seconds
+int lastCountdownSecond = -1;
+
+// ---------------- FLOW CALIBRATION ----------------
+float pulsesPerLiter = 450.0;
+
+// ---------------- COIN CREDIT SETTINGS ----------------
 int coin1P_pulses = 1;
 int coin5P_pulses = 3;
 int coin10P_pulses = 5;
 
-// Coin credits
-int creditML_1P = 50;
-int creditML_5P = 250;
+int creditML_1P  = 100;
+int creditML_5P  = 250;
 int creditML_10P = 500;
 
-// Cup detection variables - SINGLE DETECTION MODE
-bool cupDetected = false;
-bool cupDetectionTriggered = false;
-bool countdownStarted = false;
-unsigned long cupDetectionTime = 0;
-unsigned long lastCupReadTime = 0;
-float lastValidDistance = 0.0;
-
-// Volatiles
+// ---------------- VOLATILES ----------------
 volatile unsigned long lastCoinPulseTime = 0;
 volatile int coinPulseCount = 0;
 volatile unsigned long flowPulseCount = 0;
 
-// System state
+// ---------------- SYSTEM STATE ----------------
 bool dispensing = false;
 int creditML = 0;
 unsigned long targetPulses = 0;
@@ -70,10 +65,15 @@ unsigned long last_flowCount = 0;
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
   unsigned long now = millis();
+
+  if (now - lastCoinPulseTime < COIN_ISR_RATE_LIMIT) return;
+  if (now - lastCoinPulseTime < COIN_MIN_PULSE_SPACING) return;
+
   if (now - lastCoinPulseTime > COIN_DEBOUNCE_MS) {
     coinPulseCount++;
-    lastCoinPulseTime = now;
   }
+
+  lastCoinPulseTime = now;
 }
 
 void flowISR() {
@@ -105,13 +105,12 @@ void setup() {
   if (isnan(pulsesPerLiter) || pulsesPerLiter < 200 || pulsesPerLiter > 1000)
     pulsesPerLiter = 450.0;
 
-  Serial.println("System Ready. Waiting for Pi signal...");
+  Serial.println("System Ready (Cup-as-Button + 5s Countdown Mode).");
   lastActivity = millis();
 }
 
 // ---------------- LOOP ----------------
 void loop() {
-  handleSerialCommand();
   handleCoin();
   handleCup();
   handleCountdown();
@@ -121,7 +120,19 @@ void loop() {
     resetSystem();
   }
 
-  delay(50);
+  if (Serial.available()) handleSerialCommand();
+
+  if (creditML != last_creditML || dispensing != last_dispensing || flowPulseCount != last_flowCount) {
+    Serial.print("CREDIT_ML: "); Serial.println(creditML);
+    Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
+    Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
+    Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
+    last_creditML = creditML;
+    last_dispensing = dispensing;
+    last_flowCount = flowPulseCount;
+  }
+
+  delay(80);
 }
 
 // ---------------- HELPER FUNCTIONS ----------------
@@ -129,8 +140,8 @@ float pulsesToML(unsigned long pulses) {
   return (pulses / pulsesPerLiter) * 1000.0;
 }
 
-// ---------------- SINGLE DETECTION CUP HANDLER ----------------
-bool detectCup() {
+// --------------- RAW CUP READING ----------------
+bool rawCupReading() {
   digitalWrite(CUP_TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(CUP_TRIG_PIN, HIGH);
@@ -138,83 +149,176 @@ bool detectCup() {
   digitalWrite(CUP_TRIG_PIN, LOW);
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
-  if (duration == 0) {
-    return false; // No valid reading
-  }
-  
   float distance = duration * 0.034 / 2;
-  
-  // Only consider valid distances within reasonable range
-  if (distance > 0 && distance < 50.0) {
-    lastValidDistance = distance;
-    return (distance < CUP_DETECTION_THRESHOLD);
-  }
-  
-  return false;
+
+  return (distance > 0 && distance < CUP_DETECT_THRESHOLD_CM);
 }
 
-void handleCup() {
-  unsigned long now = millis();
-  
-  // Only check cup at regular intervals to avoid flooding
-  if (now - lastCupReadTime < CUP_READ_INTERVAL) {
+// --------------- STABLE CUP DETECTOR ----------------
+bool detectCupStable() {
+  bool raw = rawCupReading();
+
+  if (raw != cupStableState) {
+    if (millis() - cupLastStateChange >= CUP_STABLE_MS) {
+      cupStableState = raw;
+      cupLastStateChange = millis();
+    }
+  } else {
+    cupLastStateChange = millis();
+  }
+
+  return cupStableState;
+}
+
+// ---------------- COUNTDOWN HANDLER ----------------
+void handleCountdown() {
+  if (!countdownActive) return;
+
+  unsigned long elapsed = millis() - countdownStartTime;
+  int secondsRemaining = COUNTDOWN_DURATION_MS / 1000 - (elapsed / 1000);
+
+  // Only send countdown updates when the second changes
+  if (secondsRemaining != lastCountdownSecond) {
+    lastCountdownSecond = secondsRemaining;
+    
+    if (secondsRemaining > 0) {
+      Serial.print("COUNTDOWN ");
+      Serial.println(secondsRemaining);
+    } else if (secondsRemaining == 0) {
+      Serial.println("COUNTDOWN_END");
+      // Start dispensing after countdown completes
+      startDispense(creditML);
+      countdownActive = false;
+    }
+  }
+
+  // Check if cup was removed during countdown
+  bool cupPresent = detectCupStable();
+  if (!cupPresent) {
+    Serial.println("Cup removed during countdown - CANCELLED");
+    countdownActive = false;
+    cupLatched = false;
+  }
+}
+
+// ---------------- COIN HANDLER ----------------
+void handleCoin() {
+  if (coinPulseCount == 0) return;
+  if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
+
+  int pulses = coinPulseCount;
+  coinPulseCount = 0;
+
+  if (pulses < 1 || pulses > 10) {
+    Serial.print("Rejected noise pulses: ");
+    Serial.println(pulses);
     return;
   }
-  lastCupReadTime = now;
 
-  bool currentDetection = detectCup();
+  int addedCredit = 0;
+  if (abs(pulses - coin1P_pulses) <= 1) {
+    creditML += creditML_1P;
+    addedCredit = creditML_1P;
+    Serial.print("COIN_INSERTED 1");
+  }
+  else if (abs(pulses - coin5P_pulses) <= 1) {
+    creditML += creditML_5P;
+    addedCredit = creditML_5P;
+    Serial.print("COIN_INSERTED 5");
+  }
+  else if (abs(pulses - coin10P_pulses) <= 1) {
+    creditML += creditML_10P;
+    addedCredit = creditML_10P;
+    Serial.print("COIN_INSERTED 10");
+  }
+  else {
+    Serial.print("Unknown or noise coin pattern: ");
+    Serial.println(pulses);
+    return;
+  }
+
+  Serial.print(" - Credit added: ");
+  Serial.print(addedCredit);
+  Serial.print("mL - Total: ");
+  Serial.print(creditML);
+  Serial.println("mL");
   
-  // SINGLE DETECTION LOGIC: Only trigger once per session
-  if (currentDetection && !cupDetectionTriggered && creditML > 0) {
-    // First time detecting cup with credit available
-    cupDetectionTriggered = true;
-    cupDetectionTime = now;
-    countdownStarted = true;
+  lastActivity = millis();
+}
+
+// ---------------- CUP HANDLER (Button Mode with Countdown) ----------------
+void handleCup() {
+  bool cupPresent = detectCupStable();
+
+  // If countdown is active, let handleCountdown manage it
+  if (countdownActive) {
+    return;
+  }
+
+  // Already dispensing → manage pause/resume
+  if (cupLatched && dispensing) {
+    if (!cupPresent) {
+      if (cupRemovedAt == 0) cupRemovedAt = millis();
+
+      if (pauseOnRemove) {
+        digitalWrite(PUMP_PIN, LOW);
+        digitalWrite(VALVE_PIN, LOW);
+        Serial.println("Cup removed — PAUSED");
+      }
+    } else {
+      if (pauseOnRemove && cupRemovedAt != 0) {
+        digitalWrite(PUMP_PIN, HIGH);
+        digitalWrite(VALVE_PIN, HIGH);
+        Serial.println("Cup returned — RESUMING");
+        cupRemovedAt = 0;
+        lastActivity = millis();
+      }
+    }
+
+    if (cupRemovedAt != 0 && millis() - cupRemovedAt > CUP_RETURN_TIMEOUT_MS) {
+      Serial.println("Cup did not return — stopping + refunding leftover credit");
+      stopDispenseAndRefund();
+    }
+    return;
+  }
+
+  // TRIGGER COUNTDOWN WHEN CUP PLACED (NEW BEHAVIOR)
+  if (!dispensing && !cupLatched && !countdownActive && cupPresent && creditML > 0) {
+    cupLatched = true;
+    countdownActive = true;
+    countdownStartTime = millis();
+    lastCountdownSecond = -1; // Reset countdown tracking
     
     Serial.println("CUP_DETECTED");
     Serial.println("COUNTDOWN_START 5");
-    
-    // Send countdown updates
-    for (int i = 5; i > 0; i--) {
-      Serial.print("COUNTDOWN ");
-      Serial.println(i);
-      delay(1000);
-    }
-    
-    Serial.println("COUNTDOWN_END");
-    
-    // Start dispensing ALL remaining water after countdown
-    startDispense(creditML);
-    
-  } else if (!currentDetection && cupDetectionTriggered && !dispensing) {
-    // Cup was removed before dispensing started
-    cupDetectionTriggered = false;
-    countdownStarted = false;
-    Serial.println("CUP_REMOVED");
+    Serial.println("Starting 5-second countdown...");
+  }
+
+  // Reset latch when idle and no credit
+  if (!dispensing && cupLatched && creditML == 0 && !cupPresent) {
+    cupLatched = false;
+    cupRemovedAt = 0;
   }
 }
 
-void handleCountdown() {
-  // Countdown is handled in handleCup() with delays
-  // This function is kept for future expansion if needed
-}
-
-// ---------------- DISPENSING ----------------
+// ---------------- DISPENSING ENGINE ----------------
 void startDispense(int ml) {
   if (ml <= 0) return;
   
   startFlowCount = flowPulseCount;
   targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
+
   digitalWrite(PUMP_PIN, HIGH);
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
-  lastActivity = millis();
 
   Serial.println("DISPENSE_START");
   
   // Send initial progress with ALL remaining water
   Serial.print("DISPENSE_PROGRESS ml=0 remaining=");
   Serial.println(ml);
+  
+  lastActivity = millis();
 }
 
 void handleDispensing() {
@@ -241,174 +345,79 @@ void stopDispense() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   dispensing = false;
-  cupDetectionTriggered = false; // Reset for next session
 
   float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
   Serial.print("DISPENSE_DONE ");
   Serial.println(dispensedML, 1);
 
   creditML = 0; // All water dispensed
+  cupLatched = false;
+  countdownActive = false;
   lastActivity = millis();
 }
 
-void stopDispenseEarly() {
+// ---------------- REFUND LOGIC ----------------
+void stopDispenseAndRefund() {
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
+
+  unsigned long pulsesDispensed = flowPulseCount - startFlowCount;
+  int mlDispensed = (int)pulsesToML(pulsesDispensed + 0.5);
+
+  int remaining = creditML - mlDispensed;
+  if (remaining < 0) remaining = 0;
+
+  Serial.print("Dispensed so far: ");
+  Serial.println(mlDispensed);
+  Serial.print("Refunding remaining credit: ");
+  Serial.println(remaining);
+
+  creditML = remaining;
   dispensing = false;
-  cupDetectionTriggered = false;
+  cupLatched = false;
+  cupRemovedAt = 0;
+  countdownActive = false;
 
-  float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
-  float remaining = creditML - dispensedML;
-  
-  if (remaining > 0) {
-    Serial.print("CREDIT_LEFT ");
-    Serial.println(remaining, 1);
-    creditML = remaining;
-  } else {
-    creditML = 0;
-  }
-  
-  lastActivity = millis();
-}
-
-// ---------------- COIN HANDLER ----------------
-void handleCoin() {
-  if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
-    int pulses = coinPulseCount;
-    
-    // STRICTER VALIDATION - only accept known coin patterns
-    int peso = 0;
-    int ml = 0;
-    bool validCoin = false;
-
-    // Tighter validation with smaller tolerance
-    if (pulses >= coin1P_pulses-1 && pulses <= coin1P_pulses+1) { 
-      peso = 1; ml = 50; validCoin = true; 
-    }
-    else if (pulses >= coin5P_pulses-1 && pulses <= coin5P_pulses+1) { 
-      peso = 5; ml = 250; validCoin = true; 
-    }
-    else if (pulses >= coin10P_pulses-1 && pulses <= coin10P_pulses+1) { 
-      peso = 10; ml = 500; validCoin = true; 
-    }
-
-    // ONLY process valid coins
-    if (validCoin) {
-      coinPulseCount = 0;  // Reset only for valid coins
-      
-      Serial.print("COIN_INSERTED "); 
-      Serial.println(peso);
-
-      if (currentMode == WATER_MODE) {
-        creditML += ml;
-        Serial.print("COIN_WATER "); 
-        Serial.println(ml);
-      } 
-      else if (currentMode == CHARGE_MODE) {
-        Serial.print("COIN_CHARGE "); 
-        Serial.println(peso);
-      }
-      lastActivity = millis();
-    } else {
-      // REJECT invalid coins completely
-      coinPulseCount = 0;  // Reset to prevent accumulation
-      Serial.print("[DEBUG] Rejected invalid coin pattern: ");
-      Serial.println(pulses);
-    }
-  }
+  Serial.print("CREDIT_LEFT ");
+  Serial.println(creditML);
 }
 
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {
-  if (!Serial.available()) return;
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
 
-  if (cmd.equalsIgnoreCase("CAL")) calibrateCoins();
-  else if (cmd.equalsIgnoreCase("FLOWCAL")) calibrateFlow();
-  else if (cmd.equalsIgnoreCase("RESET")) resetSystem();
+  if (cmd.equalsIgnoreCase("STATUS")) {
+    Serial.print("CREDIT_ML: "); Serial.println(creditML);
+    Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
+    Serial.print("COUNTDOWN_ACTIVE: "); Serial.println(countdownActive ? "YES" : "NO");
+    Serial.print("CUP_LATCHED: "); Serial.println(cupLatched ? "YES" : "NO");
+    Serial.print("Flow pulses: "); Serial.println(flowPulseCount);
+    Serial.print("Flow mL: "); Serial.println(pulsesToML(flowPulseCount));
+    Serial.print("Flow calibration: "); Serial.println(pulsesPerLiter);
+  }
+  else if (cmd.equalsIgnoreCase("RESET")) {
+    resetSystem();
+  }
   else if (cmd.equalsIgnoreCase("MODE WATER")) {
-    currentMode = WATER_MODE;
     Serial.println("MODE: WATER");
   }
   else if (cmd.equalsIgnoreCase("MODE CHARGE")) {
-    currentMode = CHARGE_MODE;
     Serial.println("MODE: CHARGE");
   }
-  else if (cmd.equalsIgnoreCase("STATUS")) {
-    Serial.print("CREDIT_ML "); Serial.println(creditML);
-    Serial.print("DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
-    Serial.print("FLOW_PULSES "); Serial.println(flowPulseCount);
-    Serial.print("CUP_DETECTED "); Serial.println(cupDetectionTriggered ? "YES" : "NO");
-  }
-}
-
-// ---------------- CALIBRATION ----------------
-void calibrateCoins() {
-  Serial.println("Calibrating coins...");
-
-  coinPulseCount = 0;
-  Serial.println("Insert 1 Peso...");
-  waitForCoinPulse();
-  coin1P_pulses = coinPulseCount;
-  EEPROM.put(0, coin1P_pulses);
-
-  coinPulseCount = 0;
-  Serial.println("Insert 5 Peso...");
-  waitForCoinPulse();
-  coin5P_pulses = coinPulseCount;
-  EEPROM.put(4, coin5P_pulses);
-
-  coinPulseCount = 0;
-  Serial.println("Insert 10 Peso...");
-  waitForCoinPulse();
-  coin10P_pulses = coinPulseCount;
-  EEPROM.put(8, coin10P_pulses);
-
-  Serial.print("CAL_DONE 1="); Serial.print(coin1P_pulses);
-  Serial.print(" 5="); Serial.print(coin5P_pulses);
-  Serial.print(" 10="); Serial.println(coin10P_pulses);
-}
-
-void waitForCoinPulse() {
-  unsigned long start = millis();
-  while (millis() - start < 10000) {
-    if (coinPulseCount > 0 && millis() - lastCoinPulseTime > COIN_TIMEOUT_MS) return;
-  }
-  Serial.println("Timeout. Skipped coin.");
-}
-
-void calibrateFlow() {
-  Serial.println("FLOW CALIBRATION: Collect exactly 1000 ml and type DONE when ready.");
-
-  flowPulseCount = 0;
-  digitalWrite(PUMP_PIN, HIGH);
-  digitalWrite(VALVE_PIN, HIGH);
-  while (true) {
-    if (Serial.available()) {
-      String cmd = Serial.readStringUntil('\n');
-      cmd.trim();
-      if (cmd.equalsIgnoreCase("DONE")) break;
-    }
-  }
-  digitalWrite(PUMP_PIN, LOW);
-  digitalWrite(VALVE_PIN, LOW);
-
-  pulsesPerLiter = flowPulseCount;
-  EEPROM.put(12, pulsesPerLiter);
-  Serial.print("New calibration saved: ");
-  Serial.print(pulsesPerLiter);
-  Serial.println(" pulses per liter.");
 }
 
 // ---------------- RESET ----------------
 void resetSystem() {
   creditML = 0;
   dispensing = false;
-  cupDetectionTriggered = false;
-  countdownStarted = false;
+  countdownActive = false;
+  cupLatched = false;
+  cupRemovedAt = 0;
+
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
+
   Serial.println("System reset.");
   lastActivity = millis();
 }

@@ -203,8 +203,34 @@ class ArduinoListener:
         if not line.strip():
             return
 
-        # Handle COIN events in various formats
-        if "Coin accepted: pulses=" in line:
+        # Handle COIN: format (new clear format)
+        if line.startswith("COIN:"):
+            try:
+                coin_value = int(line.split(":")[1].strip())
+                event = "coin"
+                value = coin_value
+                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN: value from: {line}")
+                return
+
+        # Handle WATER_CREDIT: format
+        elif line.startswith("WATER_CREDIT:"):
+            try:
+                water_ml = int(line.split(":")[1].strip())
+                event = "coin_water"
+                value = water_ml
+                self.logger.info(f"WATER CREDIT: {event} = {value}mL from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse WATER_CREDIT value from: {line}")
+                return
+
+        # Handle old coin format for backward compatibility
+        elif "Coin accepted: pulses=" in line:
             try:
                 # Extract pulse count from "Coin accepted: pulses=1"
                 pulse_str = line.split("pulses=")[1].strip()
@@ -222,25 +248,12 @@ class ArduinoListener:
                 
                 event = "coin"
                 value = coin_value
-                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
+                self.logger.info(f"COIN DETECTED (legacy): {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
                 
             except (ValueError, IndexError) as e:
                 self.logger.warning(f"Could not parse coin pulses from: {line}")
-                return
-
-        # Handle COIN: format
-        elif line.startswith("COIN:"):
-            try:
-                coin_value = int(line.split(":")[1].strip())
-                event = "coin"
-                value = coin_value
-                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN: value from: {line}")
                 return
 
         # Handle CUP_DETECTED
@@ -294,12 +307,11 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
                 return
 
-        # Handle CREDIT_ML updates (for debugging)
-        elif line.startswith("CREDIT_ML:"):
+        # Handle TOTAL_CREDIT updates
+        elif line.startswith("TOTAL_CREDIT:"):
             try:
-                credit_ml = int(line.split(":")[1].strip())
-                self.logger.info(f"Credit ML updated: {credit_ml}mL")
-                # You could dispatch this as an event if needed
+                total_credit = int(line.split(":")[1].strip())
+                self.logger.info(f"Total credit updated: {total_credit}mL")
                 return
             except (ValueError, IndexError) as e:
                 pass
@@ -313,7 +325,7 @@ class ArduinoListener:
             return
 
         # Skip debug status lines (they're too frequent)
-        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+        elif any(prefix in line for prefix in ["DEBUG:", "CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
             self.logger.debug(f"Status update: {line}")
             return
 

@@ -251,6 +251,7 @@ void stopDispense() {
 }
 
 // ---------------- COIN HANDLER ----------------
+// ---------------- COIN HANDLER ----------------
 void handleCoin() {
   if (coinPulseCount == 0) return;
   if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
@@ -261,16 +262,25 @@ void handleCoin() {
   Serial.print("DEBUG: Raw pulses detected: ");
   Serial.println(pulses);
 
+  int coinValue = 0;
+  int waterML = 0;
+
   // NON-OVERLAPPING RANGES
   if (pulses == 1) {  // 1-peso coin: exactly 1 pulse
-    creditML += creditML_1P;
+    coinValue = 1;
+    waterML = creditML_1P;
+    creditML += waterML;
     Serial.print("1 Peso coin: ");
   }
   else if (pulses >= 2 && pulses <= 4) {  // 5-peso coin: 2-4 pulses (center: 3)
+    coinValue = 5;
+    waterML = creditML_5P;
     creditML += creditML_5P; 
     Serial.print("5 Peso coin: ");
   }
   else if (pulses >= 5 && pulses <= 7) {  // 10-peso coin: 5-7 pulses (center: 5)
+    coinValue = 10;
+    waterML = creditML_10P;
     creditML += creditML_10P;
     Serial.print("10 Peso coin: ");
   }
@@ -280,16 +290,26 @@ void handleCoin() {
     return;
   }
 
+  // Send CLEAR coin detection message that Python can parse
+  Serial.print("COIN:");
+  Serial.println(coinValue);
+  
+  // Also send water credit info
+  Serial.print("WATER_CREDIT:");
+  Serial.println(waterML);
+  
+  Serial.print("TOTAL_CREDIT:");
+  Serial.println(creditML);
+
   Serial.print(pulses);
   Serial.print(" pulses -> +");
-  Serial.print(creditML_1P); // Show what was added
+  Serial.print(waterML);
   Serial.print("mL, Total: ");
   Serial.print(creditML);
   Serial.println("mL");
 
   lastActivity = millis();
 }
-
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {
   String cmd = Serial.readStringUntil('\n');

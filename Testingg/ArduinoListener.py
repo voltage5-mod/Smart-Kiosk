@@ -219,7 +219,7 @@ class ArduinoListener:
         if not line.strip():
             return
 
-        # Handle COIN events - IMPROVED PARSING
+        # Handle COIN events - FIXED: Prevent double processing
         if "Coin accepted: pulses=" in line:
             try:
                 # Extract from format: "Coin accepted: pulses=3, value=P5, added=250mL, total=250mL"
@@ -230,7 +230,7 @@ class ArduinoListener:
                     pulse_str = pulse_part.split("pulses=")[1].strip()
                     pulses = int(pulse_str)
                     
-                    # Get coin value - more robust parsing
+                    # Get coin value
                     value_part = parts[1].strip()
                     if "value=P" in value_part:
                         value_str = value_part.split("value=P")[1].strip()
@@ -268,13 +268,11 @@ class ArduinoListener:
                     self.last_coin_time = current_time
                     self.coin_event_count += 1
                     
-                    event = "coin"
-                    value = coin_value
-                    self.logger.info(f"COIN ACCEPTED: {event} = P{value}, pulses={pulses}, added={added_ml}mL")
+                    self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
                     
-                    # Dispatch both coin event and water credit event
-                    self._dispatch_event(event, value, line)
-                    self._dispatch_event("coin_water", added_ml, line)
+                    # FIX: Only dispatch ONE event with both peso and ml
+                    coin_data = {"peso": coin_value, "ml": added_ml}
+                    self._dispatch_event("coin", coin_data, line)
                     
                 return
                 
@@ -298,13 +296,11 @@ class ArduinoListener:
                     added_str = added_part.split("added=")[1].replace("mL", "").strip()
                     added_ml = int(added_str)
                     
-                    event = "coin"
-                    value = coin_value
-                    self.logger.info(f"TEST COIN: {event} = P{value}, added={added_ml}mL")
+                    self.logger.info(f"TEST COIN: P{coin_value}, added={added_ml}mL")
                     
-                    # Dispatch both coin event and water credit event
-                    self._dispatch_event(event, value, line)
-                    self._dispatch_event("coin_water", added_ml, line)
+                    # Dispatch coin event
+                    coin_data = {"peso": coin_value, "ml": added_ml}
+                    self._dispatch_event("coin", coin_data, line)
                     
                 return
             except (ValueError, IndexError, AttributeError) as e:

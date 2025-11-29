@@ -284,7 +284,7 @@ void processCoinPulses() {
     return;
   }
 
-  // Valid coin detected
+  // Valid coin detected - ADD CREDIT ONLY ONCE
   creditML += addedML;
   lastValidCoinTime = millis();
 

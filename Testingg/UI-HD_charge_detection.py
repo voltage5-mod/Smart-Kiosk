@@ -2479,86 +2479,15 @@ class WaterScreen(tk.Frame):
         self.test_arduino_connection()
 
     def handle_arduino_event(self, event, value):
-        """Handle Arduino events in WaterScreen with countdown support."""
+        """Handle Arduino events in WaterScreen - SIMPLIFIED."""
         print(f"WaterScreen received: {event} = {value}")
         
         try:
-            if event == 'coin' and value is not None:
-                # Convert coin to mL and update balance IMMEDIATELY
-                coin_to_ml = {1: 50, 5: 250, 10: 500}
-                added_ml = coin_to_ml.get(value, 0)
-                
-                if added_ml > 0:
-                    uid = self.controller.active_uid
-                    if uid:
-                        user = read_user(uid)
-                        new_balance = 0
-                        
-                        if user and user.get("type") == "member":
-                            current = user.get("water_balance", 0) or 0
-                            new_balance = current + added_ml
-                            write_user(uid, {"water_balance": new_balance})
-                            print(f"Updated member water balance: {current} + {added_ml} = {new_balance}mL")
-                        else:
-                            current = user.get("temp_water_time", 0) or 0
-                            new_balance = current + added_ml
-                            write_user(uid, {"temp_water_time": new_balance})
-                            self.temp_water_time = new_balance
-                            print(f"Updated guest water balance: {current} + {added_ml} = {new_balance}mL")
-                        
-                        # CRITICAL: Update UI IMMEDIATELY
-                        self.time_var.set(str(new_balance))
-                        if new_balance > 0:
-                            self.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
-                        else:
-                            self.status_lbl.config(text="Insert coins to buy water")
-                        
-                        # Force UI refresh
-                        self.update_idletasks()
-                        
-                        # Refresh user info in top bar
-                        self.controller.refresh_all_user_info()
-                        
-                        # Then show popup
-                        self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
-                        
-            elif event == 'coin_water' and value is not None:
-                print(f"WATER COIN DETECTED: {value}mL")
-                uid = self.controller.active_uid
-                if uid:
-                    user = read_user(uid)
-                    if user and user.get("type") == "member":
-                        current_balance = user.get("water_balance", 0) or 0
-                        new_balance = current_balance + value
-                        write_user(uid, {"water_balance": new_balance})
-                        print(f"Updated member water balance from COIN_WATER: {current_balance} + {value} = {new_balance}mL")
-                    else:
-                        current_balance = user.get("temp_water_time", 0) or 0
-                        new_balance = current_balance + value
-                        write_user(uid, {"temp_water_time": new_balance})
-                        self.temp_water_time = new_balance
-                        print(f"Updated guest water balance from COIN_WATER: {current_balance} + {value} = {new_balance}mL")
-                    
-                    # Update UI immediately
-                    self.time_var.set(str(new_balance))
-                    if new_balance > 0:
-                        self.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
-                    else:
-                        self.status_lbl.config(text="Insert coins to buy water")
-                    
-                    self.update_idletasks()
-                    self.controller.refresh_all_user_info()
-                    
-            elif event == 'cup_detected':
+            if event == 'cup_detected':
                 self.cup_present = True
-                self.status_lbl.config(text="Cup detected - Starting 5-second countdown...")
+                self.status_lbl.config(text="Cup detected - Starting countdown...")
                 self.debug_var.set("Cup detected - Countdown starting")
                 print("CUP_DETECTED: Starting countdown")
-                
-            elif event == 'countdown_start':
-                self.status_lbl.config(text="Countdown: 5 seconds...")
-                self.debug_var.set("5-second countdown started")
-                print("COUNTDOWN_START: 5 seconds")
                 
             elif event == 'countdown':
                 seconds = value
@@ -2582,27 +2511,6 @@ class WaterScreen(tk.Frame):
                 self._end_dispensing_complete(f"Dispensing completed: {dispensed_ml}mL")
                 print(f"DISPENSE_DONE: {dispensed_ml}mL dispensed")
                 
-            elif event == 'credit_left':
-                remaining_ml = value
-                self.debug_var.set(f"Dispensing paused - Credit left: {remaining_ml}mL")
-                
-                # Update display with remaining credit
-                self._update_water_balance(remaining_ml)
-                self.status_lbl.config(text=f"Balance: {remaining_ml}mL - Place cup to continue")
-                print(f"CREDIT_LEFT: {remaining_ml}mL remaining")
-                
-            elif event == 'dispense_progress':
-                # Handle progress updates during dispensing
-                if isinstance(value, dict):
-                    dispensed_ml = value.get('dispensed', 0)
-                    remaining_ml = value.get('remaining', 0)
-                    
-                    # Update display with progress
-                    self.time_var.set(str(int(remaining_ml)))
-                    self.status_lbl.config(text=f"Dispensing... {remaining_ml:.0f}mL left")
-                    self.debug_var.set(f"Progress: {dispensed_ml:.1f}mL dispensed")
-                    print(f"DISPENSE_PROGRESS: {dispensed_ml:.1f}mL dispensed, {remaining_ml:.1f}mL left")
-                    
             elif event == 'cup_removed':
                 self.cup_present = False
                 if self.is_dispensing:
@@ -2618,17 +2526,8 @@ class WaterScreen(tk.Frame):
                 self.status_lbl.config(text="System ready - Insert coins")
                 print("SYSTEM_READY: Arduino connected")
                 
-            elif event == 'calibration_done':
-                self.debug_var.set("Calibration completed")
-                print("CALIBRATION_DONE: Calibration finished")
+            # REMOVED coin handling - now handled by KioskApp
                 
-            elif event == 'mode':
-                self.debug_var.set(f"Mode changed to: {value}")
-                print(f"MODE: Changed to {value}")
-                
-            else:
-                print(f"WaterScreen: Unhandled event: {event} = {value}")
-                    
         except Exception as e:
             print(f"ERROR in WaterScreen event handler: {e}")
             self.debug_var.set(f"Event error: {e}")

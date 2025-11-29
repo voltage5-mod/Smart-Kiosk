@@ -2472,7 +2472,7 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
-
+# --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#2980b9")
@@ -2486,7 +2486,7 @@ class WaterScreen(tk.Frame):
         tk.Label(body, text="Water Dispensing", font=("Arial", 22, "bold"), 
                  fg="white", bg="#2980b9").pack(pady=6)
         
-        self.status_lbl = tk.Label(body, text="Place cup to start", font=("Arial", 16), 
+        self.status_lbl = tk.Label(body, text="Insert coins to buy water", font=("Arial", 16), 
                                   fg="white", bg="#2980b9")
         self.status_lbl.pack(pady=6)
         
@@ -2533,15 +2533,18 @@ class WaterScreen(tk.Frame):
                   bg="#f39c12", fg="white", width=15,
                   command=self.remove_cup).pack(side="left", padx=5)
         
-        # Session control
-        ctrl_subframe = tk.Frame(sim_frame, bg="#2980b9")
-        ctrl_subframe.pack(pady=5)
-        tk.Button(ctrl_subframe, text="START DISPENSING", font=("Arial", 12, "bold"),
-                  bg="#2980b9", fg="white", width=18,
-                  command=self.start_dispensing).pack(side="left", padx=5)
-        tk.Button(ctrl_subframe, text="STOP SESSION", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=15,
-                  command=self.stop_session).pack(side="left", padx=5)
+        # Debug commands
+        debug_subframe = tk.Frame(sim_frame, bg="#2980b9")
+        debug_subframe.pack(pady=5)
+        tk.Button(debug_subframe, text="DEBUG CUP", font=("Arial", 10),
+                  bg="#9b59b6", fg="white", width=12,
+                  command=self.debug_cup).pack(side="left", padx=5)
+        tk.Button(debug_subframe, text="FORCE COUNTDOWN", font=("Arial", 10),
+                  bg="#e74c3c", fg="white", width=15,
+                  command=self.force_countdown).pack(side="left", padx=5)
+        tk.Button(debug_subframe, text="ARDUINO STATUS", font=("Arial", 10),
+                  bg="#3498db", fg="white", width=12,
+                  command=self.arduino_status).pack(side="left", padx=5)
 
         # Navigation
         nav_frame = tk.Frame(body, bg="#2980b9")
@@ -2559,68 +2562,18 @@ class WaterScreen(tk.Frame):
         self._water_db_acc = 0
         self._water_remaining = 0
         self.is_dispensing = False
+        self.countdown_active = False
         
         # Test Arduino connection
         self.test_arduino_connection()
 
     def handle_arduino_event(self, event, value):
-        """Handle Arduino events in WaterScreen with reduced updates during dispensing."""
+        """Handle Arduino events in WaterScreen with countdown support."""
         print(f"WaterScreen received: {event} = {value}")
         
-        # ⚠️ CRITICAL FIX: Block all UI updates during active dispensing
-        if self.is_dispensing and event not in ['dispense_done', 'countdown_end', 'cup_removed']:
-            print(f"BLOCKED during dispensing: {event} = {value}")
-            return
-        
-        # ⚠️ Add update throttling - only process one event per second
-        current_time = time.time()
-        if hasattr(self, '_last_event_time'):
-            if current_time - self._last_event_time < 0.5:  # 500ms throttle
-                print(f"THROTTLED: {event} = {value} (too frequent)")
-                return
-        self._last_event_time = current_time
-        
         try:
-            if event == 'coin' and value is not None:
-                # Convert coin to mL and update balance IMMEDIATELY
-                coin_to_ml = {1: 50, 5: 250, 10: 500}
-                added_ml = coin_to_ml.get(value, 0)
-                
-                if added_ml > 0:
-                    uid = self.controller.active_uid
-                    if uid:
-                        user = read_user(uid)
-                        new_balance = 0
-                        
-                        if user and user.get("type") == "member":
-                            current = user.get("water_balance", 0) or 0
-                            new_balance = current + added_ml
-                            write_user(uid, {"water_balance": new_balance})
-                            print(f"Updated member water balance: {current} + {added_ml} = {new_balance}mL")
-                        else:
-                            current = user.get("temp_water_time", 0) or 0
-                            new_balance = current + added_ml
-                            write_user(uid, {"temp_water_time": new_balance})
-                            self.temp_water_time = new_balance
-                            print(f"Updated guest water balance: {current} + {added_ml} = {new_balance}mL")
-                        
-                        # CRITICAL: Update UI IMMEDIATELY
-                        self.time_var.set(str(new_balance))
-                        if new_balance > 0:
-                            self.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
-                        else:
-                            self.status_lbl.config(text="Insert coins to buy water")
-                        
-                        # Force UI refresh
-                        self.update_idletasks()
-                        
-                        # Refresh user info in top bar
-                        self.controller.refresh_all_user_info()
-                        
-                        # Then show popup
-                        self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
-                        
-            elif event == 'coin_water' and value is not None:
+            if event == 'coin_water' and value is not None:
+                # Direct water credit event
                 print(f"WATER COIN DETECTED: {value}mL")
                 uid = self.controller.active_uid
                 if uid:
@@ -2629,13 +2582,13 @@ class WaterScreen(tk.Frame):
                         current_balance = user.get("water_balance", 0) or 0
                         new_balance = current_balance + value
                         write_user(uid, {"water_balance": new_balance})
-                        print(f"Updated member water balance from COIN_WATER: {current_balance} + {value} = {new_balance}mL")
+                        print(f"Updated member water balance: {current_balance} + {value} = {new_balance}mL")
                     else:
                         current_balance = user.get("temp_water_time", 0) or 0
                         new_balance = current_balance + value
                         write_user(uid, {"temp_water_time": new_balance})
                         self.temp_water_time = new_balance
-                        print(f"Updated guest water balance from COIN_WATER: {current_balance} + {value} = {new_balance}mL")
+                        print(f"Updated guest water balance: {current_balance} + {value} = {new_balance}mL")
                     
                     # Update UI immediately
                     self.time_var.set(str(new_balance))
@@ -2649,80 +2602,48 @@ class WaterScreen(tk.Frame):
                     
             elif event == 'cup_detected':
                 self.cup_present = True
-                self.status_lbl.config(text="Cup detected - Starting 5-second countdown...")
+                self.status_lbl.config(text="Cup detected - Starting countdown...")
                 self.debug_var.set("Cup detected - Countdown starting")
                 print("CUP_DETECTED: Starting countdown")
                 
-            elif event == 'countdown_start':
-                self.status_lbl.config(text="Countdown: 5 seconds...")
-                self.debug_var.set("5-second countdown started")
-                print("COUNTDOWN_START: 5 seconds")
-                
             elif event == 'countdown':
                 seconds = value
+                self.countdown_active = True
                 self.status_lbl.config(text=f"Starting in: {seconds} seconds...")
                 self.debug_var.set(f"Countdown: {seconds}")
                 print(f"COUNTDOWN: {seconds} seconds remaining")
                 
             elif event == 'countdown_end':
+                self.countdown_active = False
                 self.status_lbl.config(text="DISPENSING WATER...")
                 self.debug_var.set("Countdown complete - Dispensing started")
                 print("COUNTDOWN_END: Starting to dispense")
                 
+            elif event == 'countdown_cancelled':
+                self.countdown_active = False
+                self.status_lbl.config(text="Countdown cancelled - Cup removed")
+                self.debug_var.set("Countdown cancelled")
+                print("COUNTDOWN_CANCELLED: Cup removed during countdown")
+                
             elif event == 'dispense_start':
                 self.is_dispensing = True
                 self.status_lbl.config(text="DISPENSING WATER...")
-                self.debug_var.set("Dispensing started - DO NOT INTERRUPT")
+                self.debug_var.set("Dispensing started")
                 print("DISPENSE_START: Water flow started")
                 
             elif event == 'dispense_done':
                 dispensed_ml = value
-                self._end_dispensing_complete(f"Dispensing completed: {dispensed_ml}mL")
+                self._end_dispensing_complete(f"Dispensing completed: {dispensed_ml:.0f}mL")
                 print(f"DISPENSE_DONE: {dispensed_ml}mL dispensed")
                 
-            elif event == 'credit_left':
-                remaining_ml = value
-                self.debug_var.set(f"Dispensing paused - Credit left: {remaining_ml}mL")
-                
-                # Update display with remaining credit
-                self._update_water_balance(remaining_ml)
-                self.status_lbl.config(text=f"Balance: {remaining_ml}mL - Place cup to continue")
-                print(f"CREDIT_LEFT: {remaining_ml}mL remaining")
-                
-            elif event == 'dispense_progress':
-                if isinstance(value, dict):
-                    dispensed_ml = value.get('dispensed', 0)
-                    remaining_ml = value.get('remaining', 0)
-                    
-                    # DEDUCT FROM BALANCE
-                    uid = self.controller.active_uid
-                    if uid and dispensed_ml > 0:
-                        user = read_user(uid)
-                        if user:
-                            if user.get("type") == "member":
-                                current_balance = user.get("water_balance", 0) or 0
-                                new_balance = max(0, current_balance - dispensed_ml)
-                                write_user(uid, {"water_balance": new_balance})
-                            else:
-                                current_balance = user.get("temp_water_time", 0) or 0
-                                new_balance = max(0, current_balance - dispensed_ml)
-                                write_user(uid, {"temp_water_time": new_balance})
-                                self.temp_water_time = new_balance
-                            
-                            # Update UI
-                            self.time_var.set(str(int(new_balance)))
-                            self.controller.refresh_all_user_info()
-                    
-                    # Update display
-                    self.status_lbl.config(text=f"Dispensing... {remaining_ml:.0f}mL left")
-                    self.debug_var.set(f"Progress: {dispensed_ml:.1f}mL dispensed")
-                    print(f"DISPENSE_PROGRESS: {dispensed_ml:.1f}mL dispensed, {remaining_ml:.1f}mL left")
-                    
             elif event == 'cup_removed':
                 self.cup_present = False
                 if self.is_dispensing:
                     self.status_lbl.config(text="Cup removed - Dispensing paused")
                     self.debug_var.set("Cup removed - Dispensing paused")
+                elif self.countdown_active:
+                    self.status_lbl.config(text="Cup removed - Countdown cancelled")
+                    self.debug_var.set("Cup removed - Countdown cancelled")
                 else:
                     self.status_lbl.config(text="Cup removed")
                     self.debug_var.set("Cup removed")
@@ -2733,13 +2654,14 @@ class WaterScreen(tk.Frame):
                 self.status_lbl.config(text="System ready - Insert coins")
                 print("SYSTEM_READY: Arduino connected")
                 
-            elif event == 'calibration_done':
-                self.debug_var.set("Calibration completed")
-                print("CALIBRATION_DONE: Calibration finished")
+            elif event == 'system_reset':
+                self.debug_var.set("System reset")
+                self.status_lbl.config(text="System reset - Insert coins")
+                print("SYSTEM_RESET: Arduino reset")
                 
-            elif event == 'mode':
-                self.debug_var.set(f"Mode changed to: {value}")
-                print(f"MODE: Changed to {value}")
+            elif event == 'credit_update':
+                self.debug_var.set(f"Credit updated: {value}mL")
+                print(f"CREDIT_UPDATE: {value}mL")
                 
             else:
                 print(f"WaterScreen: Unhandled event: {event} = {value}")
@@ -2770,6 +2692,7 @@ class WaterScreen(tk.Frame):
         """End dispensing session completely"""
         self.is_dispensing = False
         self.cup_present = False
+        self.countdown_active = False
         self.status_lbl.config(text=message)
         self.debug_var.set("Dispensing complete")
         
@@ -2857,118 +2780,22 @@ class WaterScreen(tk.Frame):
         self.refresh()
 
     def place_cup(self):
-        """Simulate placing a cup - start water dispensing"""
-        uid = self.controller.active_uid
-        if not uid:
-            self.debug_var.set("ERROR: No user - Scan RFID first")
-            return
-            
-        user = read_user(uid)
-        if user.get("type") == "member":
-            balance = user.get("water_balance", 0) or 0
-            if balance <= 0:
-                self.debug_var.set("ERROR: No water balance - Add coins first")
-                return
-        else:
-            if self.temp_water_time <= 0:
-                self.debug_var.set("ERROR: No purchased water - Add coins first")
-                return
-                
+        """Simulate placing a cup"""
         self.cup_present = True
         self.last_cup_time = time.time()
         self.status_lbl.config(text="Cup detected - Ready to dispense")
-        self.debug_var.set("Cup placed - Click START DISPENSING")
+        self.debug_var.set("Cup placed - Ready for countdown")
         
         # Cancel any previous timeouts
         if self._water_nocup_job:
             self.after_cancel(self._water_nocup_job)
             self._water_nocup_job = None
 
-    def start_dispensing(self):
-        """Start the water dispensing process"""
-        if not self.cup_present:
-            self.debug_var.set("ERROR: Place cup first")
-            return
-            
-        uid = self.controller.active_uid
-        if not uid:
-            return
-            
-        user = read_user(uid)
-        if user.get("type") == "member":
-            self._water_remaining = user.get("water_balance", 0) or 0
-        else:
-            self._water_remaining = self.temp_water_time
-            
-        if self._water_remaining <= 0:
-            self.debug_var.set("ERROR: No water credit")
-            return
-            
-        self.is_dispensing = True
-        self.status_lbl.config(text="DISPENSING WATER...")
-        self.debug_var.set(f"Dispensing started - {self._water_remaining}mL remaining")
-        
-        # Start the dispensing timer
-        if self._water_job is None:
-            self._water_job = self.after(1000, self._dispense_tick)
-
-    def _dispense_tick(self):
-        """Timer tick for water dispensing"""
-        if not self.cup_present or not self.is_dispensing:
-            self._water_job = None
-            self.status_lbl.config(text="Dispensing paused")
-            return
-            
-        if self._water_remaining <= 0:
-            self._end_dispensing("Water finished")
-            return
-            
-        # Dispense 100mL per second (adjust as needed)
-        dispense_amount = min(100, self._water_remaining)
-        self._water_remaining -= dispense_amount
-        self.time_var.set(str(self._water_remaining))
-        
-        # Update DB periodically
-        uid = self.controller.active_uid
-        if uid and self._water_remaining % 500 == 0:  # Update every 500mL
-            user = read_user(uid)
-            if user.get("type") == "member":
-                write_user(uid, {"water_balance": self._water_remaining})
-            else:
-                write_user(uid, {"temp_water_time": self._water_remaining})
-                self.temp_water_time = self._water_remaining
-        
-        self.status_lbl.config(text=f"Dispensing... {self._water_remaining}mL left")
-        
-        # Continue dispensing
-        self._water_job = self.after(1000, self._dispense_tick)
-
-    def _end_dispensing(self, message):
-        """End the dispensing session"""
-        self.is_dispensing = False
-        self.status_lbl.config(text=message)
-        self.debug_var.set("Dispensing complete")
-        
-        uid = self.controller.active_uid
-        if uid:
-            user = read_user(uid)
-            if user.get("type") == "member":
-                write_user(uid, {"water_balance": 0})
-            else:
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                
-        if self._water_job:
-            self.after_cancel(self._water_job)
-            self._water_job = None
-            
-        # Auto-return to main after 3 seconds
-        self.after(3000, lambda: self.controller.show_frame(MainScreen))
-
     def remove_cup(self):
         """Simulate removing the cup"""
         self.cup_present = False
         self.is_dispensing = False
+        self.countdown_active = False
         self.status_lbl.config(text="Cup removed")
         self.debug_var.set("Cup removed - Session paused")
         
@@ -2981,6 +2808,41 @@ class WaterScreen(tk.Frame):
         self.last_cup_time = time.time()
         if self._water_nocup_job is None:
             self._water_nocup_job = self.after(1000, self._check_cup_timeout)
+
+    def debug_cup(self):
+        """Send debug command to check cup sensor"""
+        if self.controller.arduino_available:
+            self.controller.send_arduino_command("DEBUG_CUP")
+            self.debug_var.set("Sent DEBUG_CUP command")
+
+    def force_countdown(self):
+        """Force start countdown for testing"""
+        if self.controller.arduino_available:
+            self.controller.send_arduino_command("FORCE_COUNTDOWN")
+            self.debug_var.set("Sent FORCE_COUNTDOWN command")
+
+    def arduino_status(self):
+        """Get full Arduino status"""
+        if self.controller.arduino_available:
+            self.controller.send_arduino_command("STATUS")
+            self.debug_var.set("Sent STATUS command")
+
+    def stop_session(self):
+        """Manually stop the water session"""
+        self.is_dispensing = False
+        self.cup_present = False
+        self.countdown_active = False
+        
+        # Cancel all jobs
+        if self._water_job:
+            self.after_cancel(self._water_job)
+            self._water_job = None
+        if self._water_nocup_job:
+            self.after_cancel(self._water_nocup_job)
+            self._water_nocup_job = None
+            
+        self.debug_var.set("Session stopped manually")
+        self.controller.show_frame(MainScreen)
 
     def _check_cup_timeout(self):
         """Check if cup has been removed for too long"""
@@ -2996,23 +2858,6 @@ class WaterScreen(tk.Frame):
             time_left = 10 - int(elapsed)
             self.status_lbl.config(text=f"Cup removed - Auto-end in {time_left}s")
             self._water_nocup_job = self.after(1000, self._check_cup_timeout)
-
-    def stop_session(self):
-        """Manually stop the water session"""
-        self.is_dispensing = False
-        self.cup_present = False
-        
-        # Cancel all jobs
-        if self._water_job:
-            self.after_cancel(self._water_job)
-            self._water_job = None
-        if self._water_nocup_job:
-            self.after_cancel(self._water_nocup_job)
-            self._water_nocup_job = None
-            
-        self.debug_var.set("Session stopped manually")
-        self.controller.show_frame(MainScreen)
-    
 
 # ----------------- Run App -----------------
 if __name__ == "__main__":

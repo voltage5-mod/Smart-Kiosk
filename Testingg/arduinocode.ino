@@ -110,32 +110,27 @@ void loop() {
   if (Serial.available())
     handleSerialCommand();
 
-  // UI Updates
-  if (creditML != last_creditML ||
-      dispensing != last_dispensing ||
-      flowPulseCount != last_flowCount) {
-
-        static unsigned long lastDispensingUpdate = 0;
-  if (dispensing && (millis() - lastDispensingUpdate < 500)) {
-    // Skip frequent updates during dispensing
-    return;
-  }
-
-    Serial.print("CREDIT_ML:"); Serial.println(creditML);
-    Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
-    Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
-    Serial.print("DISPENSED_ML:"); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
-
-    last_creditML = creditML;
-    last_dispensing = dispensing;
-    last_flowCount = flowPulseCount;
-
-      if (dispensing) {
-    lastDispensingUpdate = millis();
+  // REDUCED UI Updates - Only send when something actually changes
+  static unsigned long lastStatusUpdate = 0;
+  if (millis() - lastStatusUpdate > 1000) { // Only update every second
+    if (creditML != last_creditML || dispensing != last_dispensing) {
+      Serial.print("CREDIT_ML: "); Serial.println(creditML);
+      Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
+      
+      last_creditML = creditML;
+      last_dispensing = dispensing;
     }
+    lastStatusUpdate = millis();
   }
 
-  delay(80);
+  // Only send flow updates during active dispensing
+  if (dispensing && flowPulseCount != last_flowCount) {
+    Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
+    Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
+    last_flowCount = flowPulseCount;
+  }
+
+  delay(50); // Reduced delay for more responsive cup detection
 }
 
 // ---------------- HELPER FUNCTIONS ----------------
@@ -152,9 +147,12 @@ bool rawCupReading() {
   digitalWrite(CUP_TRIG_PIN, LOW);
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return false;
+  
   float distance = duration * 0.034 / 2;
+  if (distance <= 0 || distance > 50) return false; // Sanity check
 
-  return (distance > 0 && distance < CUP_DETECT_THRESHOLD_CM);
+  return (distance < CUP_DETECT_THRESHOLD_CM);
 }
 
 // ---------------- CUP HANDLER ----------------
@@ -171,6 +169,14 @@ void handleCup() {
     countdownStart = millis();
     countdownValue = 3;
     Serial.println("COUNTDOWN 3");
+  }
+  
+  // Reset cup detection if cup is removed during countdown
+  if (cupDetected && !cupPresent && countdownActive) {
+    cupDetected = false;
+    countdownActive = false;
+    Serial.println("CUP_REMOVED");
+    Serial.println("COUNTDOWN_CANCELLED");
   }
 }
 
@@ -210,13 +216,9 @@ void handleDispensing() {
   if (!dispensing) return;
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
-   unsigned long currentTargetPulses = (unsigned long)((creditML / 1000.0) * pulsesPerLiter);
 
-  // Only stop when we've reached the target OR credit is zero
-   if (dispensedPulses >= currentTargetPulses * 0.95 || creditML <= 0) {
+  if (dispensedPulses >= targetPulses)
     stopDispense();
-  }
-  // Continue dispensing as long as we have credit and haven't reached target
 }
 
 void stopDispense() {
@@ -236,39 +238,35 @@ void stopDispense() {
 
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
-  if (dispensing) return;
-        
   if (coinPulseCount == 0) return;
   if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
 
   int pulses = coinPulseCount;
-  coinPulseCount = 0;
+  coinPulseCount = 0; // RESET IMMEDIATELY to prevent double-counting
 
-  // ⚠️ FIXED: Use exact matching with smaller tolerance
-  if (pulses == coin1P_pulses) {
-    creditML += creditML_1P;
-    Serial.print("COIN:1");  // Clear format for Python
-  }
-  else if (pulses == coin5P_pulses) {
-    creditML += creditML_5P;
-    Serial.print("COIN:5");  // Clear format for Python
-  }
-  else if (pulses == coin10P_pulses) {
-    creditML += creditML_10P;
-    Serial.print("COIN:10"); // Clear format for Python
-  }
-  else {
+  int addedML = 0;
+  
+  if (abs(pulses - coin1P_pulses) <= 1) {
+    addedML = creditML_1P;
+  } else if (abs(pulses - coin5P_pulses) <= 1) {
+    addedML = creditML_5P;
+  } else if (abs(pulses - coin10P_pulses) <= 1) {
+    addedML = creditML_10P;
+  } else {
     Serial.print("Unknown coin pattern: ");
     Serial.println(pulses);
     return;
   }
 
-  // Also send water credit for backward compatibility
-  Serial.print(" WATER_CREDIT:");
-  if (pulses == coin1P_pulses) Serial.println(creditML_1P);
-  else if (pulses == coin5P_pulses) Serial.println(creditML_5P);
-  else if (pulses == coin10P_pulses) Serial.println(creditML_10P);
+  creditML += addedML;
 
+  Serial.print("Coin accepted: pulses=");
+  Serial.print(pulses);
+  Serial.print(", addedML=");
+  Serial.print(addedML);
+  Serial.print(", totalML=");
+  Serial.println(creditML);
+  
   lastActivity = millis();
 }
 
@@ -277,8 +275,43 @@ void handleSerialCommand() {
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
 
-  if (cmd.equalsIgnoreCase("RESET"))
+  if (cmd.equalsIgnoreCase("RESET")) {
     resetSystem();
+  } else if (cmd.equalsIgnoreCase("DEBUG_CUP")) {
+    bool cupPresent = rawCupReading();
+    Serial.print("DEBUG: Cup reading: ");
+    Serial.println(cupPresent ? "PRESENT" : "ABSENT");
+    Serial.print("DEBUG: cupDetected=");
+    Serial.println(cupDetected);
+    Serial.print("DEBUG: creditML=");
+    Serial.println(creditML);
+    Serial.print("DEBUG: countdownActive=");
+    Serial.println(countdownActive);
+  } else if (cmd.equalsIgnoreCase("FORCE_COUNTDOWN")) {
+    if (creditML > 0 && !dispensing && !countdownActive) {
+      cupDetected = true;
+      countdownActive = true;
+      countdownStart = millis();
+      countdownValue = 3;
+      Serial.println("COUNTDOWN 3");
+    }
+  } else if (cmd.equalsIgnoreCase("STATUS")) {
+    Serial.print("FULL STATUS - creditML: ");
+    Serial.print(creditML);
+    Serial.print(", dispensing: ");
+    Serial.print(dispensing);
+    Serial.print(", cupDetected: ");
+    Serial.print(cupDetected);
+    Serial.print(", countdownActive: ");
+    Serial.println(countdownActive);
+  } else if (cmd.startsWith("SET_CREDIT:")) {
+    int newCredit = cmd.substring(11).toInt();
+    if (newCredit >= 0) {
+      creditML = newCredit;
+      Serial.print("Credit set to: ");
+      Serial.println(creditML);
+    }
+  }
 }
 
 // ---------------- RESET ----------------
@@ -287,6 +320,7 @@ void resetSystem() {
   dispensing = false;
   countdownActive = false;
   cupDetected = false;
+  coinPulseCount = 0; // Reset coin pulses too
 
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);

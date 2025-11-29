@@ -85,7 +85,7 @@ class ArduinoListener:
                 self.ser.reset_input_buffer()
                 
                 # Test communication by sending a status request
-                self.ser.write(b"PING\n")
+                self.ser.write(b"STATUS\n")
                 time.sleep(0.5)
                 
                 # Try to read response to verify connection
@@ -93,7 +93,7 @@ class ArduinoListener:
                     test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     self.logger.info(f"Arduino responded: {test_response}")
                 else:
-                    self.logger.info("Arduino connected (no response to PING)")
+                    self.logger.info("Arduino connected (no response to STATUS)")
                 
                 self.connected = True
                 self.actual_port = port
@@ -200,54 +200,67 @@ class ArduinoListener:
         self.logger.debug(f"[Arduino RAW] {line}")
 
         # Skip empty lines
-        if not line.strip() or len(line.strip()) < 2:
+        if not line.strip():
             return
 
-        # ⚠️ CRITICAL FIX: Track dispensing state FIRST
-        if "DISPENSING:" in line:
-            is_dispensing = "YES" in line
-            # Store dispensing state to filter credit updates
-            self._is_dispensing = is_dispensing
-            self.logger.debug(f"DISPENSING STATE: {is_dispensing}")
-            return
-
-        # Handle COIN events first (they work from any screen)
+        # Handle COIN events in various formats
         if "Coin accepted: pulses=" in line:
             try:
-                # Extract pulse count from "Coin accepted: pulses=1"
-                pulse_str = line.split("pulses=")[1].strip()
-                pulses = int(pulse_str)
-                
-                # Map pulses to coin values
-                if pulses == 1:
-                    coin_value = 1
-                elif pulses == 3:  
-                    coin_value = 5
-                elif pulses == 5:
-                    coin_value = 10
-                else:
-                    coin_value = 1  # Default
-                
+                # Extract pulse count and added ML from "Coin accepted: pulses=1, addedML=50, totalML=50"
+                parts = line.split(",")
+                if len(parts) >= 3:
+                    pulse_str = parts[0].split("pulses=")[1].strip()
+                    added_ml_str = parts[1].split("addedML=")[1].strip()
+                    total_ml_str = parts[2].split("totalML=")[1].strip()
+                    
+                    pulses = int(pulse_str)
+                    added_ml = int(added_ml_str)
+                    total_ml = int(total_ml_str)
+                    
+                    # Map pulses to coin values for display
+                    coin_value = {1: 1, 3: 5, 5: 10}.get(pulses, 1)
+                    
+                    event = "coin_water"  # Specific event for water coins
+                    value = added_ml
+                    self.logger.info(f"WATER COIN DETECTED: {event} = {value}mL from: {line}")
+                    self._dispatch_event(event, value, line)
+                    return
+                    
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse coin details from: {line}")
+                return
+
+        # Handle COIN: format (legacy)
+        elif line.startswith("COIN:"):
+            try:
+                coin_value = int(line.split(":")[1].strip())
                 event = "coin"
                 value = coin_value
                 self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
-                
             except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse coin pulses from: {line}")
+                self.logger.warning(f"Could not parse COIN: value from: {line}")
                 return
 
         # Handle CUP_DETECTED
-        if "CUP_DETECTED" in line:
+        elif line.startswith("CUP_DETECTED"):
             event = "cup_detected"
             value = True
             self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
+        # Handle CUP_REMOVED
+        elif line.startswith("CUP_REMOVED"):
+            event = "cup_removed"
+            value = True
+            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
         # Handle COUNTDOWN events
-        if "COUNTDOWN " in line and not "COUNTDOWN_END" in line:
+        elif line.startswith("COUNTDOWN "):
             try:
                 countdown_value = int(line.split()[1])
                 event = "countdown"
@@ -260,15 +273,23 @@ class ArduinoListener:
                 return
 
         # Handle COUNTDOWN_END
-        if "COUNTDOWN_END" in line:
+        elif line.startswith("COUNTDOWN_END"):
             event = "countdown_end"
             value = True
             self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
+        # Handle COUNTDOWN_CANCELLED
+        elif line.startswith("COUNTDOWN_CANCELLED"):
+            event = "countdown_cancelled"
+            value = True
+            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
         # Handle DISPENSE_START
-        if "DISPENSE_START" in line:
+        elif line.startswith("DISPENSE_START"):
             event = "dispense_start"
             value = True
             self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
@@ -276,7 +297,7 @@ class ArduinoListener:
             return
 
         # Handle DISPENSE_DONE
-        if "DISPENSE_DONE" in line:
+        elif line.startswith("DISPENSE_DONE"):
             try:
                 # Format: "DISPENSE_DONE 100.82"
                 ml_dispensed = float(line.split()[1])
@@ -289,124 +310,54 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
                 return
 
-        # Handle DISPENSED_ML (with truncation support)
-        if "DISPENSED_ML:" in line or "ISPENSED_ML:" in line:
+        # Handle CREDIT_ML updates (for debugging)
+        elif line.startswith("CREDIT_ML:"):
             try:
-                if "ISPENSED_ML:" in line:
-                    line = "D" + line  # Fix truncation
-                dispensed_ml = float(line.split(":")[1].strip())
-                event = "dispense_progress"
-                value = {"dispensed": dispensed_ml, "remaining": 0}
-                self.logger.info(f"DISPENSE PROGRESS: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse DISPENSED_ML value from: {line}")
-                return
-
-        # ⚠️ CRITICAL FIX: Handle CREDIT_ML - FILTER during dispensing
-        if "CREDIT_ML:" in line or "REDIT_ML:" in line:
-            try:
-                if "REDIT_ML:" in line:
-                    line = "C" + line  # Fix truncation
                 credit_ml = int(line.split(":")[1].strip())
-                
-                # ⚠️ ONLY send credit_update when NOT dispensing
-                # This prevents pump cycling caused by credit updates during dispensing
-                if not getattr(self, '_is_dispensing', False):
-                    event = "credit_update"
-                    value = credit_ml
-                    self.logger.info(f"CREDIT UPDATE: {event} = {value} from: {line}")
-                    self._dispatch_event(event, value, line)
-                else:
-                    # Log but don't dispatch during dispensing
-                    self.logger.debug(f"CREDIT UPDATE FILTERED (dispensing active): {credit_ml}mL")
-                
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse CREDIT_ML value from: {line}")
-                return
-
-        # Handle COIN: format (new clear format)
-        if "COIN:" in line:
-            try:
-                coin_value = int(line.split(":")[1].strip())
-                event = "coin"
-                value = coin_value
-                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
+                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
+                # Dispatch as credit update event
+                event = "credit_update"
+                value = credit_ml
                 self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN: value from: {line}")
-                return
-
-        # Handle WATER_CREDIT: format
-        if "WATER_CREDIT:" in line:
-            try:
-                water_ml = int(line.split(":")[1].strip())
-                event = "coin_water"
-                value = water_ml
-                self.logger.info(f"WATER CREDIT: {event} = {value}mL from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse WATER_CREDIT value from: {line}")
-                return
-
-        # Handle TOTAL_CREDIT updates
-        if "TOTAL_CREDIT:" in line:
-            try:
-                total_credit = int(line.split(":")[1].strip())
-                self.logger.info(f"Total credit updated: {total_credit}mL")
                 return
             except (ValueError, IndexError) as e:
                 pass
 
         # Handle SYSTEM READY
-        if "System Ready" in line or "READY" in line:
+        elif "System Ready" in line or "READY" in line:
             event = "system_ready"
             value = True
             self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
-        # Skip debug status lines (they're too frequent)
-        if any(prefix in line for prefix in ["DEBUG:", "FLOW_PULSES:"]):
+        # Handle SYSTEM RESET
+        elif "System reset" in line:
+            event = "system_reset"
+            value = True
+            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
             return
 
-        # Handle other truncated messages generically
-        if any(truncated in line for truncated in ["ISPENSED_ML:", "REDIT_ML:", "ISPENSING:", "LOW_PULSES:"]):
-            self.logger.warning(f"Truncated message detected: {line}")
-            # Try to handle common truncations
-            if "ISPENSED_ML:" in line:
-                try:
-                    line = "D" + line
-                    dispensed_ml = float(line.split(":")[1].strip())
-                    event = "dispense_progress"
-                    value = {"dispensed": dispensed_ml, "remaining": 0}
-                    self.logger.info(f"FIXED DISPENSE PROGRESS: {event} = {value}")
-                    self._dispatch_event(event, value, line)
-                    return
-                except Exception:
-                    pass
-            elif "REDIT_ML:" in line:
-                try:
-                    line = "C" + line
-                    credit_ml = int(line.split(":")[1].strip())
-                    # Apply same dispensing filter
-                    if not getattr(self, '_is_dispensing', False):
-                        event = "credit_update"
-                        value = credit_ml
-                        self.logger.info(f"FIXED CREDIT UPDATE: {event} = {value}")
-                        self._dispatch_event(event, value, line)
-                    return
-                except Exception:
-                    pass
+        # Skip debug status lines (they're too frequent)
+        elif any(prefix in line for prefix in ["DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+            self.logger.debug(f"Status update: {line}")
+            return
+
+        # Handle DEBUG messages
+        elif line.startswith("DEBUG:"):
+            self.logger.info(f"ARDUINO DEBUG: {line}")
+            return
+
+        # Handle FULL STATUS
+        elif line.startswith("FULL STATUS"):
+            self.logger.info(f"ARDUINO STATUS: {line}")
+            return
 
         # Log unhandled lines for debugging
-        self.logger.info(f"UNHANDLED: {line}")
-
-
+        else:
+            self.logger.info(f"UNHANDLED: {line}")
+        
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
         payload = {
@@ -441,6 +392,8 @@ class ArduinoListener:
             send_command("MODE WATER")
             send_command("RESET")
             send_command("STATUS")
+            send_command("DEBUG_CUP")
+            send_command("FORCE_COUNTDOWN")
         """
         if not self.ser or not self.ser.is_open:
             self.logger.warning("WARNING: Cannot send command - serial not connected.")
@@ -516,7 +469,7 @@ def test_arduino_listener():
             
             # Test sending commands
             listener.send_command("STATUS")
-            listener.send_command("MODE WATER")
+            listener.send_command("DEBUG_CUP")
             
             # Run for 30 seconds to capture events
             print("LISTENING: Listening for Arduino events for 30 seconds...")

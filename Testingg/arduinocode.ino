@@ -110,27 +110,22 @@ void loop() {
   if (Serial.available())
     handleSerialCommand();
 
-  // REDUCED UI Updates - Only send when something actually changes
-  static unsigned long lastStatusUpdate = 0;
-  if (millis() - lastStatusUpdate > 1000) { // Only update every second
-    if (creditML != last_creditML || dispensing != last_dispensing) {
-      Serial.print("CREDIT_ML: "); Serial.println(creditML);
-      Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
-      
-      last_creditML = creditML;
-      last_dispensing = dispensing;
-    }
-    lastStatusUpdate = millis();
-  }
+  // UI Updates
+  if (creditML != last_creditML ||
+      dispensing != last_dispensing ||
+      flowPulseCount != last_flowCount) {
 
-  // Only send flow updates during active dispensing
-  if (dispensing && flowPulseCount != last_flowCount) {
+    Serial.print("CREDIT_ML: "); Serial.println(creditML);
+    Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
     Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
+
+    last_creditML = creditML;
+    last_dispensing = dispensing;
     last_flowCount = flowPulseCount;
   }
 
-  delay(50); // Reduced delay for more responsive cup detection
+  delay(80);
 }
 
 // ---------------- HELPER FUNCTIONS ----------------
@@ -191,20 +186,7 @@ void handleCountdown() {
 // ---------------- DISPENSING ENGINE ----------------
 void startDispense(int ml) {
   startFlowCount = flowPulseCount;
-  
-  // DEBUG: Calculate target pulses
-  float liters = ml / 1000.0;
-  targetPulses = (unsigned long)(liters * pulsesPerLiter);
-  
-  Serial.print("DEBUG START DISPENSE: ");
-  Serial.print("ml=");
-  Serial.print(ml);
-  Serial.print(", liters=");
-  Serial.print(liters, 4);
-  Serial.print(", pulsesPerLiter=");
-  Serial.print(pulsesPerLiter);
-  Serial.print(", targetPulses=");
-  Serial.println(targetPulses);
+  targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
 
   digitalWrite(PUMP_PIN, HIGH);
   digitalWrite(VALVE_PIN, HIGH);
@@ -218,18 +200,6 @@ void handleDispensing() {
   if (!dispensing) return;
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
-  float dispensedML = pulsesToML(dispensedPulses);
-
-  // DEBUG: Show progress every 100 pulses
-  if (dispensedPulses % 100 == 0) {
-    Serial.print("DEBUG DISPENSING: ");
-    Serial.print("dispensedPulses=");
-    Serial.print(dispensedPulses);
-    Serial.print(", dispensedML=");
-    Serial.print(dispensedML);
-    Serial.print(", targetPulses=");
-    Serial.println(targetPulses);
-  }
 
   if (dispensedPulses >= targetPulses)
     stopDispense();
@@ -251,7 +221,6 @@ void stopDispense() {
 }
 
 // ---------------- COIN HANDLER ----------------
-// ---------------- COIN HANDLER ----------------
 void handleCoin() {
   if (coinPulseCount == 0) return;
   if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
@@ -259,57 +228,20 @@ void handleCoin() {
   int pulses = coinPulseCount;
   coinPulseCount = 0;
 
-  Serial.print("DEBUG: Raw pulses detected: ");
-  Serial.println(pulses);
-
-  int coinValue = 0;
-  int waterML = 0;
-
-  // NON-OVERLAPPING RANGES
-  if (pulses == 1) {  // 1-peso coin: exactly 1 pulse
-    coinValue = 1;
-    waterML = creditML_1P;
-    creditML += waterML;
-    Serial.print("1 Peso coin: ");
-  }
-  else if (pulses >= 2 && pulses <= 4) {  // 5-peso coin: 2-4 pulses (center: 3)
-    coinValue = 5;
-    waterML = creditML_5P;
-    creditML += creditML_5P; 
-    Serial.print("5 Peso coin: ");
-  }
-  else if (pulses >= 5 && pulses <= 7) {  // 10-peso coin: 5-7 pulses (center: 5)
-    coinValue = 10;
-    waterML = creditML_10P;
-    creditML += creditML_10P;
-    Serial.print("10 Peso coin: ");
-  }
+  if (abs(pulses - coin1P_pulses) <= 1) creditML += creditML_1P;
+  else if (abs(pulses - coin5P_pulses) <= 1) creditML += creditML_5P;
+  else if (abs(pulses - coin10P_pulses) <= 1) creditML += creditML_10P;
   else {
-    Serial.print("Unknown coin pattern (rejected): ");
+    Serial.print("Unknown coin pattern: ");
     Serial.println(pulses);
     return;
   }
 
-  // Send CLEAR coin detection message that Python can parse
-  Serial.print("COIN:");
-  Serial.println(coinValue);
-  
-  // Also send water credit info
-  Serial.print("WATER_CREDIT:");
-  Serial.println(waterML);
-  
-  Serial.print("TOTAL_CREDIT:");
-  Serial.println(creditML);
-
-  Serial.print(pulses);
-  Serial.print(" pulses -> +");
-  Serial.print(waterML);
-  Serial.print("mL, Total: ");
-  Serial.print(creditML);
-  Serial.println("mL");
-
+  Serial.print("Coin accepted: pulses=");
+  Serial.println(pulses);
   lastActivity = millis();
 }
+
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {
   String cmd = Serial.readStringUntil('\n');
@@ -317,26 +249,6 @@ void handleSerialCommand() {
 
   if (cmd.equalsIgnoreCase("RESET"))
     resetSystem();
-  else if (cmd.equalsIgnoreCase("DEBUG_CUP")) {
-    bool cupPresent = rawCupReading();
-    Serial.print("DEBUG: Cup reading: ");
-    Serial.println(cupPresent ? "PRESENT" : "ABSENT");
-    Serial.print("DEBUG: cupDetected=");
-    Serial.println(cupDetected);
-    Serial.print("DEBUG: creditML=");
-    Serial.println(creditML);
-    Serial.print("DEBUG: countdownActive=");
-    Serial.println(countdownActive);
-  }
-  else if (cmd.equalsIgnoreCase("FORCE_COUNTDOWN")) {
-    if (creditML > 0 && !dispensing && !countdownActive) {
-      cupDetected = true;
-      countdownActive = true;
-      countdownStart = millis();
-      countdownValue = 3;
-      Serial.println("COUNTDOWN 3");
-    }
-  }
 }
 
 // ---------------- RESET ----------------

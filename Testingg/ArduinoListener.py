@@ -199,6 +199,17 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
+        # Handle ultrasonic debug messages - IGNORE these to reduce spam
+        if line.startswith("[DEBUG] Ultrasonic distance:"):
+            # Only log occasionally to reduce spam
+            if random.random() < 0.1:  # Log only 10% of ultrasonic messages
+                self.logger.debug(f"ULTRASONIC: {line}")
+            return
+            
+        if "ultrasonic:" in line.lower():
+            # Skip these entirely - they're confusing the event parser
+            return
+    
         # Handle CUP_DETECTED events
         if line.startswith("CUP_DETECTED"):
             self.logger.info("CUP DETECTED - Dispensing should start")

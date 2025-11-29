@@ -34,7 +34,7 @@ def test_coin_arduino(port='/dev/ttyUSB0', baudrate=115200):
                 line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if line:
                     message_count += 1
-                    print(f"📨 [{message_count}] {line}")
+                    print(f"[{message_count}] {line}")
                     
                     # Check for specific messages
                     if "COIN_ARDUINO_READY" in line:
@@ -61,7 +61,7 @@ def check_serial_ports():
     """Check what's on each serial port"""
     ports = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
     
-    print("🔍 Scanning serial ports...")
+    print("Scanning serial ports...")
     for port in ports:
         try:
             ser = serial.Serial(port, 115200, timeout=1)

@@ -1,31 +1,67 @@
-// ultrasonic_test.ino
-// Simple test sketch for ultrasonic sensor
+// sensor_test.ino
+// Simple debug sketch for sensor testing
 
 #define TRIG_PIN 9
 #define ECHO_PIN 10
+#define COIN_PIN 2
 
 void setup() {
   Serial.begin(115200);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+  pinMode(COIN_PIN, INPUT_PULLUP);
   
-  Serial.println("Ultrasonic Sensor Test Ready");
-  Serial.println("Commands: READ, CALIBRATE, STOP");
+  Serial.println("SENSOR TEST READY");
+  Serial.println("Commands: READ, DISTANCE, COIN, STATUS");
+  Serial.println("Auto-sending distance every 2 seconds");
 }
 
 void loop() {
+  // Auto-send distance every 2 seconds
+  static unsigned long lastSend = 0;
+  if (millis() - lastSend > 2000) {
+    lastSend = millis();
+    float dist = readDistance();
+    Serial.print("AUTO Distance: ");
+    Serial.print(dist);
+    Serial.print(" cm - Detected: ");
+    Serial.println(dist > 0 && dist < 15.0 ? "YES" : "NO");
+  }
+  
+  // Handle serial commands
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     
     if (cmd.equalsIgnoreCase("READ")) {
-      readSensorContinuous();
+      readContinuous();
     }
-    else if (cmd.equalsIgnoreCase("CALIBRATE")) {
-      calibrateSensor();
+    else if (cmd.equalsIgnoreCase("DISTANCE")) {
+      float dist = readDistance();
+      Serial.print("Distance: ");
+      Serial.print(dist);
+      Serial.println(" cm");
     }
-    else if (cmd.equalsIgnoreCase("STOP")) {
-      Serial.println("Stopped continuous reading");
+    else if (cmd.equalsIgnoreCase("COIN")) {
+      int coinState = digitalRead(COIN_PIN);
+      Serial.print("Coin pin state: ");
+      Serial.println(coinState);
+    }
+    else if (cmd.equalsIgnoreCase("STATUS")) {
+      Serial.println("=== STATUS ===");
+      Serial.println("Sensor: Ultrasonic HC-SR04");
+      Serial.println("Trig: Pin 9");
+      Serial.println("Echo: Pin 10");
+      Serial.println("Coin: Pin 2");
+      Serial.println("==============");
+    }
+    else if (cmd.equalsIgnoreCase("PING")) {
+      Serial.println("PONG");
+    }
+    else if (cmd.equalsIgnoreCase("RESET")) {
+      Serial.println("RESETTING...");
+      delay(100);
+      setup();
     }
   }
 }
@@ -38,61 +74,44 @@ float readDistance() {
   digitalWrite(TRIG_PIN, LOW);
   
   long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  float distance = duration * 0.034 / 2;
+  if (duration == 0) {
+    return -1.0; // No reading
+  }
   
+  float distance = duration * 0.034 / 2;
   return distance;
 }
 
-void readSensorContinuous() {
-  Serial.println("Starting continuous reading...");
-  unsigned long startTime = millis();
+void readContinuous() {
+  Serial.println("STARTING CONTINUOUS READING");
+  unsigned long start = millis();
   
-  while (millis() - startTime < 30000) { // 30 seconds
+  while (millis() - start < 10000) { // 10 seconds
     if (Serial.available()) {
       String cmd = Serial.readStringUntil('\n');
       if (cmd.equalsIgnoreCase("STOP")) break;
     }
     
-    float distance = readDistance();
-    Serial.print("Distance: ");
-    Serial.print(distance);
-    Serial.println(" cm");
+    float dist = readDistance();
+    Serial.print("CONT Distance: ");
+    Serial.print(dist);
+    Serial.print(" cm - ");
     
-    // Detection logic
-    if (distance > 0 && distance < 15.0) {
-      Serial.println("*** OBJECT DETECTED ***");
+    if (dist < 0) {
+      Serial.println("NO READING");
+    } else if (dist < 5.0) {
+      Serial.println("VERY CLOSE");
+    } else if (dist < 10.0) {
+      Serial.println("CLOSE");
+    } else if (dist < 15.0) {
+      Serial.println("MEDIUM");
+    } else if (dist < 20.0) {
+      Serial.println("FAR");
+    } else {
+      Serial.println("VERY FAR");
     }
     
     delay(500);
   }
-  Serial.println("Continuous reading finished");
-}
-
-void calibrateSensor() {
-  Serial.println("Calibration mode - take 10 readings");
-  float readings[10];
-  
-  for (int i = 0; i < 10; i++) {
-    readings[i] = readDistance();
-    Serial.print("Reading ");
-    Serial.print(i+1);
-    Serial.print(": ");
-    Serial.print(readings[i]);
-    Serial.println(" cm");
-    delay(1000);
-  }
-  
-  // Calculate average
-  float sum = 0;
-  for (int i = 0; i < 10; i++) {
-    sum += readings[i];
-  }
-  float average = sum / 10;
-  
-  Serial.print("Average distance: ");
-  Serial.print(average);
-  Serial.println(" cm");
-  Serial.print("Recommended threshold: ");
-  Serial.print(average * 0.8); // 80% of average
-  Serial.println(" cm");
+  Serial.println("CONTINUOUS READING ENDED");
 }

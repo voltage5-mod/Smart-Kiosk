@@ -1,203 +1,206 @@
-# sensor_check.py
-# Test script for ultrasonic sensor debugging
+# sensor_debug.py
+# Force Arduino to output sensor data for debugging
 
 import serial
 import time
 import sys
 import glob
 
-def list_serial_ports():
-    """List available serial ports"""
-    if sys.platform.startswith('win'):
-        ports = ['COM%s' % (i + 1) for i in range(256)]
-    elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
-        ports = glob.glob('/dev/tty[A-Za-z]*')
-    elif sys.platform.startswith('darwin'):
-        ports = glob.glob('/dev/tty.*')
-    else:
-        raise EnvironmentError('Unsupported platform')
-    
-    result = []
-    for port in ports:
-        try:
-            s = serial.Serial(port)
-            s.close()
-            result.append(port)
-        except (OSError, serial.SerialException):
-            pass
-    return result
-
-class SensorTester:
+class SensorDebugger:
     def __init__(self, port=None, baudrate=115200):
         self.port = port
         self.baudrate = baudrate
         self.ser = None
         
-    def connect(self):
-        """Connect to Arduino"""
-        if self.port is None:
-            ports = list_serial_ports()
-            if not ports:
-                print("No serial ports found!")
-                return False
-            self.port = ports[0]
-            print(f"Auto-selecting port: {self.port}")
+    def find_arduino(self):
+        """Find and connect to Arduino"""
+        ports = []
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (i + 1) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.usb*') + glob.glob('/dev/tty.usbmodem*')
         
-        try:
-            self.ser = serial.Serial(self.port, self.baudrate, timeout=1)
-            time.sleep(2)  # Wait for Arduino to reset
-            print(f"Connected to {self.port} at {self.baudrate} baud")
-            return True
-        except serial.SerialException as e:
-            print(f"Failed to connect to {self.port}: {e}")
-            return False
-    
-    def send_command(self, command):
-        """Send command to Arduino"""
-        if not self.ser or not self.ser.is_open:
-            print("Not connected to Arduino!")
-            return False
+        for port in ports:
+            try:
+                print(f"Trying {port}...")
+                ser = serial.Serial(port, self.baudrate, timeout=1)
+                time.sleep(2)  # Wait for Arduino reset
+                
+                # Test communication
+                ser.write(b"PING\n")
+                time.sleep(0.5)
+                
+                # Read any response
+                response = ""
+                while ser.in_waiting > 0:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    response += line + " "
+                
+                if response:
+                    print(f"SUCCESS: Found Arduino on {port} - Response: {response}")
+                    self.ser = ser
+                    self.port = port
+                    return True
+                else:
+                    ser.close()
+                    
+            except (serial.SerialException, OSError):
+                continue
         
-        try:
-            self.ser.write(f"{command}\n".encode())
-            print(f"Sent: {command}")
-            return True
-        except Exception as e:
-            print(f"Error sending command: {e}")
-            return False
+        print("ERROR: No Arduino found!")
+        return False
     
-    def read_sensor_continuously(self, duration=30):
-        """Read sensor data continuously"""
+    def force_sensor_output(self):
+        """Force Arduino to continuously output sensor readings"""
         if not self.ser:
-            print("Not connected!")
-            return
+            print("ERROR: Not connected to Arduino!")
+            return False
         
-        print(f"Reading sensor data for {duration} seconds...")
-        print("Place objects at different distances from the sensor")
-        print("Press Ctrl+C to stop early\n")
+        print("Starting forced sensor output...")
+        
+        # Send command to start sensor readings
+        self.ser.write(b"STATUS\n")
+        time.sleep(1)
+        
+        # Clear any existing data
+        self.ser.reset_input_buffer()
+        
+        print("Reading sensor data for 30 seconds...")
+        print("Move objects in front of the sensor to test detection")
+        print("Press Ctrl+C to stop\n")
         
         start_time = time.time()
+        readings_count = 0
+        
+        try:
+            while time.time() - start_time < 30:
+                # Send ping every 2 seconds to keep Arduino active
+                if int(time.time() - start_time) % 2 == 0:
+                    self.ser.write(b"PING\n")
+                
+                # Read all available data
+                while self.ser.in_waiting > 0:
+                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    if line:
+                        readings_count += 1
+                        print(f"[{readings_count}] {line}")
+                
+                time.sleep(0.1)
+                
+        except KeyboardInterrupt:
+            print("\nStopped by user")
+        
+        print(f"Total readings received: {readings_count}")
+        return readings_count > 0
+    
+    def test_sensor_directly(self):
+        """Upload and run a simple sensor test sketch"""
+        print("Testing sensor with direct commands...")
+        
+        if not self.ser:
+            print("ERROR: Not connected to Arduino!")
+            return False
+        
+        # Send reset command
+        self.ser.write(b"RESET\n")
+        time.sleep(2)
+        
+        # Clear buffer
+        self.ser.reset_input_buffer()
+        
+        print("Sending test sequence...")
+        test_commands = [
+            "STATUS",
+            "MODE WATER",
+            "CAL",
+        ]
+        
+        for cmd in test_commands:
+            print(f"Sending: {cmd}")
+            self.ser.write(f"{cmd}\n".encode())
+            time.sleep(2)
+            
+            # Read responses
+            response_lines = []
+            while self.ser.in_waiting > 0:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    response_lines.append(line)
+                    print(f"Response: {line}")
+            
+            if not response_lines:
+                print("No response from Arduino!")
+        
+        return len(response_lines) > 0
+    
+    def monitor_raw_output(self, duration=60):
+        """Monitor raw serial output from Arduino"""
+        if not self.ser:
+            print("ERROR: Not connected to Arduino!")
+            return False
+        
+        print(f"Monitoring raw Arduino output for {duration} seconds...")
+        print("This shows everything the Arduino sends")
+        print("Press Ctrl+C to stop\n")
+        
+        start_time = time.time()
+        line_count = 0
+        
         try:
             while time.time() - start_time < duration:
                 if self.ser.in_waiting > 0:
                     line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     if line:
-                        print(f"[{time.time()-start_time:.1f}s] {line}")
+                        line_count += 1
+                        print(f"LINE {line_count}: {line}")
+                else:
+                    # If no data for 5 seconds, send a ping
+                    if time.time() - start_time > 5 and line_count == 0:
+                        print("No data received - sending PING...")
+                        self.ser.write(b"PING\n")
+                        time.sleep(1)
+                
                 time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("\nStopped by user")
-    
-    def test_cup_detection(self):
-        """Test cup detection specifically"""
-        if not self.ser:
-            print("Not connected!")
-            return
-        
-        print("Testing cup detection...")
-        print("1. Make sure no objects are near the sensor")
-        print("2. Place a cup under the sensor")
-        print("3. Remove the cup")
-        print("4. Watch for detection events")
-        print("Press Ctrl+C to stop\n")
-        
-        try:
-            while True:
-                if self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line:
-                        # Highlight important events
-                        if any(keyword in line for keyword in ['CUP_DETECTED', 'COUNTDOWN', 'DISTANCE', 'DEBUG']):
-                            print(f"*** {line} ***")
-                        else:
-                            print(line)
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            print("\nTest stopped")
-    
-    def manual_commands(self):
-        """Interactive command mode"""
-        if not self.ser:
-            print("Not connected!")
-            return
-        
-        print("Manual command mode - type commands to send to Arduino")
-        print("Commands: STATUS, MODE WATER, RESET, CAL, FLOWCAL")
-        print("Type 'quit' to exit\n")
-        
-        while True:
-            try:
-                cmd = input("Arduino> ").strip()
-                if cmd.lower() == 'quit':
-                    break
-                if cmd:
-                    self.send_command(cmd)
-                    # Read response
-                    time.sleep(0.5)
-                    while self.ser.in_waiting > 0:
-                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                        if line:
-                            print(f"Arduino: {line}")
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"Error: {e}")
-    
-    def calibrate_sensor(self):
-        """Help calibrate the sensor distance threshold"""
-        if not self.ser:
-            print("Not connected!")
-            return
-        
-        print("Sensor Calibration Mode")
-        print("1. Make sure nothing is near the sensor")
-        print("2. Place a cup at the desired detection distance")
-        print("3. Note the distance readings")
-        print("4. Adjust CUP_DETECT_THRESHOLD_CM in Arduino code")
-        print("Press Ctrl+C to stop\n")
-        
-        try:
-            empty_readings = []
-            cup_readings = []
-            state = "empty"  # empty, cup, done
-            
-            while state != "done":
-                if self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if line and "DISTANCE" in line:
-                        print(line)
-                        
-                        # Extract distance value
-                        try:
-                            parts = line.split()
-                            for i, part in enumerate(parts):
-                                if part == "distance:" and i+1 < len(parts):
-                                    distance = float(parts[i+1].replace('cm', ''))
-                                    if state == "empty":
-                                        empty_readings.append(distance)
-                                        if len(empty_readings) >= 5:
-                                            print(f"Empty average: {sum(empty_readings)/len(empty_readings):.1f}cm")
-                                            input("Place cup now and press Enter...")
-                                            state = "cup"
-                                    elif state == "cup":
-                                        cup_readings.append(distance)
-                                        if len(cup_readings) >= 5:
-                                            print(f"Cup average: {sum(cup_readings)/len(cup_readings):.1f}cm")
-                                            state = "done"
-                        except (ValueError, IndexError):
-                            pass
-                time.sleep(0.1)
-            
-            if empty_readings and cup_readings:
-                empty_avg = sum(empty_readings) / len(empty_readings)
-                cup_avg = sum(cup_readings) / len(cup_readings)
-                print(f"\n--- CALIBRATION RESULTS ---")
-                print(f"Empty sensor reading: {empty_avg:.1f}cm")
-                print(f"Cup detected at: {cup_avg:.1f}cm")
-                print(f"Recommended threshold: {(empty_avg + cup_avg) / 2:.1f}cm")
-                print("Update CUP_DETECT_THRESHOLD_CM in Arduino code with this value")
                 
         except KeyboardInterrupt:
-            print("\nCalibration stopped")
+            print("\nMonitoring stopped")
+        
+        print(f"Total lines received: {line_count}")
+        return line_count > 0
+    
+    def check_serial_connection(self):
+        """Basic serial connection test"""
+        if not self.ser:
+            print("ERROR: No serial connection!")
+            return False
+        
+        print("Testing serial connection...")
+        
+        # Test 1: Check if port is open
+        if not self.ser.is_open:
+            print("FAIL: Serial port is not open")
+            return False
+        print("PASS: Serial port is open")
+        
+        # Test 2: Send test command
+        try:
+            self.ser.write(b"TEST\n")
+            print("PASS: Can write to serial port")
+        except Exception as e:
+            print(f"FAIL: Cannot write to serial port: {e}")
+            return False
+        
+        # Test 3: Check if we can read
+        time.sleep(0.5)
+        if self.ser.in_waiting > 0:
+            data = self.ser.read(self.ser.in_waiting)
+            print(f"PASS: Can read from serial port - Data: {data}")
+        else:
+            print("INFO: No immediate response from Arduino (this may be normal)")
+        
+        return True
     
     def close(self):
         """Close serial connection"""
@@ -206,56 +209,39 @@ class SensorTester:
             print("Serial connection closed")
 
 def main():
-    print("=== Ultrasonic Sensor Diagnostic Tool ===")
+    print("=== Arduino Sensor Debugger ===")
     print()
     
-    # List available ports
-    ports = list_serial_ports()
-    if not ports:
-        print("No serial ports found! Check Arduino connection.")
-        return
+    debugger = SensorDebugger()
     
-    print("Available ports:")
-    for i, port in enumerate(ports):
-        print(f"  {i+1}. {port}")
-    
-    # Select port
-    if len(ports) == 1:
-        port = ports[0]
-        print(f"Using {port} (only port available)")
-    else:
-        try:
-            choice = int(input(f"Select port (1-{len(ports)}): ")) - 1
-            port = ports[choice]
-        except (ValueError, IndexError):
-            print("Invalid selection, using first port")
-            port = ports[0]
-    
-    # Create tester and connect
-    tester = SensorTester(port)
-    if not tester.connect():
+    # Try to find Arduino automatically
+    if not debugger.find_arduino():
+        print("Please check:")
+        print("1. Arduino is connected via USB")
+        print("2. Correct drivers are installed")
+        print("3. No other program is using the serial port")
         return
     
     try:
         while True:
-            print("\n=== TEST MENU ===")
-            print("1. Continuous sensor reading (30s)")
-            print("2. Cup detection test")
-            print("3. Sensor calibration")
-            print("4. Manual commands")
+            print("\n=== DEBUG MENU ===")
+            print("1. Test serial connection")
+            print("2. Monitor raw Arduino output")
+            print("3. Force sensor output")
+            print("4. Send test commands")
             print("5. Exit")
             
             try:
-                choice = input("Select test (1-5): ").strip()
+                choice = input("Select option (1-5): ").strip()
                 
                 if choice == '1':
-                    tester.read_sensor_continuously()
+                    debugger.check_serial_connection()
                 elif choice == '2':
-                    tester.test_cup_detection()
+                    debugger.monitor_raw_output(30)
                 elif choice == '3':
-                    tester.calibrate_sensor()
+                    debugger.force_sensor_output()
                 elif choice == '4':
-                    tester.manual_commands()
+                    debugger.test_sensor_directly()
                 elif choice == '5':
                     break
                 else:
@@ -266,8 +252,8 @@ def main():
                 continue
                 
     finally:
-        tester.close()
-        print("Goodbye!")
+        debugger.close()
+        print("Debug session ended")
 
 if __name__ == "__main__":
     main()

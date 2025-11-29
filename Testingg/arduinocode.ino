@@ -210,9 +210,10 @@ void handleDispensing() {
   if (!dispensing) return;
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
+   unsigned long currentTargetPulses = (unsigned long)((creditML / 1000.0) * pulsesPerLiter);
 
   // Only stop when we've reached the target OR credit is zero
-  if (dispensedPulses >= targetPulses || creditML <= 0) {
+   if (dispensedPulses >= currentTargetPulses * 0.95 || creditML <= 0) {
     stopDispense();
   }
   // Continue dispensing as long as we have credit and haven't reached target

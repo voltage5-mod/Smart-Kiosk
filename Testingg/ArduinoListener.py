@@ -199,6 +199,12 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
+        # Filter out ultrasonic debug messages - don't process them as events
+        if line.startswith("ultrasonic:") or "ultrasonic" in line.lower():
+            # Only log these for debugging, don't dispatch as events
+            self.logger.debug(f"[Ultrasonic Debug] {line}")
+            return  # Skip further processing
+
         # Handle COIN_INSERTED events FIRST (highest priority)
         if line.startswith("COIN_INSERTED"):
             try:
@@ -207,24 +213,11 @@ class ArduinoListener:
                     coin_value = int(parts[1])
                     event = "coin"
                     value = coin_value
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                     self._dispatch_event(event, value, line)
                     return
             except (ValueError, IndexError) as e:
                 self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
-                return
-
-        # Handle COIN_WATER events  
-        if line.startswith("COIN_WATER"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    ml_value = int(parts[1])
-                    event = "coin_water"
-                    value = ml_value
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
                 return
 
         # Handle COIN_CHARGE events (charging credit in pesos)
@@ -235,10 +228,26 @@ class ArduinoListener:
                     peso_value = int(parts[1])
                     event = "coin_charge"
                     value = peso_value
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                     self._dispatch_event(event, value, line)
                     return
             except (ValueError, IndexError) as e:
                 self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
+                return
+
+        # Handle COIN_WATER events (water credit in mL)
+        if line.startswith("COIN_WATER"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ml_value = int(parts[1])
+                    event = "coin_water"
+                    value = ml_value
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
                 return
 
         # Handle debug messages with coin detection
@@ -266,6 +275,7 @@ class ArduinoListener:
                     if coin_value:
                         event = "coin"
                         value = coin_value
+                        self.logger.info(f"PROCESSED: {event} = {value} from debug: {line}")
                         self._dispatch_event(event, value, line)
                         return
                         
@@ -292,6 +302,7 @@ class ArduinoListener:
                         
                 event = "coin"
                 value = coin_value
+                self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
                 
@@ -300,6 +311,7 @@ class ArduinoListener:
                 # Still dispatch as coin event with None value
                 event = "coin"
                 value = None
+                self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                 self._dispatch_event(event, value, line)
                 return
 
@@ -307,6 +319,7 @@ class ArduinoListener:
         if line.startswith("MODE:"):
             event = "mode"
             value = line.split(":", 1)[1].strip()
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
@@ -314,12 +327,14 @@ class ArduinoListener:
         if line.startswith("CUP_DETECTED"):
             event = "cup_detected"
             value = True
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
             
         if line.startswith("CUP_REMOVED"):
             event = "cup_removed"
             value = True
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
@@ -327,6 +342,7 @@ class ArduinoListener:
         if line.startswith("DISPENSE_START"):
             event = "dispense_start"
             value = True
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
             
@@ -337,6 +353,7 @@ class ArduinoListener:
                     ml_dispensed = float(parts[1])
                     event = "dispense_done"
                     value = ml_dispensed
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                     self._dispatch_event(event, value, line)
                     return
             except (ValueError, IndexError) as e:
@@ -351,6 +368,7 @@ class ArduinoListener:
                     remaining_ml = float(parts[1])
                     event = "credit_left"
                     value = remaining_ml
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                     self._dispatch_event(event, value, line)
                     return
             except (ValueError, IndexError) as e:
@@ -370,6 +388,7 @@ class ArduinoListener:
                     ml_remaining = float(remaining_match.group(1))
                     event = "dispense_progress"
                     value = {"dispensed": ml_dispensed, "remaining": ml_remaining}
+                    self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
                     self._dispatch_event(event, value, line)
                     return
             except (ValueError, IndexError) as e:
@@ -380,6 +399,7 @@ class ArduinoListener:
         if line.startswith("CAL_DONE"):
             event = "calibration_done"
             value = line
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
@@ -387,6 +407,7 @@ class ArduinoListener:
         if line.startswith("System Ready") or line.startswith("System reset"):
             event = "system_ready"
             value = True
+            self.logger.info(f"PROCESSED: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
 
@@ -414,6 +435,7 @@ class ArduinoListener:
                     value = parts[1]  # Keep as string
 
         # Dispatch the event
+        self.logger.info(f"PROCESSED (fallback): {event} = {value} from: {line}")
         self._dispatch_event(event, value, line)
         
     def _dispatch_event(self, event, value, raw_line):

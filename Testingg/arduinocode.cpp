@@ -52,6 +52,7 @@ Arduino → Pi messages (examples):
   - COIN_WATER 500           → +500mL credit (WATER mode)
   - COIN_CHARGE 10           → ₱10 for charging (CHARGE mode)
   - CUP_DETECTED             → cup placed under nozzle
+  - CUP_REMOVED              → cup removed
   - DISPENSE_START           → water dispensing started
   - DISPENSE_PROGRESS ml=300 remaining=200
   - DISPENSE_DONE 500.0      → complete
@@ -107,6 +108,11 @@ VIN (5V)     →  Relay module VCC       →  Shared with Pi 5V or external
 #define WATER_MODE 1
 #define CHARGE_MODE 2
 
+// Cup detection constants
+#define CUP_DETECTION_THRESHOLD 8.0    // Maximum distance to consider as cup detection (cm)
+#define CUP_CONFIRMATION_COUNT 3       // Number of consecutive detections needed
+#define CUP_READ_INTERVAL 200          // Time between ultrasonic readings (ms)
+
 // ---------------- GLOBAL VARIABLES ----------------
 int currentMode = WATER_MODE; // Default mode (Pi can change this)
 float pulsesPerLiter = 4305.0; // Flow calibration (YF-S201 ~450/L)
@@ -120,6 +126,12 @@ int coin10P_pulses = 5;
 int creditML_1P = 50;
 int creditML_5P = 250;
 int creditML_10P = 500;
+
+// Cup detection variables
+bool cupDetected = false;
+int cupConfirmationCount = 0;
+unsigned long lastCupReadTime = 0;
+float lastValidDistance = 0.0;
 
 // Volatiles
 volatile unsigned long lastCoinPulseTime = 0;
@@ -199,7 +211,7 @@ float pulsesToML(unsigned long pulses) {
   return (pulses / pulsesPerLiter) * 1000.0;
 }
 
-// ---------------- CUP DETECTION ----------------
+// ---------------- ENHANCED CUP DETECTION ----------------
 bool detectCup() {
   digitalWrite(CUP_TRIG_PIN, LOW);
   delayMicroseconds(2);
@@ -208,17 +220,59 @@ bool detectCup() {
   digitalWrite(CUP_TRIG_PIN, LOW);
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
+  if (duration == 0) {
+    return false; // No valid reading
+  }
+  
   float distance = duration * 0.034 / 2;
-  return (distance > 0 && distance < CUP_DISTANCE_CM);
+  
+  // Only consider valid distances within reasonable range
+  if (distance > 0 && distance < 50.0) {
+    lastValidDistance = distance;
+    return (distance < CUP_DETECTION_THRESHOLD);
+  }
+  
+  return false;
 }
 
 void handleCup() {
-  if (detectCup() && creditML > 0 && !dispensing) {
-    Serial.println("CUP_DETECTED");
-    startDispense(creditML);
-  } else if (!detectCup() && dispensing) {
-    Serial.println("CUP_REMOVED");
-    stopDispenseEarly();
+  unsigned long now = millis();
+  
+  // Only check cup at regular intervals to avoid flooding
+  if (now - lastCupReadTime < CUP_READ_INTERVAL) {
+    return;
+  }
+  lastCupReadTime = now;
+
+  bool currentDetection = detectCup();
+  
+  if (currentDetection) {
+    cupConfirmationCount++;
+    
+    // Only trigger cup detection after multiple confirmations
+    if (cupConfirmationCount >= CUP_CONFIRMATION_COUNT && !cupDetected) {
+      cupDetected = true;
+      Serial.println("CUP_DETECTED");
+      
+      // Start dispensing immediately if we have credit
+      if (creditML > 0 && !dispensing) {
+        startDispense(creditML);
+      }
+    }
+  } else {
+    // Reset confirmation count if no detection
+    cupConfirmationCount = 0;
+    
+    // Only trigger cup removal if we previously had a cup
+    if (cupDetected) {
+      cupDetected = false;
+      Serial.println("CUP_REMOVED");
+      
+      // Stop dispensing if cup is removed during dispensing
+      if (dispensing) {
+        stopDispenseEarly();
+      }
+    }
   }
 }
 
@@ -232,6 +286,10 @@ void startDispense(int ml) {
   lastActivity = millis();
 
   Serial.println("DISPENSE_START");
+  
+  // Send initial progress
+  Serial.print("DISPENSE_PROGRESS ml=0 remaining=");
+  Serial.println(ml);
 }
 
 void handleDispensing() {
@@ -239,15 +297,19 @@ void handleDispensing() {
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
   float dispensedML = pulsesToML(dispensedPulses);
+  float remainingML = creditML - dispensedML;
 
-  if (dispensedPulses % 100 == 0) {
+  // Send progress updates more frequently for better feedback
+  if (dispensedPulses % 50 == 0) { // More frequent updates
     Serial.print("DISPENSE_PROGRESS ml=");
     Serial.print(dispensedML, 1);
     Serial.print(" remaining=");
-    Serial.println(creditML - dispensedML, 1);
+    Serial.println(remainingML, 1);
   }
 
-  if (dispensedPulses >= targetPulses) stopDispense();
+  if (dispensedPulses >= targetPulses) {
+    stopDispense();
+  }
 }
 
 void stopDispense() {
@@ -260,6 +322,8 @@ void stopDispense() {
   Serial.println(dispensedML, 1);
 
   creditML = 0;
+  cupDetected = false; // Reset cup detection
+  cupConfirmationCount = 0;
   lastActivity = millis();
 }
 
@@ -274,6 +338,8 @@ void stopDispenseEarly() {
   Serial.println(remaining, 1);
 
   creditML = remaining;
+  cupDetected = false; // Reset cup detection
+  cupConfirmationCount = 0;
   lastActivity = millis();
 }
 
@@ -323,7 +389,6 @@ void handleCoin() {
     }
   }
 }
-
 
 // ---------------- SERIAL COMMAND HANDLER ----------------
 void handleSerialCommand() {
@@ -411,6 +476,8 @@ void calibrateFlow() {
 void resetSystem() {
   creditML = 0;
   dispensing = false;
+  cupDetected = false;
+  cupConfirmationCount = 0;
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   Serial.println("System reset.");

@@ -28,8 +28,8 @@ float pulsesPerLiter = 450.0;
 // ---------------- COIN CREDIT SETTINGS ----------------
 // Updated coin pulse patterns - make them more distinct
 int coin1P_pulses = 1;    // ₱1 = 1 pulse
-int coin5P_pulses = 3;    // ₱5 = 3 pulses  
-int coin10P_pulses = 5;   // ₱10 = 5 pulses
+int coin5P_pulses = 2;    // ₱5 = 3 pulses  
+int coin10P_pulses = 3;   // ₱10 = 5 pulses
 
 int creditML_1P  = 50;   // ✔ 1 peso = 50 ml
 int creditML_5P  = 250;  // ✔ 5 peso = 250 ml
@@ -259,32 +259,39 @@ void processCoinPulses() {
   coinPulseCount = 0;
   coinValidationActive = false;
 
-  // Enhanced coin validation with better matching
+  // IMPROVED coin validation with exact matching and better debugging
   int coinValue = 0;
   int addedML = 0;
   
-  // Use exact matching with better tolerance for common patterns
-  if (pulses >= 1 && pulses <= 2) {
-    // ₱1 coin: 1-2 pulses (allowing some tolerance)
+  Serial.print("DEBUG: Processing ");
+  Serial.print(pulses);
+  Serial.println(" pulses");
+  
+  // Use exact matching with minimal tolerance
+  if (pulses == 1) {
+    // ₱1 coin: 1 pulse (exact)
     coinValue = 1;
     addedML = creditML_1P;
-  } else if (pulses >= 3 && pulses <= 4) {
-    // ₱5 coin: 3-4 pulses (allowing some tolerance)
+    Serial.println("DEBUG: Recognized as ₱1 coin");
+  } else if (pulses == 2) {
+    // ₱5 coin: 2 pulses (exact) - CHANGED FROM 3 to 2
     coinValue = 5;
     addedML = creditML_5P;
-  } else if (pulses >= 5 && pulses <= 6) {
-    // ₱10 coin: 5-6 pulses (allowing some tolerance)
+    Serial.println("DEBUG: Recognized as ₱5 coin");
+  } else if (pulses == 3) {
+    // ₱10 coin: 3 pulses (exact) - CHANGED FROM 5 to 3
     coinValue = 10;
     addedML = creditML_10P;
+    Serial.println("DEBUG: Recognized as ₱10 coin");
   } else {
     // Invalid coin pattern - log but don't add credit
-    Serial.print("Unknown coin pattern: ");
+    Serial.print("DEBUG: Unknown coin pattern: ");
     Serial.print(pulses);
-    Serial.println(" pulses");
+    Serial.println(" pulses - check your coin acceptor wiring and settings");
     return;
   }
 
-  // Valid coin detected - ADD CREDIT ONLY ONCE
+  // Valid coin detected
   creditML += addedML;
   lastValidCoinTime = millis();
 

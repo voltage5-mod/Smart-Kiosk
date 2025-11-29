@@ -4,6 +4,7 @@ import time
 import logging
 import sys
 import os
+import re
 
 # ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
@@ -219,32 +220,17 @@ class ArduinoListener:
         if not line.strip():
             return
 
-        # Handle COIN events - FIXED: Prevent double processing
+        # Handle COIN events - IMPROVED parsing
         if "Coin accepted: pulses=" in line:
             try:
-                # Extract from format: "Coin accepted: pulses=3, value=P5, added=250mL, total=250mL"
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    # Get pulse count
-                    pulse_part = parts[0].strip()
-                    pulse_str = pulse_part.split("pulses=")[1].strip()
-                    pulses = int(pulse_str)
-                    
-                    # Get coin value
-                    value_part = parts[1].strip()
-                    if "value=P" in value_part:
-                        value_str = value_part.split("value=P")[1].strip()
-                    else:
-                        value_str = value_part.split("value=")[1].replace("P", "").strip()
-                    coin_value = int(value_str)
-                    
-                    # Get added mL
-                    added_part = parts[2].strip()
-                    if "added=" in added_part:
-                        added_str = added_part.split("added=")[1].replace("mL", "").strip()
-                    else:
-                        added_str = added_part.split("=")[1].replace("mL", "").strip()
-                    added_ml = int(added_str)
+                # More robust parsing that handles different formats
+                pulses_match = re.search(r'pulses=(\d+)', line)
+                value_match = re.search(r'value=P?(\d+)', line)
+                added_match = re.search(r'added=(\d+)', line)
+                
+                if pulses_match and value_match:
+                    pulses = int(pulses_match.group(1))
+                    coin_value = int(value_match.group(1))
                     
                     # Enhanced coin validation
                     current_time = time.time()
@@ -268,11 +254,14 @@ class ArduinoListener:
                     self.last_coin_time = current_time
                     self.coin_event_count += 1
                     
+                    added_ml = 0
+                    if added_match:
+                        added_ml = int(added_match.group(1))
+                    
                     self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
                     
-                    # FIX: Only dispatch ONE event with both peso and ml
-                    coin_data = {"peso": coin_value, "ml": added_ml}
-                    self._dispatch_event("coin", coin_data, line)
+                    # Send simple coin value
+                    self._dispatch_event("coin", coin_value, line)
                     
                 return
                 
@@ -280,119 +269,23 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse coin details from: {line} - {e}")
                 return
 
-        # Handle TEST Coin events (for debugging)
+        # Handle TEST Coin events
         elif "TEST Coin:" in line:
             try:
-                # Extract from test coin format
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    # Get coin value
-                    value_part = parts[1].strip()
-                    value_str = value_part.split("value=P")[1].strip()
-                    coin_value = int(value_str)
+                # Extract from test coin format using regex
+                value_match = re.search(r'value=P?(\d+)', line)
+                if value_match:
+                    coin_value = int(value_match.group(1))
                     
-                    # Get added mL
-                    added_part = parts[2].strip()
-                    added_str = added_part.split("added=")[1].replace("mL", "").strip()
-                    added_ml = int(added_str)
+                    self.logger.info(f"TEST COIN: P{coin_value}")
                     
-                    self.logger.info(f"TEST COIN: P{coin_value}, added={added_ml}mL")
-                    
-                    # Dispatch coin event
-                    coin_data = {"peso": coin_value, "ml": added_ml}
-                    self._dispatch_event("coin", coin_data, line)
+                    # Send simple coin value
+                    self._dispatch_event("coin", coin_value, line)
                     
                 return
             except (ValueError, IndexError, AttributeError) as e:
                 self.logger.warning(f"Could not parse TEST coin details: {line} - {e}")
                 return
-
-        # Handle CUP_DETECTED
-        elif line.startswith("CUP_DETECTED"):
-            event = "cup_detected"
-            value = True
-            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle COUNTDOWN events
-        elif line.startswith("COUNTDOWN "):
-            try:
-                countdown_value = int(line.split()[1])
-                event = "countdown"
-                value = countdown_value
-                self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
-                return
-
-        # Handle COUNTDOWN_END
-        elif line.startswith("COUNTDOWN_END"):
-            event = "countdown_end"
-            value = True
-            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle DISPENSE_START
-        elif line.startswith("DISPENSE_START"):
-            event = "dispense_start"
-            value = True
-            self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle DISPENSE_DONE
-        elif line.startswith("DISPENSE_DONE"):
-            try:
-                # Format: "DISPENSE_DONE 100.82"
-                ml_dispensed = float(line.split()[1])
-                event = "dispense_done"
-                value = ml_dispensed
-                self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
-                return
-
-        # Handle Unknown coin patterns
-        elif "Unknown coin pattern:" in line:
-            self.logger.warning(f"ARDUINO REJECTED COIN: {line}")
-            return
-
-        # Handle CREDIT_ML updates (for debugging)
-        elif line.startswith("CREDIT_ML:"):
-            try:
-                credit_ml = int(line.split(":")[1].strip())
-                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
-                return
-            except (ValueError, IndexError) as e:
-                pass
-
-        # Handle SYSTEM READY
-        elif "System Ready" in line or "READY" in line:
-            event = "system_ready"
-            value = True
-            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle SYSTEM STATUS
-        elif line.startswith("=== SYSTEM STATUS ==="):
-            self.logger.info("Arduino status report received")
-            return
-
-        # Skip debug status lines (they're too frequent)
-        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
-            self.logger.debug(f"Status update: {line}")
-            return
-
-        # Log unhandled lines for debugging
-        else:
-            self.logger.debug(f"UNHANDLED: {line}")
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""

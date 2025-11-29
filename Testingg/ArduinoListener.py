@@ -372,6 +372,23 @@ class ArduinoListener:
             self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
             return
+        
+                # Handle COUNTDOWN events
+        if line.startswith("COUNTDOWN "):
+            try:
+                value = int(line.split()[1])
+                event = "countdown"
+                self._dispatch_event(event, value, line)
+                return
+            except:
+                pass
+
+        # Handle COUNTDOWN_END
+        if line.startswith("COUNTDOWN_END"):
+            event = "countdown_end"
+            self._dispatch_event(event, True, line)
+            return
+
             
         if line.startswith("CUP_REMOVED"):
             event = "cup_removed"

@@ -6,60 +6,29 @@ import sys
 import os
 
 # ----------------- CONFIGURATION -----------------
+# Common Arduino ports - will try each in order
 ARDUINO_PORTS = [
-    "/dev/ttyUSB0",
-    "/dev/ttyUSB1",
-    "/dev/ttyACM0",
+    "/dev/ttyUSB0",    # Most common for USB-serial adapters
+    "/dev/ttyUSB1", 
+    "/dev/ttyACM0",    # Common for genuine Arduino Uno
     "/dev/ttyACM1",
-    "/dev/ttyS0",
-    "COM3",
+    "/dev/ttyS0",      # Raspberry Pi GPIO serial
+    "COM3",            # Windows
     "COM4",
     "COM5",
     "COM6"
 ]
-
 ARDUINO_BAUD = 115200
-READ_INTERVAL = 0.05  # read loop speed
-
-
-# -------------------------------------------------
-# NEAREST-MATCH COIN MAPPING (fixes 5→10 misdetection)
-# -------------------------------------------------
-COIN_PULSE_MAP = {1: 1, 3: 5, 5: 10}
-COIN_TOLERANCE = 1   # pulses may vary ±1 on some acceptors
-
-
-def map_pulses_to_coin(pulses):
-    """
-    Convert pulse counts to nearest-match coin value (₱1, ₱5, ₱10)
-    Prevents 5 peso being detected as 10.
-    """
-    if pulses <= 0 or pulses > 12:
-        return None  # noise
-
-    # Find nearest pulse key
-    nearest = min(COIN_PULSE_MAP.keys(), key=lambda k: abs(k - pulses))
-
-    # Reject if too far from known pulse patterns
-    if abs(nearest - pulses) > COIN_TOLERANCE:
-        return None
-
-    # Break ties by choosing lower value (avoid misclassifying ₱5 as ₱10)
-    candidates = []
-    for key in COIN_PULSE_MAP.keys():
-        if abs(key - pulses) <= COIN_TOLERANCE:
-            candidates.append((key, COIN_PULSE_MAP[key]))
-
-    if not candidates:
-        return None
-
-    # Pick the smallest denomination among candidates
-    candidates.sort(key=lambda x: x[1])
-    return candidates[0][1]
-
+READ_INTERVAL = 0.05  # seconds between read cycles
 
 # -------------------------------------------------
+
 class ArduinoListener:
+    """
+    ArduinoListener continuously reads serial messages from the Arduino
+    and converts them into structured event callbacks usable by the kiosk UI.
+    """
+
     def __init__(self, event_callback=None, port_candidates=None, baud_rate=115200):
         self.event_callback = event_callback
         self.baud_rate = baud_rate
@@ -70,7 +39,13 @@ class ArduinoListener:
         self.connected = False
         self.callbacks = []
         self.actual_port = None
-
+        
+        # Coin validation state
+        self.last_coin_time = 0
+        self.coin_debounce_delay = 0.5  # Minimum 500ms between coin events
+        self.valid_coin_values = [1, 5, 10]  # Only accept these coin values
+        
+        # Set up logging without Unicode emojis
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -79,212 +54,452 @@ class ArduinoListener:
                 logging.FileHandler('/tmp/arduino_listener.log')
             ]
         )
-        self.logger = logging.getLogger("ArduinoListener")
+        self.logger = logging.getLogger('ArduinoListener')
 
-    # -------------------------------------------------
     def register_callback(self, fn):
+        """Allow UI screens to attach additional listeners."""
         if fn not in self.callbacks:
             self.callbacks.append(fn)
-            self.logger.info(f"Registered callback: {fn}")
+            self.logger.info(f"Registered callback: {fn.__name__ if hasattr(fn, '__name__') else 'anonymous'}")
+        else:
+            self.logger.warning("Callback already registered")
 
     def unregister_callback(self, fn):
+        """Remove a callback."""
         if fn in self.callbacks:
             self.callbacks.remove(fn)
-            self.logger.info(f"Unregistered callback: {fn}")
+            self.logger.info(f"Unregistered callback: {fn.__name__ if hasattr(fn, '__name__') else 'anonymous'}")
 
     # -------------------------------------------------
-    # CONNECT TO ARDUINO
+    # SERIAL CONNECTION SETUP
     # -------------------------------------------------
     def connect(self):
+        """Attempt to connect to the Arduino via USB serial."""
         if self.connected and self.ser and self.ser.is_open:
+            self.logger.info("Already connected to Arduino")
             return True
-
+            
+        # Try each port candidate
         for port in self.port_candidates:
             try:
-                self.logger.info(f"Trying {port}...")
+                self.logger.info(f"Trying to connect to {port}...")
                 self.ser = serial.Serial(port, self.baud_rate, timeout=1)
-                time.sleep(2)  # allow Arduino to reset
+                time.sleep(2)  # Allow Arduino reset after serial connection
+                
+                # Clear any existing data
                 self.ser.reset_input_buffer()
-
-                self.ser.write(b"PING\n")
+                
+                # Test communication by sending a status request
+                self.ser.write(b"STATUS\n")
                 time.sleep(0.5)
-
+                
+                # Try to read response to verify connection
                 if self.ser.in_waiting > 0:
-                    resp = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    self.logger.info(f"Arduino replied: {resp}")
-
+                    test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    self.logger.info(f"Arduino responded: {test_response}")
+                else:
+                    self.logger.info("Arduino connected (no response to STATUS)")
+                
                 self.connected = True
                 self.actual_port = port
-                self.logger.info(f"Connected on {port}")
+                self.logger.info(f"SUCCESS: ArduinoListener connected on {port} @ {self.baud_rate} baud")
                 return True
-
+                
+            except (serial.SerialException, OSError) as e:
+                self.logger.debug(f"Failed to connect to {port}: {e}")
+                continue
             except Exception as e:
-                self.logger.debug(f"Failed on {port}: {e}")
-
-        self.logger.error("Could not connect to Arduino.")
+                self.logger.debug(f"Unexpected error with {port}: {e}")
+                continue
+        
+        # If we get here, no ports worked
+        self.logger.error("ERROR: Failed to connect to Arduino on any port")
+        self.connected = False
         return False
 
     # -------------------------------------------------
+    # START LISTENING THREAD
+    # -------------------------------------------------
     def start(self):
+        """Start a background thread to continuously read serial data."""
         if not self.connected:
             if not self.connect():
+                self.logger.error("Cannot start listener - no Arduino connection")
                 return False
 
-        if self.running:
+        if self.connected and not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._read_loop, daemon=True)
+            self.thread.start()
+            self.logger.info("STARTED: ArduinoListener started and running")
             return True
+        else:
+            self.logger.warning("Listener already running or not connected")
+            return False
 
-        self.running = True
-        self.thread = threading.Thread(target=self._read_loop, daemon=True)
-        self.thread.start()
-
-        self.logger.info("ArduinoListener started.")
-        return True
-
-    # -------------------------------------------------
+    # --------------------------------------------------------
+    # Stop Listener
+    # --------------------------------------------------------
     def stop(self):
+        """Stop the listener and close serial connection."""
         self.running = False
-
-        try:
-            if self.thread and self.thread.is_alive():
-                self.thread.join(timeout=1)
-        except:
-            pass
-
-        if self.ser:
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        
+        if self.ser and self.ser.is_open:
             try:
                 self.ser.close()
-            except:
-                pass
-
+                self.logger.info("Serial port closed")
+            except Exception as e:
+                self.logger.error(f"Error closing serial port: {e}")
+        
         self.connected = False
-        self.logger.info("ArduinoListener stopped.")
+        self.logger.info("STOPPED: ArduinoListener stopped completely")
 
     # -------------------------------------------------
     # READ LOOP
     # -------------------------------------------------
     def _read_loop(self):
-        self.logger.info("Listening for Arduino messages...")
-
+        """Continuously read from Arduino and parse messages."""
+        self.logger.info("Starting Arduino read loop...")
+        
         while self.running:
             try:
-                if self.ser and self.ser.in_waiting > 0:
+                if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
                     line = self.ser.readline().decode("utf-8", errors="ignore").strip()
                     if line:
                         self._process_line(line)
-
                 time.sleep(READ_INTERVAL)
-
-            except Exception as e:
-                self.logger.error(f"Read error: {e}")
+                
+            except serial.SerialException as e:
+                self.logger.error(f"Serial read error: {e}")
                 self.connected = False
+                # Try to reconnect
                 self._attempt_reconnect()
+                
+            except Exception as e:
+                self.logger.error(f"Unexpected error in ArduinoListener: {e}")
+                time.sleep(1)  # Prevent tight loop on errors
 
     def _attempt_reconnect(self):
-        time.sleep(2)
-        self.connect()
+        """Attempt to reconnect to Arduino."""
+        self.logger.info("Attempting to reconnect to Arduino...")
+        retries = 3
+        for attempt in range(retries):
+            try:
+                if self.connect():
+                    self.logger.info("SUCCESS: Reconnected to Arduino successfully")
+                    return True
+                time.sleep(2)  # Wait before retry
+            except Exception as e:
+                self.logger.warning(f"Reconnection attempt {attempt + 1} failed: {e}")
+        
+        self.logger.error("ERROR: Failed to reconnect to Arduino after multiple attempts")
+        return False
 
     # -------------------------------------------------
-    # PARSE INCOMING LINES
+    # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        self.logger.debug(f"RAW: {line}")
+        """Parse and dispatch Arduino messages."""
+        self.logger.debug(f"[Arduino RAW] {line}")
 
-        # ---------------- COIN EVENTS ----------------
+        # Skip empty lines
+        if not line.strip():
+            return
+
+        # Handle COIN events in various formats
         if "Coin accepted: pulses=" in line:
             try:
-                raw = int(line.split("=")[1].strip())
-                coin_val = map_pulses_to_coin(raw)
+                # Extract pulse count from "Coin accepted: pulses=1, value=P1, added=50mL, total=50mL"
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    # Get pulse count
+                    pulse_part = parts[0]
+                    pulse_str = pulse_part.split("pulses=")[1].strip()
+                    pulses = int(pulse_str)
+                    
+                    # Get coin value
+                    value_part = parts[1]
+                    value_str = value_part.split("value=P")[1].strip()
+                    coin_value = int(value_str)
+                    
+                    # Get added mL
+                    added_part = parts[2]
+                    added_str = added_part.split("added=")[1].replace("mL", "").strip()
+                    added_ml = int(added_str)
+                    
+                    # Apply coin debouncing
+                    current_time = time.time()
+                    if current_time - self.last_coin_time < self.coin_debounce_delay:
+                        self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
+                        return
+                    
+                    # Validate coin value
+                    if coin_value not in self.valid_coin_values:
+                        self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
+                        return
+                    
+                    # Valid coin detected
+                    self.last_coin_time = current_time
+                    
+                    event = "coin"
+                    value = coin_value
+                    self.logger.info(f"COIN ACCEPTED: {event} = P{value}, pulses={pulses}, added={added_ml}mL")
+                    
+                    # Dispatch both coin event and water credit event
+                    self._dispatch_event(event, value, line)
+                    self._dispatch_event("coin_water", added_ml, line)
+                    
+                return
+                
+            except (ValueError, IndexError, AttributeError) as e:
+                self.logger.warning(f"Could not parse coin details from: {line} - {e}")
+                return
 
-                if coin_val is None:
-                    self.logger.info(f"Ignored noisy coin pulses ({raw})")
+        # Handle COIN: format (legacy)
+        elif line.startswith("COIN:"):
+            try:
+                coin_value = int(line.split(":")[1].strip())
+                
+                # Apply coin debouncing
+                current_time = time.time()
+                if current_time - self.last_coin_time < self.coin_debounce_delay:
+                    self.logger.warning(f"Coin debounced (legacy): too soon since last coin (P{coin_value})")
                     return
-
-                self.logger.info(f"COIN DETECTED → ₱{coin_val}")
-                self._dispatch("coin", coin_val, line)
+                
+                # Validate coin value
+                if coin_value not in self.valid_coin_values:
+                    self.logger.warning(f"Invalid coin value rejected (legacy): P{coin_value}")
+                    return
+                
+                self.last_coin_time = current_time
+                
+                event = "coin"
+                value = coin_value
+                self.logger.info(f"COIN ACCEPTED (legacy): {event} = P{value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN: value from: {line}")
                 return
 
-            except Exception as e:
-                self.logger.error(f"Failed parsing coin pulses: {e}")
+        # Handle CUP_DETECTED
+        elif line.startswith("CUP_DETECTED"):
+            event = "cup_detected"
+            value = True
+            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle COUNTDOWN events
+        elif line.startswith("COUNTDOWN "):
+            try:
+                countdown_value = int(line.split()[1])
+                event = "countdown"
+                value = countdown_value
+                self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
                 return
 
-        # ---------------- CUP ----------------
-        if line.startswith("CUP_DETECTED"):
-            self._dispatch("cup_detected", True, line)
+        # Handle COUNTDOWN_END
+        elif line.startswith("COUNTDOWN_END"):
+            event = "countdown_end"
+            value = True
+            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
             return
 
-        # ---------------- COUNTDOWN ----------------
-        if line.startswith("COUNTDOWN "):
+        # Handle DISPENSE_START
+        elif line.startswith("DISPENSE_START"):
+            event = "dispense_start"
+            value = True
+            self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle DISPENSE_DONE
+        elif line.startswith("DISPENSE_DONE"):
             try:
-                val = int(line.split()[1])
-                self._dispatch("countdown", val, line)
-            except:
-                pass
-            return
+                # Format: "DISPENSE_DONE 100.82"
+                ml_dispensed = float(line.split()[1])
+                event = "dispense_done"
+                value = ml_dispensed
+                self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
+                return
 
-        if line.startswith("COUNTDOWN_END"):
-            self._dispatch("countdown_end", True, line)
-            return
-
-        # ---------------- DISPENSE START/END ----------------
-        if line.startswith("DISPENSE_START"):
-            self._dispatch("dispense_start", True, line)
-            return
-
-        if line.startswith("DISPENSE_DONE"):
+        # Handle CREDIT_ML updates (for debugging)
+        elif line.startswith("CREDIT_ML:"):
             try:
-                ml = float(line.split()[1])
-                self._dispatch("dispense_done", ml, line)
-            except:
+                credit_ml = int(line.split(":")[1].strip())
+                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
+                # You could dispatch this as an event if needed
+                return
+            except (ValueError, IndexError) as e:
                 pass
+
+        # Handle SYSTEM READY
+        elif "System Ready" in line or "READY" in line:
+            event = "system_ready"
+            value = True
+            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
             return
 
-        # ---------------- SYSTEM READY ----------------
-        if "System Ready" in line:
-            self._dispatch("system_ready", True, line)
+        # Handle SYSTEM STATUS
+        elif line.startswith("=== SYSTEM STATUS ==="):
+            self.logger.info("Arduino status report received")
+            # Don't dispatch this as an event, just log it
             return
 
-        # Unhandled but logged
-        self.logger.info(f"UNHANDLED: {line}")
+        # Skip debug status lines (they're too frequent)
+        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+            self.logger.debug(f"Status update: {line}")
+            return
 
-    # -------------------------------------------------
-    def _dispatch(self, event, value, raw):
+        # Log unhandled lines for debugging
+        else:
+            self.logger.info(f"UNHANDLED: {line}")
+        
+    def _dispatch_event(self, event, value, raw_line):
+        """Dispatch event to all registered callbacks."""
         payload = {
             "event": event,
             "value": value,
-            "raw": raw,
+            "raw": raw_line,
             "timestamp": time.time()
         }
 
-        # Main callback
+        # Send to main event callback (KioskApp)
         if self.event_callback:
             try:
                 self.event_callback(event, value)
             except Exception as e:
-                self.logger.error(f"Main callback error: {e}")
+                self.logger.error(f"Error in main event_callback: {e}")
 
-        # Extra UI callbacks
-        for cb in self.callbacks:
+        # Send to additional UI callbacks (e.g., WaterScreen)
+        for callback in self.callbacks[:]:  # Use slice to avoid modification during iteration
             try:
-                cb(payload)
+                callback(payload)
             except Exception as e:
-                self.logger.error(f"Callback error: {e}")
+                self.logger.error(f"Error in callback {callback}: {e}")
 
     # -------------------------------------------------
+    # SEND COMMANDS TO ARDUINO
+    # -------------------------------------------------
     def send_command(self, cmd):
+        """
+        Send a command string to Arduino.
+        
+        Example:
+            send_command("MODE WATER")
+            send_command("RESET")
+            send_command("STATUS")
+        """
         if not self.ser or not self.ser.is_open:
-            self.logger.warning("Cannot send command — serial not open.")
+            self.logger.warning("WARNING: Cannot send command - serial not connected.")
             return False
 
         try:
-            self.ser.write((cmd + "\n").encode())
+            full_cmd = cmd + "\n"
+            self.ser.write(full_cmd.encode())
+            self.logger.info(f"SENT: Command to Arduino: {cmd}")
             return True
         except Exception as e:
-            self.logger.error(f"Send error: {e}")
+            self.logger.error(f"ERROR: Error sending command to Arduino: {e}")
             return False
 
     # -------------------------------------------------
+    # UTILITY METHODS
+    # -------------------------------------------------
     def is_connected(self):
-        return self.connected
+        """Return True if Arduino is connected."""
+        return self.connected and self.ser and self.ser.is_open
 
     def get_port(self):
+        """Return the actual port being used."""
         return self.actual_port
+
+    def get_status(self):
+        """Return connection status information."""
+        return {
+            "connected": self.connected,
+            "running": self.running,
+            "port": self.actual_port,
+            "baud_rate": self.baud_rate,
+            "callbacks_registered": len(self.callbacks)
+        }
+
+    def reset_connection(self):
+        """Reset the serial connection."""
+        self.stop()
+        time.sleep(1)
+        return self.connect() and self.start()
+
+    def set_callback(self, callback):
+        """Alternative method to set the main event callback."""
+        self.event_callback = callback
+        self.logger.info("Main event callback set")
+
+    def write(self, command):
+        """Alternative method name for send_command for compatibility."""
+        return self.send_command(command)
+
+    def reset_coin_debounce(self):
+        """Reset the coin debounce timer (useful for testing)."""
+        self.last_coin_time = 0
+        self.logger.info("Coin debounce timer reset")
+
+
+# -------------------------------------------------
+# TEST FUNCTION
+# -------------------------------------------------
+def test_arduino_listener():
+    """Test function to verify Arduino communication."""
+    
+    def test_callback(event, value):
+        print(f"[TEST CALLBACK] Event: {event}, Value: {value}")
+    
+    def test_payload_callback(payload):
+        print(f"[TEST PAYLOAD] {payload}")
+    
+    print("TESTING: Testing ArduinoListener...")
+    
+    listener = ArduinoListener(event_callback=test_callback)
+    listener.register_callback(test_payload_callback)
+    
+    if listener.connect():
+        print("SUCCESS: Connected to Arduino")
+        if listener.start():
+            print("SUCCESS: Listener started")
+            
+            # Test sending commands
+            listener.send_command("STATUS")
+            listener.send_command("RESET")
+            
+            # Run for 30 seconds to capture events
+            print("LISTENING: Listening for Arduino events for 30 seconds...")
+            try:
+                for i in range(30):
+                    time.sleep(1)
+                    print(f"TIME: {29-i} seconds remaining...")
+            except KeyboardInterrupt:
+                print("STOPPED: Stopped by user")
+            
+            listener.stop()
+            print("COMPLETED: Test completed")
+        else:
+            print("ERROR: Failed to start listener")
+    else:
+        print("ERROR: Failed to connect to Arduino")
+
+
+if __name__ == "__main__":
+    test_arduino_listener()

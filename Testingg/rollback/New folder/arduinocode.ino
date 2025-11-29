@@ -1,8 +1,8 @@
 #include <EEPROM.h>
 
 // ---------------- PIN DEFINITIONS ----------------
-#define COIN_PIN          3     // Coin slot signal pin (interrupt)
-#define FLOW_SENSOR_PIN   2     // YF-S201 flow sensor (interrupt)
+#define COIN_PIN          2     // Coin slot signal pin (interrupt)
+#define FLOW_SENSOR_PIN   3     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger
 #define CUP_ECHO_PIN      10    // Ultrasonic echo
 #define PUMP_PIN          8     // Pump relay
@@ -54,33 +54,18 @@ int last_creditML = -1;
 bool last_dispensing = false;
 unsigned long last_flowCount = 0;
 
-// Coin validation state
-unsigned long lastValidCoinTime = 0;
-bool coinValidationActive = false;
-unsigned long coinValidationStart = 0;
-#define COIN_VALIDATION_TIMEOUT 1000 // 1 second to validate coin pattern
-
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
   unsigned long now = millis();
 
-  // Rate limiting - prevent multiple triggers in quick succession
   if (now - lastCoinPulseTime < COIN_ISR_RATE_LIMIT) return;
-  
-  // Minimum spacing between pulses
   if (now - lastCoinPulseTime < COIN_MIN_PULSE_SPACING) return;
 
-  // Debounce check
   if (now - lastCoinPulseTime > COIN_DEBOUNCE_MS) {
     coinPulseCount++;
-    lastCoinPulseTime = now;
-    
-    // Start coin validation timer on first pulse
-    if (coinPulseCount == 1 && !coinValidationActive) {
-      coinValidationActive = true;
-      coinValidationStart = now;
-    }
   }
+
+  lastCoinPulseTime = now;
 }
 
 void flowISR() {
@@ -237,61 +222,23 @@ void stopDispense() {
 
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
-  // Handle coin validation timeout
-  if (coinValidationActive && (millis() - coinValidationStart > COIN_VALIDATION_TIMEOUT)) {
-    // Coin validation period expired - process whatever pulses we have
-    processCoinPulses();
-    coinValidationActive = false;
-    return;
-  }
-  
-  // If we have pulses and sufficient time has passed since last pulse, process them
-  if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
-    processCoinPulses();
-  }
-}
-
-void processCoinPulses() {
   if (coinPulseCount == 0) return;
+  if (millis() - lastCoinPulseTime <= COIN_TIMEOUT_MS) return;
 
   int pulses = coinPulseCount;
   coinPulseCount = 0;
-  coinValidationActive = false;
 
-  // Enhanced coin validation with stricter matching
-  int coinValue = 0;
-  int addedML = 0;
-  
-  if (pulses == coin1P_pulses) {
-    coinValue = 1;
-    addedML = creditML_1P;
-  } else if (pulses == coin5P_pulses) {
-    coinValue = 5;
-    addedML = creditML_5P;
-  } else if (pulses == coin10P_pulses) {
-    coinValue = 10;
-    addedML = creditML_10P;
-  } else {
-    // Invalid coin pattern - log but don't add credit
+  if (abs(pulses - coin1P_pulses) <= 1) creditML += creditML_1P;
+  else if (abs(pulses - coin5P_pulses) <= 1) creditML += creditML_5P;
+  else if (abs(pulses - coin10P_pulses) <= 1) creditML += creditML_10P;
+  else {
     Serial.print("Unknown coin pattern: ");
     Serial.println(pulses);
     return;
   }
 
-  // Valid coin detected
-  creditML += addedML;
-  lastValidCoinTime = millis();
-
   Serial.print("Coin accepted: pulses=");
-  Serial.print(pulses);
-  Serial.print(", value=P");
-  Serial.print(coinValue);
-  Serial.print(", added=");
-  Serial.print(addedML);
-  Serial.print("mL, total=");
-  Serial.print(creditML);
-  Serial.println("mL");
-
+  Serial.println(pulses);
   lastActivity = millis();
 }
 
@@ -302,33 +249,6 @@ void handleSerialCommand() {
 
   if (cmd.equalsIgnoreCase("RESET"))
     resetSystem();
-  else if (cmd.equalsIgnoreCase("STATUS"))
-    printStatus();
-  else if (cmd.startsWith("CALIBRATE")) {
-    // Calibration command format: CALIBRATE 450.0
-    int spaceIndex = cmd.indexOf(' ');
-    if (spaceIndex > 0) {
-      String valueStr = cmd.substring(spaceIndex + 1);
-      float newCalibration = valueStr.toFloat();
-      if (newCalibration >= 200 && newCalibration <= 5000) {
-        pulsesPerLiter = newCalibration;
-        EEPROM.put(12, pulsesPerLiter);
-        Serial.print("Calibration updated: ");
-        Serial.println(pulsesPerLiter);
-      }
-    }
-  }
-}
-
-void printStatus() {
-  Serial.println("=== SYSTEM STATUS ===");
-  Serial.print("Credit: "); Serial.print(creditML); Serial.println(" mL");
-  Serial.print("Dispensing: "); Serial.println(dispensing ? "YES" : "NO");
-  Serial.print("Cup Detected: "); Serial.println(cupDetected ? "YES" : "NO");
-  Serial.print("Countdown Active: "); Serial.println(countdownActive ? "YES" : "NO");
-  Serial.print("Flow Pulses: "); Serial.println(flowPulseCount);
-  Serial.print("Pulses/Liter: "); Serial.println(pulsesPerLiter);
-  Serial.println("===================");
 }
 
 // ---------------- RESET ----------------
@@ -337,8 +257,6 @@ void resetSystem() {
   dispensing = false;
   countdownActive = false;
   cupDetected = false;
-  coinPulseCount = 0;
-  coinValidationActive = false;
 
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);

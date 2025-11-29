@@ -236,7 +236,6 @@ void stopDispense() {
 
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
-
   if (dispensing) return;
         
   if (coinPulseCount == 0) return;
@@ -245,17 +244,31 @@ void handleCoin() {
   int pulses = coinPulseCount;
   coinPulseCount = 0;
 
-  if (abs(pulses - coin1P_pulses) <= 1) creditML += creditML_1P;
-  else if (abs(pulses - coin5P_pulses) <= 1) creditML += creditML_5P;
-  else if (abs(pulses - coin10P_pulses) <= 1) creditML += creditML_10P;
+  // ⚠️ FIXED: Use exact matching with smaller tolerance
+  if (pulses == coin1P_pulses) {
+    creditML += creditML_1P;
+    Serial.print("COIN:1");  // Clear format for Python
+  }
+  else if (pulses == coin5P_pulses) {
+    creditML += creditML_5P;
+    Serial.print("COIN:5");  // Clear format for Python
+  }
+  else if (pulses == coin10P_pulses) {
+    creditML += creditML_10P;
+    Serial.print("COIN:10"); // Clear format for Python
+  }
   else {
     Serial.print("Unknown coin pattern: ");
     Serial.println(pulses);
     return;
   }
 
-  Serial.print("Coin accepted: pulses=");
-  Serial.println(pulses);
+  // Also send water credit for backward compatibility
+  Serial.print(" WATER_CREDIT:");
+  if (pulses == coin1P_pulses) Serial.println(creditML_1P);
+  else if (pulses == coin5P_pulses) Serial.println(creditML_5P);
+  else if (pulses == coin10P_pulses) Serial.println(creditML_10P);
+
   lastActivity = millis();
 }
 

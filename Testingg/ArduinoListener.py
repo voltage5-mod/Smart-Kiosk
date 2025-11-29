@@ -85,7 +85,7 @@ class ArduinoListener:
                 self.ser.reset_input_buffer()
                 
                 # Test communication by sending a status request
-                self.ser.write(b"STATUS\n")
+                self.ser.write(b"PING\n")
                 time.sleep(0.5)
                 
                 # Try to read response to verify connection
@@ -93,7 +93,7 @@ class ArduinoListener:
                     test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     self.logger.info(f"Arduino responded: {test_response}")
                 else:
-                    self.logger.info("Arduino connected (no response to STATUS)")
+                    self.logger.info("Arduino connected (no response to PING)")
                 
                 self.connected = True
                 self.actual_port = port
@@ -206,31 +206,31 @@ class ArduinoListener:
         # Handle COIN events in various formats
         if "Coin accepted: pulses=" in line:
             try:
-                # Extract pulse count and added ML from "Coin accepted: pulses=1, addedML=50, totalML=50"
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    pulse_str = parts[0].split("pulses=")[1].strip()
-                    added_ml_str = parts[1].split("addedML=")[1].strip()
-                    total_ml_str = parts[2].split("totalML=")[1].strip()
-                    
-                    pulses = int(pulse_str)
-                    added_ml = int(added_ml_str)
-                    total_ml = int(total_ml_str)
-                    
-                    # Map pulses to coin values for display
-                    coin_value = {1: 1, 3: 5, 5: 10}.get(pulses, 1)
-                    
-                    event = "coin_water"  # Specific event for water coins
-                    value = added_ml
-                    self.logger.info(f"WATER COIN DETECTED: {event} = {value}mL from: {line}")
-                    self._dispatch_event(event, value, line)
-                    return
-                    
+                # Extract pulse count from "Coin accepted: pulses=1"
+                pulse_str = line.split("pulses=")[1].strip()
+                pulses = int(pulse_str)
+                
+                # Map pulses to coin values
+                if pulses == 1:
+                    coin_value = 1
+                elif pulses == 3:  
+                    coin_value = 5
+                elif pulses == 5:
+                    coin_value = 10
+                else:
+                    coin_value = 1  # Default
+                
+                event = "coin"
+                value = coin_value
+                self.logger.info(f"COIN DETECTED: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+                
             except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse coin details from: {line}")
+                self.logger.warning(f"Could not parse coin pulses from: {line}")
                 return
 
-        # Handle COIN: format (legacy)
+        # Handle COIN: format
         elif line.startswith("COIN:"):
             try:
                 coin_value = int(line.split(":")[1].strip())
@@ -246,14 +246,6 @@ class ArduinoListener:
         # Handle CUP_DETECTED
         elif line.startswith("CUP_DETECTED"):
             event = "cup_detected"
-            value = True
-            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle CUP_REMOVED
-        elif line.startswith("CUP_REMOVED"):
-            event = "cup_removed"
             value = True
             self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
@@ -275,14 +267,6 @@ class ArduinoListener:
         # Handle COUNTDOWN_END
         elif line.startswith("COUNTDOWN_END"):
             event = "countdown_end"
-            value = True
-            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle COUNTDOWN_CANCELLED
-        elif line.startswith("COUNTDOWN_CANCELLED"):
-            event = "countdown_cancelled"
             value = True
             self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
             self._dispatch_event(event, value, line)
@@ -314,11 +298,8 @@ class ArduinoListener:
         elif line.startswith("CREDIT_ML:"):
             try:
                 credit_ml = int(line.split(":")[1].strip())
-                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
-                # Dispatch as credit update event
-                event = "credit_update"
-                value = credit_ml
-                self._dispatch_event(event, value, line)
+                self.logger.info(f"Credit ML updated: {credit_ml}mL")
+                # You could dispatch this as an event if needed
                 return
             except (ValueError, IndexError) as e:
                 pass
@@ -331,27 +312,9 @@ class ArduinoListener:
             self._dispatch_event(event, value, line)
             return
 
-        # Handle SYSTEM RESET
-        elif "System reset" in line:
-            event = "system_reset"
-            value = True
-            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
         # Skip debug status lines (they're too frequent)
-        elif any(prefix in line for prefix in ["DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
             self.logger.debug(f"Status update: {line}")
-            return
-
-        # Handle DEBUG messages
-        elif line.startswith("DEBUG:"):
-            self.logger.info(f"ARDUINO DEBUG: {line}")
-            return
-
-        # Handle FULL STATUS
-        elif line.startswith("FULL STATUS"):
-            self.logger.info(f"ARDUINO STATUS: {line}")
             return
 
         # Log unhandled lines for debugging
@@ -392,8 +355,6 @@ class ArduinoListener:
             send_command("MODE WATER")
             send_command("RESET")
             send_command("STATUS")
-            send_command("DEBUG_CUP")
-            send_command("FORCE_COUNTDOWN")
         """
         if not self.ser or not self.ser.is_open:
             self.logger.warning("WARNING: Cannot send command - serial not connected.")
@@ -469,7 +430,7 @@ def test_arduino_listener():
             
             # Test sending commands
             listener.send_command("STATUS")
-            listener.send_command("DEBUG_CUP")
+            listener.send_command("MODE WATER")
             
             # Run for 30 seconds to capture events
             print("LISTENING: Listening for Arduino events for 30 seconds...")

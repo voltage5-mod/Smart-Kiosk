@@ -2372,6 +2372,7 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
+# --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#2980b9")
@@ -2459,8 +2460,18 @@ class WaterScreen(tk.Frame):
         self._water_remaining = 0
         self.is_dispensing = False
         
+        # Register with ArduinoListener
+        if hasattr(controller, 'arduino_listener') and controller.arduino_listener:
+            controller.arduino_listener.register_callback(self.handle_arduino_payload)
+        
         # Test Arduino connection
         self.test_arduino_connection()
+
+    def handle_arduino_payload(self, payload):
+        """Handle Arduino events via payload from ArduinoListener."""
+        event = payload.get('event')
+        value = payload.get('value')
+        self.handle_arduino_event(event, value)
 
     def handle_arduino_event(self, event, value):
         """Handle Arduino events in WaterScreen with immediate UI updates."""
@@ -2539,6 +2550,14 @@ class WaterScreen(tk.Frame):
                 added_ml = value
                 print(f"COIN_WATER event: +{added_ml}mL")
                 self._handle_coin_water(added_ml)
+                
+            elif event == 'auto_start_dispense':
+                print("AUTO_START_DISPENSE event received")
+                if not self.is_dispensing:
+                    self.start_dispensing()
+                
+            elif event == 'arduino_ready':
+                self.debug_var.set("Arduino connected and ready")
                 
             # Handle debug messages
             elif 'debug' in event.lower() or '[debug]' in str(value).lower():

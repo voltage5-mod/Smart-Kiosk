@@ -39,7 +39,7 @@ void loop() {
     Serial.print(pulses);
     Serial.println(" pulses");
     
-    // Coin identification
+    // Coin identification - send clear events for Python to parse
     if (pulses == 1) {
       Serial.println("COIN_INSERTED 1");
       Serial.println("COIN_WATER 50");

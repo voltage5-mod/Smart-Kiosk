@@ -4,6 +4,7 @@ import time
 import logging
 import sys
 import os
+import random
 
 # ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
@@ -85,7 +86,7 @@ class ArduinoListener:
                 self.ser.reset_input_buffer()
                 
                 # Test communication by sending a status request
-                self.ser.write(b"PING\n")
+                self.ser.write(b"STATUS\n")
                 time.sleep(0.5)
                 
                 # Try to read response to verify connection
@@ -93,7 +94,7 @@ class ArduinoListener:
                     test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     self.logger.info(f"Arduino responded: {test_response}")
                 else:
-                    self.logger.info("Arduino connected (no response to PING)")
+                    self.logger.info("Arduino connected (no response to STATUS)")
                 
                 self.connected = True
                 self.actual_port = port
@@ -199,18 +200,36 @@ class ArduinoListener:
         """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
-        # Handle ultrasonic debug messages - IGNORE these to reduce spam
-        if line.startswith("[DEBUG] Ultrasonic distance:"):
-            # Only log occasionally to reduce spam
-            if random.random() < 0.1:  # Log only 10% of ultrasonic messages
-                self.logger.debug(f"ULTRASONIC: {line}")
-            return
-            
-        if "ultrasonic:" in line.lower():
-            # Skip these entirely - they're confusing the event parser
-            return
-    
-        # Handle CUP_DETECTED events
+        # Handle COIN events with better parsing
+        if line.startswith("COIN_INSERTED"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    coin_value = int(parts[1])
+                    event = "coin"
+                    value = coin_value
+                    self._dispatch_event(event, value, line)
+                    self.logger.info(f"COIN DETECTED: P{coin_value}")
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_INSERTED: {line}")
+                return
+
+        # Handle COIN_WATER events
+        if line.startswith("COIN_WATER"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ml_value = int(parts[1])
+                    event = "coin_water"
+                    value = ml_value
+                    self._dispatch_event(event, value, line)
+                    return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN_WATER: {line}")
+                return
+
+        # Handle CUP events
         if line.startswith("CUP_DETECTED"):
             self.logger.info("CUP DETECTED - Dispensing should start")
             event = "cup_detected"
@@ -224,61 +243,6 @@ class ArduinoListener:
             value = True
             self._dispatch_event(event, value, line)
             return
-
-        # Handle DEBUG messages for cup sensor
-        if "[DEBUG] Cup detected:" in line:
-            self.logger.info(f"CUP SENSOR STATUS: {line}")
-            return
-            
-        if "[DEBUG] Ultrasonic duration:" in line:
-            self.logger.info(f"ULTRASONIC RAW: {line}")
-            return
-            
-        if "[DEBUG] Calculated distance:" in line:
-            self.logger.info(f"DISTANCE: {line}")
-            return
-
-        # Handle COIN_INSERTED events (highest priority)
-        if line.startswith("COIN_INSERTED"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    coin_value = int(parts[1])
-                    event = "coin"
-                    value = coin_value
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_INSERTED value from: {line}")
-                return
-
-        # Handle COIN_WATER events  
-        if line.startswith("COIN_WATER"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    ml_value = int(parts[1])
-                    event = "coin_water"
-                    value = ml_value
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_WATER value from: {line}")
-                return
-
-        # Handle COIN_CHARGE events (charging credit in pesos)
-        if line.startswith("COIN_CHARGE"):
-            try:
-                parts = line.split()
-                if len(parts) >= 2:
-                    peso_value = int(parts[1])
-                    event = "coin_charge"
-                    value = peso_value
-                    self._dispatch_event(event, value, line)
-                    return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN_CHARGE value from: {line}")
-                return
 
         # Handle DISPENSE_START events
         if line.startswith("DISPENSE_START"):
@@ -334,6 +298,18 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse DISPENSE_PROGRESS value from: {line}")
                 return
 
+        # Handle coin processing debug messages
+        if "[COIN] Processing" in line:
+            self.logger.info(f"Coin processing: {line}")
+            return
+
+        # Handle cup debug messages (less verbose)
+        if "[CUP_DEBUG]" in line:
+            # Only log occasionally to reduce spam
+            if random.random() < 0.2:  # Log only 20% of cup debug messages
+                self.logger.debug(f"Cup sensor: {line}")
+            return
+
         # Handle MODE command format
         if line.startswith("MODE:"):
             event = "mode"
@@ -355,71 +331,24 @@ class ArduinoListener:
             self._dispatch_event(event, value, line)
             return
 
-        # Handle debug messages with coin detection (legacy format)
-        if "Coin detected" in line or "new credit:" in line:
-            self.logger.info(f"Arduino Debug: {line}")
-            
-            # Try to extract coin value from various debug formats
-            try:
-                import re
-                # Format: "Coin detected, new credit: 300 ml"
-                credit_match = re.search(r'credit:\s*(\d+)', line)
-                if credit_match:
-                    credit_ml = int(credit_match.group(1))
-                    self.logger.info(f"Credit updated to {credit_ml}mL from debug message")
-                    
-                    # Try to determine coin value from credit amount
-                    coin_value = None
-                    if credit_ml % 50 == 0:  # 1 peso = 50ml
-                        coin_value = 1
-                    elif credit_ml % 250 == 0:  # 5 peso = 250ml  
-                        coin_value = 5
-                    elif credit_ml % 500 == 0:  # 10 peso = 500ml
-                        coin_value = 10
-                        
-                    if coin_value:
-                        event = "coin"
-                        value = coin_value
-                        self._dispatch_event(event, value, line)
-                        return
-                        
-            except Exception as e:
-                self.logger.debug(f"Could not extract coin from debug: {e}")
+        # Handle AUTO_START events
+        if line.startswith("AUTO_START_DISPENSE"):
+            event = "auto_start_dispense"
+            value = True
+            self._dispatch_event(event, value, line)
             return
 
-        # Handle other COIN events with better detection (legacy format)
-        if "COIN" in line.upper() and not line.startswith("COIN_INSERTED") and not line.startswith("COIN_WATER") and not line.startswith("COIN_CHARGE"):
-            # Extract coin value - handle various formats
-            coin_value = None
-            try:
-                if ":" in line:
-                    # Format: "COIN:10" or "COIN: 10"
-                    value_str = line.split(":", 1)[1].strip()
-                    coin_value = int(value_str)
-                else:
-                    # Format: "COIN 10" or just "10" (if COIN is implied)
-                    parts = line.split()
-                    if len(parts) > 1:
-                        coin_value = int(parts[1])
-                    else:
-                        coin_value = 1  # Default coin value
-                        
-                event = "coin"
-                value = coin_value
-                self._dispatch_event(event, value, line)
-                return
-                
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse coin value from: {line}")
-                # Still dispatch as coin event with None value
-                event = "coin"
-                value = None
-                self._dispatch_event(event, value, line)
-                return
+        # Handle Arduino ready messages
+        if "ARDUINO_READY" in line:
+            event = "arduino_ready"
+            value = True
+            self._dispatch_event(event, value, line)
+            return
 
-        # Skip other debug lines but log them
+        # Skip other debug lines but log them occasionally
         if line.startswith("[DEBUG]") or line.startswith("DEBUG:") or line.startswith("Calibrating") or line.startswith("FLOW CALIBRATION"):
-            self.logger.info(f"Arduino Debug: {line}")
+            if random.random() < 0.1:  # Log only 10% of debug messages
+                self.logger.info(f"Arduino Debug: {line}")
             return
 
         # Parse generic events (fallback)

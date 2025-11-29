@@ -52,6 +52,8 @@ unsigned long lastActivity = 0;
 // Cup detection variables
 unsigned long cupRemovedTime = 0;
 bool cupRemovedFlag = false;
+bool lastCupDetected = false;
+unsigned int cupConsecutiveReadings = 0;
 
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
@@ -90,6 +92,8 @@ void setup() {
   // Initialize cup detection variables
   cupRemovedFlag = false;
   cupRemovedTime = 0;
+  lastCupDetected = false;
+  cupConsecutiveReadings = 0;
 
   Serial.println("WATER_ARDUINO_READY");
   Serial.println("System Ready. Waiting for Pi commands...");
@@ -136,27 +140,52 @@ bool detectCup() {
   
   float distance = duration * 0.034 / 2;
   
-  // DEBUG: Print distance occasionally (not constantly)
+  // More reliable cup detection with hysteresis
+  bool currentCupState = (distance > 0 && distance < CUP_DISTANCE_CM);
+  
+  // Require multiple consistent readings to avoid false triggers
+  if (currentCupState == lastCupDetected) {
+    cupConsecutiveReadings++;
+  } else {
+    cupConsecutiveReadings = 0;
+  }
+  
+  // Only return true after 3 consistent readings
+  bool reliableDetection = (cupConsecutiveReadings >= 3 && currentCupState);
+  
+  // Debug output (less frequent)
   static unsigned long lastDebug = 0;
-  if (millis() - lastDebug > 2000) {
-    Serial.print("[DEBUG] Ultrasonic distance: ");
-    Serial.println(distance);
+  if (millis() - lastDebug > 1000) {
+    Serial.print("[CUP_DEBUG] Distance: ");
+    Serial.print(distance);
+    Serial.print("cm, State: ");
+    Serial.print(currentCupState ? "YES" : "NO");
+    Serial.print(", Reliable: ");
+    Serial.print(reliableDetection ? "YES" : "NO");
+    Serial.print(", Consecutive: ");
+    Serial.println(cupConsecutiveReadings);
     lastDebug = millis();
   }
   
-  return (distance > 0 && distance < CUP_DISTANCE_CM);
+  return reliableDetection;
 }
 
 void handleCup() {
   bool cupDetected = detectCup();
   
-  if (cupDetected && creditML > 0 && !dispensing) {
-    // Cup placed with credit - start dispensing
+  // Only send events when state changes
+  if (cupDetected && !lastCupDetected) {
     Serial.println("CUP_DETECTED");
+    lastCupDetected = true;
     cupRemovedFlag = false;  // Reset the flag
-    startDispense(creditML);
+    
+    // Auto-start dispensing if credit available
+    if (creditML > 0 && !dispensing) {
+      Serial.println("AUTO_START_DISPENSE");
+      startDispense(creditML);
+    }
   } 
-  else if (!cupDetected && dispensing) {
+  else if (!cupDetected && lastCupDetected) {
     // Cup removed during dispensing
     if (!cupRemovedFlag) {
       // First time detecting cup removal - start grace period
@@ -173,6 +202,7 @@ void handleCup() {
         cupRemovedFlag = false;
       }
     }
+    lastCupDetected = false;
   }
   else if (cupDetected && dispensing && cupRemovedFlag) {
     // Cup placed back during grace period - resume normally
@@ -196,6 +226,8 @@ void startDispense(int ml) {
   lastActivity = millis();
 
   Serial.println("DISPENSE_START");
+  Serial.print("DISPENSE_TARGET ");
+  Serial.println(ml);
 }
 
 void handleDispensing() {
@@ -213,11 +245,13 @@ void handleDispensing() {
   float remainingML = creditML - dispensedML;
 
   // Send progress updates
-  if (dispensedPulses % 30 == 0) {
+  static unsigned long lastProgress = 0;
+  if (millis() - lastProgress > 1000) { // Send progress every second
     Serial.print("DISPENSE_PROGRESS ml=");
     Serial.print(dispensedML, 1);
     Serial.print(" remaining=");
     Serial.println(remainingML, 1);
+    lastProgress = millis();
   }
 
   if (dispensedPulses >= targetPulses) {
@@ -318,6 +352,7 @@ void handleSerialCommand() {
     Serial.print("STATUS_DISPENSING "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("STATUS_FLOW_PULSES "); Serial.println(flowPulseCount);
     Serial.print("STATUS_CUP_REMOVED_FLAG "); Serial.println(cupRemovedFlag ? "YES" : "NO");
+    Serial.print("STATUS_CUP_DETECTED "); Serial.println(lastCupDetected ? "YES" : "NO");
     if (cupRemovedFlag) {
       Serial.print("STATUS_TIME_SINCE_REMOVAL "); 
       Serial.println(millis() - cupRemovedTime);
@@ -388,6 +423,8 @@ void resetSystem() {
   creditML = 0;
   dispensing = false;
   cupRemovedFlag = false;
+  lastCupDetected = false;
+  cupConsecutiveReadings = 0;
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
   Serial.println("System reset.");

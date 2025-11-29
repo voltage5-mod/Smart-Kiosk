@@ -1418,7 +1418,6 @@ class MainScreen(tk.Frame):
             pass
 
 # --------- Screen: Slot Selection (1-5) ----------
-# --------- Screen: Slot Selection (1-5) ----------
 class SlotSelectScreen(tk.Frame):
     def __init__(self, parent, controller):
         # change background to match MainScreen
@@ -1432,7 +1431,7 @@ class SlotSelectScreen(tk.Frame):
                  fg="white", bg="#34495e").pack(pady=6)
         # allow adding coins before selecting slot (coins shown here per request)
         hw = getattr(controller, 'hw', None)
-        self.coin_frame_top = tk.LabelFrame(self, text=("Coinslot - add charge before slot" if hw else "Coinslot - use physical coins"), font=("Arial", 12, "bold"),
+        self.coin_frame_top = tk.LabelFrame(self, text=("Coinslot - add charge before slot" if hw else "Coinslot (simulate) - add charge before slot"), font=("Arial", 12, "bold"),
                                             fg="white", bg="#34495e", bd=2, labelanchor="n")
         self.coin_frame_top.pack(pady=6)
         # status label to show recent coin inserts and expected time
@@ -1440,10 +1439,16 @@ class SlotSelectScreen(tk.Frame):
         self.coin_status_lbl = tk.Label(self.coin_frame_top, text="", fg="white", bg="#34495e")
         # place status on the first row spanning available columns
         self.coin_status_lbl.grid(row=0, column=0, columnspan=3, pady=(4, 0))
-        
-        # REMOVED THE MANUAL COIN BUTTONS - Only show message
-        tk.Label(self.coin_frame_top, text="Use physical coin acceptor to add charging time", 
-                fg="white", bg="#34495e", font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=6)
+        if not hw:
+            # place coin buttons on the second row
+            tk.Button(self.coin_frame_top, text="₱1", font=("Arial", 12, "bold"), bg="#f39c12", fg="white", width=8,
+                      command=lambda: self.insert_coin(1)).grid(row=1, column=0, padx=6, pady=6)
+            tk.Button(self.coin_frame_top, text="₱5", font=("Arial", 12, "bold"), bg="#e67e22", fg="white", width=8,
+                      command=lambda: self.insert_coin(5)).grid(row=1, column=1, padx=6, pady=6)
+            tk.Button(self.coin_frame_top, text="₱10", font=("Arial", 12, "bold"), bg="#d35400", fg="white", width=8,
+                      command=lambda: self.insert_coin(10)).grid(row=1, column=2, padx=6, pady=6)
+        else:
+            tk.Label(self.coin_frame_top, text="Hardware coin acceptor active — use physical coins/cards", fg="white", bg="#34495e").grid(row=1, column=0, columnspan=3, pady=6)
 
         self.slot_buttons = {}
         grid = tk.Frame(self, bg="#34495e")
@@ -1568,6 +1573,32 @@ class SlotSelectScreen(tk.Frame):
             pass
         print(f"INFO: You selected {slot_key}. Please plug your device and press Start Charging.")
         self.controller.show_frame(ChargingScreen)
+
+    def insert_coin(self, amount):
+        """Add charging credit with immediate UI update."""
+        uid = self.controller.active_uid
+        if not uid:
+            print("WARN: No user; scan first.")
+            return
+            
+        add = COIN_MAP.get(amount, 0)
+        user = read_user(uid)
+        newbal = (user.get("charge_balance", 0) or 0) + add
+        write_user(uid, {"charge_balance": newbal})
+        
+        # UPDATE UI IMMEDIATELY
+        self.time_var.set(str(newbal))
+        if hasattr(self, 'remaining'):
+            self.remaining = newbal
+        
+        print(f"INFO: ₱{amount} added => {add} seconds to charging balance.")
+        
+        # Record coin and refresh globally
+        try:
+            self.controller.record_coin_insert(uid, amount, add)
+            self.controller.refresh_all_user_info()
+        except Exception:
+            pass
 
 
 # --------- Screen: Charging ----------
@@ -2425,7 +2456,6 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
-# --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#2980b9")
@@ -2652,29 +2682,14 @@ class WaterScreen(tk.Frame):
         self.controller.refresh_all_user_info()
 
     def _end_dispensing_complete(self, message):
-        """End dispensing session completely and reset guest balance to zero."""
+        """End dispensing session completely"""
         self.is_dispensing = False
         self.cup_present = False
         self.status_lbl.config(text=message)
         self.debug_var.set("Dispensing complete")
         
-        # Update balance to zero with guest account reset
-        uid = self.controller.active_uid
-        if uid:
-            user = read_user(uid)
-            if user and user.get("type") == "nonmember":
-                # GUEST ACCOUNT: Always reset to zero after use
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                print(f"INFO: Guest account water balance reset to zero for UID: {uid}")
-            else:
-                # MEMBER ACCOUNT: Update balance normally
-                write_user(uid, {"water_balance": 0})
-        
-        # Update UI immediately
-        self.time_var.set("0")
-        self.update_idletasks()
-        self.controller.refresh_all_user_info()
+        # Update balance to zero
+        self._update_water_balance(0)
         
         # Cancel any jobs
         if self._water_job:
@@ -2844,7 +2859,7 @@ class WaterScreen(tk.Frame):
         self._water_job = self.after(1000, self._dispense_tick)
 
     def _end_dispensing(self, message):
-        """End the dispensing session and reset guest balance."""
+        """End the dispensing session"""
         self.is_dispensing = False
         self.status_lbl.config(text=message)
         self.debug_var.set("Dispensing complete")
@@ -2852,14 +2867,10 @@ class WaterScreen(tk.Frame):
         uid = self.controller.active_uid
         if uid:
             user = read_user(uid)
-            if user and user.get("type") == "nonmember":
-                # GUEST ACCOUNT: Always reset to zero after use
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                print(f"INFO: Guest account water balance reset to zero for UID: {uid}")
-            else:
-                # MEMBER ACCOUNT: Update balance normally
+            if user.get("type") == "member":
                 write_user(uid, {"water_balance": 0})
+            else:
+                write_user(uid, {"temp_water_time": 0})
                 self.temp_water_time = 0
                 
         if self._water_job:
@@ -2902,18 +2913,9 @@ class WaterScreen(tk.Frame):
             self._water_nocup_job = self.after(1000, self._check_cup_timeout)
 
     def stop_session(self):
-        """Manually stop the water session and reset guest balance."""
+        """Manually stop the water session"""
         self.is_dispensing = False
         self.cup_present = False
-        
-        # Reset guest balance to zero
-        uid = self.controller.active_uid
-        if uid:
-            user = read_user(uid)
-            if user and user.get("type") == "nonmember":
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                print(f"INFO: Guest account water balance reset to zero (manual stop) for UID: {uid}")
         
         # Cancel all jobs
         if self._water_job:
@@ -2923,7 +2925,7 @@ class WaterScreen(tk.Frame):
             self.after_cancel(self._water_nocup_job)
             self._water_nocup_job = None
             
-        self.debug_var.set("Session stopped manually - Guest balance reset")
+        self.debug_var.set("Session stopped manually")
         self.controller.show_frame(MainScreen)
 
 # ----------------- Run App -----------------

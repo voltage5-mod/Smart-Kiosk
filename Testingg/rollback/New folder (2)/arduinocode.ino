@@ -26,10 +26,9 @@ int countdownValue = 3;
 float pulsesPerLiter = 450.0;
 
 // ---------------- COIN CREDIT SETTINGS ----------------
-// Updated coin pulse patterns - make them more distinct
-int coin1P_pulses = 1;    // ₱1 = 1 pulse
-int coin5P_pulses = 3;    // ₱5 = 3 pulses  
-int coin10P_pulses = 5;   // ₱10 = 5 pulses
+int coin1P_pulses = 1;
+int coin5P_pulses = 3;
+int coin10P_pulses = 5;
 
 int creditML_1P  = 50;   // ✔ 1 peso = 50 ml
 int creditML_5P  = 250;  // ✔ 5 peso = 250 ml
@@ -259,28 +258,23 @@ void processCoinPulses() {
   coinPulseCount = 0;
   coinValidationActive = false;
 
-  // Enhanced coin validation with better matching
+  // Enhanced coin validation with stricter matching
   int coinValue = 0;
   int addedML = 0;
   
-  // Use exact matching with better tolerance for common patterns
-  if (pulses >= 1 && pulses <= 2) {
-    // ₱1 coin: 1-2 pulses (allowing some tolerance)
+  if (pulses == coin1P_pulses) {
     coinValue = 1;
     addedML = creditML_1P;
-  } else if (pulses >= 3 && pulses <= 4) {
-    // ₱5 coin: 3-4 pulses (allowing some tolerance)
+  } else if (pulses == coin5P_pulses) {
     coinValue = 5;
     addedML = creditML_5P;
-  } else if (pulses >= 5 && pulses <= 6) {
-    // ₱10 coin: 5-6 pulses (allowing some tolerance)
+  } else if (pulses == coin10P_pulses) {
     coinValue = 10;
     addedML = creditML_10P;
   } else {
     // Invalid coin pattern - log but don't add credit
     Serial.print("Unknown coin pattern: ");
-    Serial.print(pulses);
-    Serial.println(" pulses");
+    Serial.println(pulses);
     return;
   }
 
@@ -310,12 +304,6 @@ void handleSerialCommand() {
     resetSystem();
   else if (cmd.equalsIgnoreCase("STATUS"))
     printStatus();
-  else if (cmd.equalsIgnoreCase("TEST_COIN_1"))
-    simulateCoin(1);
-  else if (cmd.equalsIgnoreCase("TEST_COIN_5"))
-    simulateCoin(5);
-  else if (cmd.equalsIgnoreCase("TEST_COIN_10"))
-    simulateCoin(10);
   else if (cmd.startsWith("CALIBRATE")) {
     // Calibration command format: CALIBRATE 450.0
     int spaceIndex = cmd.indexOf(' ');
@@ -332,46 +320,12 @@ void handleSerialCommand() {
   }
 }
 
-void simulateCoin(int coinValue) {
-  int pulses = 0;
-  int addedML = 0;
-  
-  switch(coinValue) {
-    case 1:
-      pulses = coin1P_pulses;
-      addedML = creditML_1P;
-      break;
-    case 5:
-      pulses = coin5P_pulses;
-      addedML = creditML_5P;
-      break;
-    case 10:
-      pulses = coin10P_pulses;
-      addedML = creditML_10P;
-      break;
-    default:
-      return;
-  }
-  
-  creditML += addedML;
-  Serial.print("TEST Coin: pulses=");
-  Serial.print(pulses);
-  Serial.print(", value=P");
-  Serial.print(coinValue);
-  Serial.print(", added=");
-  Serial.print(addedML);
-  Serial.print("mL, total=");
-  Serial.print(creditML);
-  Serial.println("mL");
-}
-
 void printStatus() {
   Serial.println("=== SYSTEM STATUS ===");
   Serial.print("Credit: "); Serial.print(creditML); Serial.println(" mL");
   Serial.print("Dispensing: "); Serial.println(dispensing ? "YES" : "NO");
   Serial.print("Cup Detected: "); Serial.println(cupDetected ? "YES" : "NO");
   Serial.print("Countdown Active: "); Serial.println(countdownActive ? "YES" : "NO");
-  Serial.print("Coin Pulse Count: "); Serial.println(coinPulseCount);
   Serial.print("Flow Pulses: "); Serial.println(flowPulseCount);
   Serial.print("Pulses/Liter: "); Serial.println(pulsesPerLiter);
   Serial.println("===================");

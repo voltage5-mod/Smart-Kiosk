@@ -228,8 +228,15 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
+  // DEBUG: Show what we're calculating
+  Serial.print("DEBUG: Starting dispense - ML: ");
+  Serial.print(ml);
+  Serial.print(", PulsesPerLiter: ");
+  Serial.print(pulsesPerLiter);
+  Serial.print(", TargetPulses: ");
+  Serial.println(targetPulses);
+  
   // DYNAMIC time estimation based on actual flow rate
-  // Your actual flow rate: 250mL in ~8 seconds = ~31.25 mL/second
   float flowRateMLperSecond = 31.25; // Adjust this based on your calibration
   int estimatedSeconds = (int)(ml / flowRateMLperSecond);
   
@@ -248,6 +255,9 @@ void startDispense(int ml) {
   Serial.print(ml);
   Serial.print(",");
   Serial.println(estimatedSeconds);
+  
+  // DEBUG: Confirm animation command was sent
+  Serial.println("DEBUG: ANIMATION_START command sent to Python");
 }
 
 void handleDispensing() {

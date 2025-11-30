@@ -219,6 +219,8 @@ class ArduinoListener:
         # Skip empty lines
         if not line.strip():
             return
+ # DEBUG: Log every line to see what's coming through
+        print(f"[ARDUINO_DEBUG] {line}")
 
         # Handle animation start command
         if "ANIMATION_START:" in line:

@@ -188,6 +188,7 @@ void handleCoin() {
 
     creditML += addedML;
 
+    // ALWAYS send coin event regardless of mode
     Serial.print("Coin accepted: pulses=");
     Serial.print(pulses);
     Serial.print(", value=P");
@@ -197,6 +198,10 @@ void handleCoin() {
     Serial.print("mL, total=");
     Serial.print(creditML);
     Serial.println("mL");
+
+    // Send a simple coin event for the Python listener
+    Serial.print("COIN_EVENT:");
+    Serial.println(coinValue);
 
     lastActivity = millis();
   }
@@ -230,9 +235,11 @@ void startDispense(int ml) {
   // Calculate exact animation time based on 41.70 mL/second flow rate
   float baseFlowRateMLperSecond = 41.70;
   float estimatedSeconds = ml / baseFlowRateMLperSecond;
+
+    estimatedSeconds += 4.0;
   
   // NO minimum time, NO extra seconds - exact timing only
-  int animationSeconds = (int)estimatedSeconds;
+   int animationSeconds = (int)(estimatedSeconds + 0.5f); 
   
   // FIXED: Send clean animation command FIRST, then debug messages
   Serial.print("ANIMATION_START:");

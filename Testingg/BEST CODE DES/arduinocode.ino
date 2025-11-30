@@ -19,11 +19,11 @@ float pulsesPerLiter = 450.0;   // will be overwritten by EEPROM
 
 // ---------------- COIN CREDIT SETTINGS ----------------
 // UPDATED: Coin acceptor sends peso value as pulse count
-int coin1P_pulses = 1;    // ₱1 = 1 pulse
+int coin1P_pulses = 1;    // ₱1 = 1 spulse
 int coin5P_pulses = 5;    // ₱5 = 5 pulses (matches peso value)
 int coin10P_pulses = 10;  // ₱10 = 10 pulses (matches peso value)
 
-int creditML_1P = 100;
+int creditML_1P = 50;
 int creditML_5P = 250;
 int creditML_10P = 500;
 
@@ -218,7 +218,6 @@ void startDispense(int ml) {
 
   // Accurate target pulses (pure formula)
   targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
-
   startFlowCount = flowPulseCount;
 
   // Flow stabilization for horizontal sensor
@@ -228,9 +227,31 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
-  Serial.print("Dispense started. Target: ");
-  Serial.print(targetPulses);
-  Serial.println(" pulses");
+  // Calculate exact animation time based on 41.70 mL/second flow rate
+  float baseFlowRateMLperSecond = 41.70;
+  float estimatedSeconds = ml / baseFlowRateMLperSecond;
+
+    estimatedSeconds += 4.0;
+  
+  // NO minimum time, NO extra seconds - exact timing only
+   int animationSeconds = (int)(estimatedSeconds + 0.5f); 
+  
+  // FIXED: Send clean animation command FIRST, then debug messages
+  Serial.print("ANIMATION_START:");
+  Serial.print(ml);
+  Serial.print(",");
+  Serial.println(animationSeconds);
+  
+  // Small delay to ensure the animation command is sent completely
+  delay(50);
+  
+  // Then send debug messages separately
+  Serial.print("DEBUG: Starting dispense - ML: ");
+  Serial.print(ml);
+  Serial.print(", Flow Rate: ");
+  Serial.print(baseFlowRateMLperSecond);
+  Serial.print(" mL/s, ExactSeconds: ");
+  Serial.println(animationSeconds);
 }
 
 void handleDispensing() {

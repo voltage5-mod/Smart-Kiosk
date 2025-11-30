@@ -23,7 +23,7 @@ int coin1P_pulses = 1;    // ₱1 = 1 pulse
 int coin5P_pulses = 5;    // ₱5 = 5 pulses (matches peso value)
 int coin10P_pulses = 10;  // ₱10 = 10 pulses (matches peso value)
 
-int creditML_1P = 100;
+int creditML_1P = 50;
 int creditML_5P = 250;
 int creditML_10P = 500;
 

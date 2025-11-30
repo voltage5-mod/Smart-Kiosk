@@ -642,107 +642,114 @@ class KioskApp(tk.Tk):
             _do_totals()
 
     def _arduino_event_callback(self, event, value):
-        """Enhanced central dispatcher for ArduinoListener events with real-time UI updates."""
+        """Enhanced central dispatcher for ArduinoListener events with mode awareness."""
         print(f"DEBUG: Arduino event received: {event} = {value}")
         
         try:
-            # Handle COIN events centrally - FIXED: Now receives simple integer values
+            # Handle COIN events centrally
             if event == 'coin' and isinstance(value, int):
-                print(f"COIN DETECTED: P{value}")
+                print(f"COIN DETECTED: P{value} - Current mode: {self.current_frame}")
                 uid = self.active_uid
                 current_frame = getattr(self, 'current_frame', None)
                 
-                if uid:
-                    if current_frame in ('WaterScreen', 'SlotSelectScreen', 'ChargingScreen'):
-                        # Route coin to appropriate screen based on current context
-                        if current_frame == 'WaterScreen':
-                            # Water coin handling (existing code)
-                            water_ml = {1: 50, 5: 250, 10: 500}.get(value, 0)
-                            
-                            if water_ml > 0:
-                                # UPDATE BALANCE FIRST (IMMEDIATELY)
-                                user = read_user(uid)
-                                if user:
-                                    if user.get("type") == "member":
-                                        current_balance = user.get("water_balance", 0) or 0
-                                        new_balance = current_balance + water_ml
-                                        write_user(uid, {"water_balance": new_balance})
-                                        print(f"Updated member water balance: {current_balance} + {water_ml} = {new_balance}mL")
-                                    else:
-                                        current_balance = user.get("temp_water_time", 0) or 0
-                                        new_balance = current_balance + water_ml
-                                        write_user(uid, {"temp_water_time": new_balance})
-                                        print(f"Updated guest water balance: {current_balance} + {water_ml} = {new_balance}mL")
-                                    
-                                    # IMMEDIATELY update WaterScreen display
-                                    ws = self.frames.get(WaterScreen)
-                                    if ws:
-                                        try:
-                                            ws.time_var.set(str(new_balance))
-                                            if new_balance > 0:
-                                                ws.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
-                                            else:
-                                                ws.status_lbl.config(text="Insert coins to buy water")
-                                            ws.update_idletasks()
-                                        except Exception as e:
-                                            print(f"Error updating WaterScreen UI: {e}")
-                                
-                                # THEN show the coin popup (after UI is updated)
-                                self.show_coin_popup(uid, peso=value, added_ml=water_ml, total_ml=new_balance)
-                        else:
-                            # Charging coin handling - NEW CODE
-                            charging_seconds = {1: 60, 5: 300, 10: 600}.get(value, 0)
-                            if charging_seconds > 0:
-                                # Update charging balance
-                                user = read_user(uid)
-                                current_balance = user.get("charge_balance", 0) or 0
-                                new_balance = current_balance + charging_seconds
-                                write_user(uid, {"charge_balance": new_balance})
-                                
-                                # Update UI if on charging screen
-                                if current_frame == 'ChargingScreen':
-                                    cs = self.frames.get(ChargingScreen)
-                                    if cs:
-                                        try:
-                                            cs.time_var.set(str(new_balance))
-                                            cs.update_idletasks()
-                                        except Exception as e:
-                                            print(f"Error updating ChargingScreen UI: {e}")
-                                elif current_frame == 'SlotSelectScreen':
-                                    # Refresh slot select screen to show updated balance
-                                    ss = self.frames.get(SlotSelectScreen)
-                                    if ss:
-                                        try:
-                                            ss.refresh()
-                                        except Exception as e:
-                                            print(f"Error updating SlotSelectScreen UI: {e}")
-                                
-                                print(f"Updated charging balance: {current_balance} + {charging_seconds} = {new_balance}s")
-                                
-                                # Show popup with charging time
-                                mins = charging_seconds // 60
-                                secs = charging_seconds % 60
-                                self.show_coin_popup(uid, peso=value, added_ml=f"{mins}m {secs}s", total_ml=f"{new_balance//60}m {new_balance%60}s")
+                # CRITICAL FIX: Only process coins if user is in a specific service screen
+                if uid and current_frame in ('WaterScreen', 'SlotSelectScreen', 'ChargingScreen'):
+                    if current_frame == 'WaterScreen':
+                        # Water coin handling
+                        water_ml = {1: 50, 5: 250, 10: 500}.get(value, 0)
                         
-                        # REFRESH ALL USER INFO (including top bar)
-                        self.refresh_all_user_info()
+                        if water_ml > 0:
+                            # UPDATE WATER BALANCE
+                            user = read_user(uid)
+                            if user:
+                                if user.get("type") == "member":
+                                    current_balance = user.get("water_balance", 0) or 0
+                                    new_balance = current_balance + water_ml
+                                    write_user(uid, {"water_balance": new_balance})
+                                    print(f"Updated member water balance: {current_balance} + {water_ml} = {new_balance}mL")
+                                else:
+                                    current_balance = user.get("temp_water_time", 0) or 0
+                                    new_balance = current_balance + water_ml
+                                    write_user(uid, {"temp_water_time": new_balance})
+                                    print(f"Updated guest water balance: {current_balance} + {water_ml} = {new_balance}mL")
+                                
+                                # Update WaterScreen display
+                                ws = self.frames.get(WaterScreen)
+                                if ws:
+                                    try:
+                                        ws.time_var.set(str(new_balance))
+                                        if new_balance > 0:
+                                            ws.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
+                                        else:
+                                            ws.status_lbl.config(text="Insert coins to buy water")
+                                        ws.update_idletasks()
+                                    except Exception as e:
+                                        print(f"Error updating WaterScreen UI: {e}")
+                            
+                            # Show coin popup
+                            self.show_coin_popup(uid, peso=value, added_ml=water_ml, total_ml=new_balance)
+                    
+                    else:  # Charging mode (SlotSelectScreen or ChargingScreen)
+                        # Charging coin handling
+                        charging_seconds = {1: 120, 5: 600, 10: 1200}.get(value, 0)  # 2min, 10min, 20min
+                        
+                        if charging_seconds > 0:
+                            # Update charging balance
+                            user = read_user(uid)
+                            current_balance = user.get("charge_balance", 0) or 0
+                            new_balance = current_balance + charging_seconds
+                            write_user(uid, {"charge_balance": new_balance})
+                            
+                            # Update UI
+                            if current_frame == 'ChargingScreen':
+                                cs = self.frames.get(ChargingScreen)
+                                if cs:
+                                    try:
+                                        cs.time_var.set(str(new_balance))
+                                        cs.update_idletasks()
+                                    except Exception as e:
+                                        print(f"Error updating ChargingScreen UI: {e}")
+                            elif current_frame == 'SlotSelectScreen':
+                                ss = self.frames.get(SlotSelectScreen)
+                                if ss:
+                                    try:
+                                        ss.refresh()
+                                    except Exception as e:
+                                        print(f"Error updating SlotSelectScreen UI: {e}")
+                            
+                            print(f"Updated charging balance: {current_balance} + {charging_seconds} = {new_balance}s")
+                            
+                            # Show popup with charging time
+                            mins = new_balance // 60
+                            secs = new_balance % 60
+                            added_mins = charging_seconds // 60
+                            self.show_coin_popup(uid, peso=value, added_ml=f"{added_mins} minutes", total_ml=f"{mins}m {secs}s")
                 
+                else:
+                    # Coin inserted but not in a service screen - ignore or show message
+                    print(f"INFO: Coin P{value} ignored - not in service screen. Current: {current_frame}")
+                    if uid:
+                        self.show_coin_popup(uid, peso=value, added_ml="Select service first", total_ml="")
+                    
+                # REFRESH ALL USER INFO (including top bar)
+                self.refresh_all_user_info()
                 return  # Don't route coin events to screens
             
-            # Route countdown events to WaterScreen
-            elif event in ['countdown', 'countdown_end', 'cup_detected',
-               'dispense_start', 'dispense_done', 'animation_start']:
-
-                # Water-related events - forward to WaterScreen
-                ws = self.frames.get(WaterScreen)
-                if ws and hasattr(ws, 'handle_arduino_event'):
-                    try:
-                        ws.handle_arduino_event(event, value)
-                    except Exception as e:
-                        print(f"ERROR in WaterScreen event handler: {e}")
+            # Route water-specific events to WaterScreen only
+            elif event in ['countdown', 'countdown_end', 'cup_detected', 'dispense_start', 'dispense_done', 'animation_start']:
+                # Only forward to WaterScreen if we're actually in water mode
+                if self.current_frame == 'WaterScreen':
+                    ws = self.frames.get(WaterScreen)
+                    if ws and hasattr(ws, 'handle_arduino_event'):
+                        try:
+                            ws.handle_arduino_event(event, value)
+                        except Exception as e:
+                            print(f"ERROR in WaterScreen event handler: {e}")
+                    else:
+                        print(f"WARN: WaterScreen not available for event: {event}")
                 else:
-                    print(f"WARN: WaterScreen not available for event: {event}")
-                    
+                    print(f"INFO: Water event '{event}' ignored - not in WaterScreen mode")
+                        
             else:
                 print(f"INFO: Unhandled Arduino event type: {event} = {value}")
                 
@@ -750,30 +757,35 @@ class KioskApp(tk.Tk):
             print(f"ERROR in Arduino event dispatcher: {e}")
 
     def show_frame(self, cls):
-        # record current frame name for context (used by coin popups)
+        # Record current frame name for context
         try:
             self.current_frame = cls.__name__
         except Exception:
             self.current_frame = None
         frame = self.frames[cls]
         
-        # Safe refresh - only if the frame has a refresh method
+        # Safe refresh
         if hasattr(frame, "refresh"):
             try:
                 frame.refresh()
             except Exception as e:
                 print(f"WARN: Error refreshing {cls.__name__}: {e}")
                 
-        # FIXED: Arduino mode switching - Keep Arduino in WATER mode for consistent coin processing
+        # FIXED: Set Arduino mode based on current screen
         if self.arduino_available:
             try:
-                # Always keep Arduino in WATER mode for consistent coin processing
-                # Both water and charging screens need coin events processed the same way
-                if cls.__name__ in ('WaterScreen', 'SlotSelectScreen', 'ChargingScreen'):
+                if cls.__name__ == 'WaterScreen':
+                    # Water mode: enable cup sensor and water dispensing
                     if self.send_arduino_command('MODE WATER'):
-                        print('INFO: Arduino in WATER mode for coin processing')
+                        print('INFO: Arduino in WATER mode - cup sensor ENABLED')
                     else:
-                        print('WARN: Failed to set Arduino mode')
+                        print('WARN: Failed to set Arduino to WATER mode')
+                else:
+                    # Any other mode: disable cup sensor
+                    if self.send_arduino_command('MODE CHARGING'):
+                        print('INFO: Arduino in CHARGING mode - cup sensor DISABLED')
+                    else:
+                        print('WARN: Failed to set Arduino to CHARGING mode')
             except Exception as e:
                 print(f'ERROR during Arduino mode switch: {e}')
                 
@@ -879,14 +891,14 @@ class ScanScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def refresh(self):
-        # FIXED: Removed the problematic user_info refresh call
-        # self.user_info.refresh()  # This line was causing the AttributeError
-        
         # Clear any existing messages
         self.info.config(text="")
         
         # Test Arduino connection if needed
         self.test_arduino_connection()
+        
+        # Clear the entry field when returning to scan screen
+        self.uid_entry.delete(0, tk.END)
         
     def test_arduino_connection(self):
         """Test Arduino connection status"""
@@ -1083,7 +1095,7 @@ class UserInfoFrame(tk.Frame):
         # show Guest if non-member
         name = user.get("name", "Guest") if user.get("type") == "member" else "Guest"
         sid = user.get("student_id", "")
-        # For members, show water_balance; for non-members, show any temporary purchased water (persisted as temp_water_time)
+        # For members, show water_balance; for non-members, show any temporary purchased water
         if user.get("type") == "member":
             wbal = user.get("water_balance", None)
         else:
@@ -1177,69 +1189,88 @@ class MainScreen(tk.Frame):
                 scan_frame.tkraise()
 
     def refresh(self):
+        # refresh user info and slot statuses
         self.user_info.refresh()
-        # show register button only if user exists and is non-member
-        uid = self.controller.active_uid
-        if uid:
-            user = read_user(uid)
-            # check registration request status to update button text/state
-            if FIREBASE_AVAILABLE:
-                try:
-                    req = db.reference(f"registration_requests/{uid}").get()
-                except Exception:
-                    req = None
-            else:
-                req = None
-
-            if user and user.get("type") == "nonmember":
-                self.register_small.lift()
-                # default to allowing registration request
-                btn_text = 'Register as Member'
-                btn_state = 'normal'
-                if req:
-                    status = req.get('status', '')
-                    if status == 'pending':
-                        btn_text = 'Registration Requested'
-                        btn_state = 'disabled'
-                    elif status == 'assigned':
-                        btn_text = 'Registered'
-                        btn_state = 'disabled'
-                    elif status in ('dismissed', 'rejected'):
-                        btn_text = 'Register as Member'
-                        btn_state = 'normal'
-                self.register_small.config(text=btn_text, state=btn_state)
-            else:
-                self.register_small.config(state="disabled")
-            # synchronize controller.active_slot with persisted value so the app knows
-            occ = user.get("occupied_slot", "none") if user else "none"
-            # normalize empty/None
-            if not occ:
-                occ = "none"
-            # set controller state for the active slot belonging to this user
-            if occ != "none":
-                self.controller.active_slot = occ
-                # show the unlock-my-slot shortcut
-                self.unlock_my_slot.config(text=f"Unlock {occ}")
-                try:
-                    # pack the button above the register_small button
-                    self.unlock_my_slot.pack(side="bottom", pady=4)
-                    # show end session button just above unlock button
-                    self.end_session_btn.pack(side="bottom", pady=4)
-                except Exception:
-                    pass
-            else:
-                # hide unlock button if not owning a slot
-                try:
-                    self.unlock_my_slot.pack_forget()
-                    self.end_session_btn.pack_forget()
-                except Exception:
-                    pass
-        else:
-            self.register_small.config(state="disabled")
+        
+        # Ensure Arduino is in CHARGING mode for slot selection
+        try:
+            if hasattr(self.controller, 'arduino_available') and self.controller.arduino_available:
+                self.controller.send_arduino_command('MODE CHARGING')
+        except Exception as e:
+            print(f"WARN: Could not set Arduino mode: {e}")
+        
+        # only show the top coin frame when no slot currently assigned to this session
+        if self.controller.active_slot:
             try:
-                self.unlock_my_slot.pack_forget()
+                self.coin_frame_top.pack_forget()
             except Exception:
                 pass
+        else:
+            try:
+                self.coin_frame_top.pack(pady=6)
+            except Exception:
+                pass
+        
+        # Update slot buttons with current status
+        for i in range(1, 5):
+            key = f"slot{i}"
+            slot = read_slot(key)
+            # Default values
+            text = f"Slot {i}\nFree"
+            color = "#2ecc71"  # green for free
+            try:
+                if slot is None:
+                    # keep defaults
+                    pass
+                else:
+                    status = slot.get("status", "inactive")
+                    cur = slot.get("current_user", "none")
+                    uid = self.controller.active_uid
+                    if cur != "none":
+                        # assigned to someone
+                        if cur == uid:
+                            # assigned to current user
+                            text = f"Slot {i}\nIn Use"
+                            color = "#95a5a6"  # neutral
+                        else:
+                            text = f"Slot {i}\nOccupied"
+                            color = "#e74c3c"  # red
+                    else:
+                        # no current_user assigned
+                        if status == "active":
+                            text = f"Slot {i}\nIn Use"
+                            color = "#e74c3c"
+                        else:
+                            text = f"Slot {i}\nFree"
+                            color = "#2ecc71"
+            except Exception:
+                # on any error keep defaults
+                text = f"Slot {i}\nFree"
+                color = "#2ecc71"
+            try:
+                self.slot_buttons[key].config(text=text, bg=color)
+            except Exception:
+                pass
+        
+        # show coin status for current user if any (charging balance)
+        try:
+            uid = self.controller.active_uid
+            if uid:
+                user = read_user(uid)
+                if user:
+                    charge_balance = user.get("charge_balance", 0) or 0
+                    if charge_balance > 0:
+                        mins = charge_balance // 60
+                        secs = charge_balance % 60
+                        self.coin_status_lbl.config(text=f"Charging balance: {mins}m {secs}s")
+                    else:
+                        self.coin_status_lbl.config(text="Insert coins to add charging time")
+                else:
+                    self.coin_status_lbl.config(text="")
+            else:
+                self.coin_status_lbl.config(text="")
+        except Exception:
+            pass
 
     def _end_charging_session(self):
         """End charging session for the currently logged-in user.
@@ -2704,10 +2735,21 @@ class WaterScreen(tk.Frame):
             self.debug_var.set(f"Arduino: Error - {str(e)}")
 
     def refresh(self):
-        """Update WaterScreen display with current balance."""
+        """Update WaterScreen display with current balance and set WATER mode."""
         try:
+            # Set Arduino to WATER mode when this screen is shown
+            try:
+                if hasattr(self.controller, 'arduino_available') and self.controller.arduino_available:
+                    if self.controller.send_arduino_command('MODE WATER'):
+                        print('INFO: WaterScreen - Arduino set to WATER mode')
+                        self.debug_var.set("Arduino: WATER mode - Ready")
+                    else:
+                        self.debug_var.set("Arduino: Failed to set WATER mode")
+            except Exception as e:
+                print(f"WARN: Could not set Arduino mode: {e}")
+                self.debug_var.set(f"Arduino error: {e}")
+            
             self.user_info.refresh()
-            self.test_arduino_connection()
             
             uid = self.controller.active_uid
             if not uid:
@@ -2719,7 +2761,7 @@ class WaterScreen(tk.Frame):
             if user.get("type") == "member":
                 wb = user.get("water_balance", 0) or 0
                 self.time_var.set(str(wb))
-                status_text = f"Balance: {wb}mL - Place cup to start" if wb > 0 else "No water balance"
+                status_text = f"Balance: {wb}mL - Place cup to start" if wb > 0 else "No water balance - Insert coins"
                 self.status_lbl.config(text=status_text)
             else:
                 temp = user.get("temp_water_time", 0) or 0

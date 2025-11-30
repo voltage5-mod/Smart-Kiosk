@@ -2477,8 +2477,8 @@ class WaterScreen(tk.Frame):
         self.debug_var.set(f"Animation: {total_steps} steps, {step_delay_ms}ms each, {step_size_ml}mL/step")
         self.update_idletasks()
 
-        print(f"Starting animation: {total_ml}mL → 0mL in {total_steps} steps "
-              f"({step_size_ml}mL/step, {step_delay_ms}ms/step) over {total_seconds}s")
+        print(f"Starting animation: {total_ml}mL -> 0mL in {total_steps} steps "
+        f"({step_size_ml}mL/step, {step_delay_ms}ms/step) over {total_seconds}s")
 
         # Kick off the tick and store job id right away for safe cancellation
         try:

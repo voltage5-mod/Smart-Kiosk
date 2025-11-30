@@ -225,13 +225,18 @@ class ArduinoListener:
         # Handle animation start command
         if "ANIMATION_START:" in line:
             try:
-                # Format: ANIMATION_START:250,8
-                anim_match = re.search(r'ANIMATION_START:(\d+),(\d+)', line)
-                if anim_match:
-                    total_ml = int(anim_match.group(1))
-                    total_seconds = int(anim_match.group(2))
+                # Extract the ANIMATION_START part only
+                anim_part = line.split("ANIMATION_START:")[1]
+                # Take only the part before any other text (like "DEBUG")
+                anim_part = anim_part.split("DEBUG")[0].strip()
+                
+                # Now parse the clean animation parameters
+                parts = anim_part.split(",")
+                if len(parts) >= 2:
+                    total_ml = int(parts[0])
+                    total_seconds = int(parts[1])
                     
-                    self.logger.info(f"Animation start: {total_ml}mL in {total_seconds} seconds")
+                    self.logger.info(f"Animation start parsed: {total_ml}mL in {total_seconds} seconds")
                     
                     # Send animation parameters
                     animation_data = {
@@ -239,10 +244,14 @@ class ArduinoListener:
                         "total_seconds": total_seconds
                     }
                     self._dispatch_event("animation_start", animation_data, line)
+                else:
+                    self.logger.warning(f"Invalid ANIMATION_START format: {anim_part}")
+                    
                 return
             except (ValueError, IndexError, AttributeError) as e:
                 self.logger.warning(f"Could not parse animation parameters: {line} - {e}")
                 return
+
 
         # Handle COIN events - IMPROVED parsing
         if "Coin accepted: pulses=" in line:

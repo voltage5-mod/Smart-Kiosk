@@ -227,24 +227,25 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
-  // Calculate exact animation time wbased on 41.70 mL/second flow rate
+  // Calculate exact animation time based on 41.70 mL/second flow rate
   float baseFlowRateMLperSecond = 41.70;
   float estimatedSeconds = ml / baseFlowRateMLperSecond;
   
   // NO minimum time, NO extra seconds - exact timing only
   int animationSeconds = (int)estimatedSeconds;
   
+  // FIXED: Send animation command FIRST, then debug messages
+  Serial.print("ANIMATION_START:");
+  Serial.print(ml);
+  Serial.print(",");
+  Serial.println(animationSeconds);
+  
+  // Then send debug messages
   Serial.print("DEBUG: Starting dispense - ML: ");
   Serial.print(ml);
   Serial.print(", Flow Rate: ");
   Serial.print(baseFlowRateMLperSecond);
   Serial.print(" mL/s, ExactSeconds: ");
-  Serial.println(animationSeconds);
-  
-  // Send exact animation paarameters to Python
-  Serial.print("ANIMATION_START:");
-  Serial.print(ml);
-  Serial.print(",");
   Serial.println(animationSeconds);
   
   Serial.println("DEBUG: ANIMATION_START command sent to Python");

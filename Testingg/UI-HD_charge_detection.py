@@ -2512,7 +2512,7 @@ class WaterScreen(tk.Frame):
         self.status_lbl.config(text=message)
         self.debug_var.set("Dispensing complete")
         
-        # Update balance to zero with guest account reset
+        # CRITICAL FIX: Always reset balance to zero after dispensing
         uid = self.controller.active_uid
         if uid:
             user = read_user(uid)
@@ -2522,8 +2522,12 @@ class WaterScreen(tk.Frame):
                 self.temp_water_time = 0
                 print(f"INFO: Guest account water balance reset to zero for UID: {uid}")
             else:
-                # MEMBER ACCOUNT: Update balance normally
-                write_user(uid, {"water_balance": 0})
+                # MEMBER ACCOUNT: Update balance normally (subtract what was dispensed)
+                current_balance = user.get("water_balance", 0) or 0
+                # Calculate what was actually dispensed from animation
+                dispensed_ml = self.animation_total_ml if hasattr(self, 'animation_total_ml') else 0
+                new_balance = max(0, current_balance - dispensed_ml)
+                write_user(uid, {"water_balance": new_balance})
         
         # Update UI immediately
         self.time_var.set("0")

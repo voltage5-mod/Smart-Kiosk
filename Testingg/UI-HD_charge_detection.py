@@ -2640,7 +2640,7 @@ class WaterScreen(tk.Frame):
         self.debug_var.set("Session stopped manually - Guest balance reset")
         self.controller.show_frame(MainScreen)
 
-# ----------------- Run App -----------------
+# ----------------- Rund App -----------------
 if __name__ == "__main__":
     app = KioskApp()
     app.protocol("WM_DELETE_WINDOW", lambda: (app.cleanup(), app.destroy()))

@@ -228,26 +228,9 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
-  // DYNAMIC time estimation based on actual flow rate
-  // Your actual flow rate: 250mL in ~8 seconds = ~31.25 mL/second
-  float flowRateMLperSecond = 31.25; // Adjust this based on your calibration
-  int estimatedSeconds = (int)(ml / flowRateMLperSecond);
-  
-  // Add minimum time for small amounts and cap maximum time
-  estimatedSeconds = max(3, estimatedSeconds); // Minimum 3 seconds
-  estimatedSeconds = min(estimatedSeconds, 120); // Maximum 120 seconds (2 minutes)
-  
   Serial.print("Dispense started. Target: ");
   Serial.print(targetPulses);
-  Serial.print(" pulses, Estimated: ");
-  Serial.print(estimatedSeconds);
-  Serial.println(" seconds");
-  
-  // Send the animation parameters to Python
-  Serial.print("ANIMATION_START:");
-  Serial.print(ml);
-  Serial.print(",");
-  Serial.println(estimatedSeconds);
+  Serial.println(" pulses");
 }
 
 void handleDispensing() {

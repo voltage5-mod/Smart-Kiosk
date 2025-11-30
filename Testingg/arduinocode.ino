@@ -241,7 +241,7 @@ void startDispense(int ml) {
   Serial.print(" mL/s, ExactSeconds: ");
   Serial.println(animationSeconds);
   
-  // Send exact animation parameters to Python
+  // Send exact animation paarameters to Python
   Serial.print("ANIMATION_START:");
   Serial.print(ml);
   Serial.print(",");

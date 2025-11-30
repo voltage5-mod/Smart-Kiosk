@@ -2279,9 +2279,6 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
 # --------- Screen: Water ----------
-# --------- Screen: Water ----------
-# --------- Screen: Water ----------
-# --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#2980b9")
@@ -2331,7 +2328,7 @@ class WaterScreen(tk.Frame):
         self.animation_total_ml = 0
         self.animation_total_seconds = 0
         self.animation_steps = 0
-        self.animation_step_size = 0
+        self.animation_step_size = 10  # FIXED 10mL steps
         self.animation_step_delay = 0
         self.animation_current_ml = 0
         
@@ -2366,14 +2363,21 @@ class WaterScreen(tk.Frame):
                 self.debug_var.set("Dispensing started")
                 print("DISPENSE_START: Water flow started")
                 
-            # NEW: Start smooth animation
+            # ANIMATION START - UPDATED
             elif event == 'animation_start':
-                animation_data = value
-                total_ml = animation_data["total_ml"]
-                total_seconds = animation_data["total_seconds"]
-                
-                self._start_smooth_animation(total_ml, total_seconds)
-                print(f"ANIMATION_START: {total_ml}mL in {total_seconds} seconds")
+                # value should be a dict with total_ml and total_seconds
+                if isinstance(value, dict):
+                    total_ml = value.get("total_ml", 0)
+                    total_seconds = value.get("total_seconds", 0)
+                    
+                    if total_ml > 0 and total_seconds > 0:
+                        self._start_smooth_animation(total_ml, total_seconds)
+                        print(f"ANIMATION_START: {total_ml}mL in {total_seconds} seconds")
+                    else:
+                        print(f"Invalid animation parameters: {value}")
+                else:
+                    print(f"Unexpected animation data type: {type(value)}")
+                return
                 
             elif event == 'dispense_done':
                 dispensed_ml = value
@@ -2410,54 +2414,38 @@ class WaterScreen(tk.Frame):
             self.debug_var.set(f"Event error: {e}")
 
     def _start_smooth_animation(self, total_ml, total_seconds):
-        """Start smooth countdown animation with dynamic calculations for any amount."""
+        """Start smooth countdown animation with FIXED 10mL steps and exact timing."""
         
-        # DYNAMIC step calculation based on total amount and time
-        # For small amounts (50-200mL): use smaller steps for smoother animation
-        # For large amounts (200+ mL): use larger steps to avoid too many updates
+        # FIXED step size of 10mL
+        step_size_ml = 10
         
-        if total_ml <= 100:
-            # Small amounts: 5mL steps for smooth animation
-            step_size_ml = 5
-            min_steps = 10  # Ensure at least 10 steps even for small amounts
-        elif total_ml <= 300:
-            # Medium amounts: 10mL steps
-            step_size_ml = 10
-            min_steps = 15
-        else:
-            # Large amounts: 20mL steps to avoid too many updates
-            step_size_ml = 20
-            min_steps = 20
+        # Calculate total steps (always round up to ensure we reach 0)
+        total_steps = (total_ml + step_size_ml - 1) // step_size_ml  # Ceiling division
         
-        # Calculate total steps
-        total_steps = max(min_steps, total_ml // step_size_ml)
-        
-        # Adjust step size to ensure we end exactly at 0
-        actual_step_size = total_ml / total_steps
-        
-        # Calculate step delay based on total time
-        step_delay_ms = int((total_seconds * 1000) / total_steps)
+        # Calculate step delay based on total time - ensure exact timing
+        total_time_ms = total_seconds * 1000  # Convert to milliseconds
+        step_delay_ms = int(total_time_ms / total_steps)
         
         # Store animation parameters
         self.animation_total_ml = total_ml
         self.animation_total_seconds = total_seconds
         self.animation_steps = total_steps
-        self.animation_step_size = actual_step_size  # Use calculated step size
+        self.animation_step_size = step_size_ml
         self.animation_step_delay = step_delay_ms
         self.animation_current_ml = total_ml
         self.animation_start_time = time.time()
         
         self.is_dispensing = True
         self.status_lbl.config(text=f"Dispensing... {total_ml}mL remaining")
-        self.debug_var.set(f"Animation: {total_steps} steps, {step_delay_ms}ms each, {actual_step_size:.1f}mL/step")
+        self.debug_var.set(f"Animation: {total_steps} steps, {step_delay_ms}ms each, {step_size_ml}mL/step")
         
-        print(f"Starting animation: {total_ml}mL → 0mL in {total_steps} steps ({actual_step_size:.1f}mL/step, {step_delay_ms}ms/step)")
+        print(f"Starting animation: {total_ml}mL → 0mL in {total_steps} steps ({step_size_ml}mL/step, {step_delay_ms}ms/step) over {total_seconds} seconds")
         
         # Start the animation
         self._animation_tick()
 
     def _animation_tick(self):
-        """Update the countdown animation."""
+        """Update the countdown animation with fixed 10mL steps."""
         if not self.is_dispensing or self.animation_current_ml <= 0:
             # Animation complete or stopped
             self.animation_job = None
@@ -2467,7 +2455,7 @@ class WaterScreen(tk.Frame):
         elapsed = time.time() - self.animation_start_time
         remaining_time = max(0, self.animation_total_seconds - elapsed)
         
-        # Update display
+        # Update display - decrement by fixed 10mL step
         self.animation_current_ml = max(0, self.animation_current_ml - self.animation_step_size)
         self.time_var.set(str(int(self.animation_current_ml)))
         
@@ -2477,7 +2465,7 @@ class WaterScreen(tk.Frame):
         else:
             self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining")
         
-        self.debug_var.set(f"Animation: {self.animation_current_ml:.1f}mL left")
+        self.debug_var.set(f"Animation: {self.animation_current_ml}mL left")
         
         # Force UI update
         self.update_idletasks()
@@ -2603,7 +2591,7 @@ class WaterScreen(tk.Frame):
             self.debug_var.set("ERROR: No user - Scan RFID first")
             return
             
-        add_ml = {1: 50, 5: 250, 10: 500}.get(amount, 0)
+        add_ml = {1: 100, 5: 250, 10: 500}.get(amount, 0)
         user = read_user(uid)
         
         if user.get("type") == "member":

@@ -69,7 +69,7 @@ void flowISR() {
   flowPulseCount++;
 }
 
-// ---------------- SETsUP ----------------
+// ---------------- SETUP ----------------
 void setup() {
   Serial.begin(115200);
 
@@ -218,7 +218,6 @@ void startDispense(int ml) {
 
   // Accurate target pulses (pure formula)
   targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
-
   startFlowCount = flowPulseCount;
 
   // Flow stabilization for horizontal sensor
@@ -228,35 +227,26 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
-  // DEBUG: Show what we're calculating
+  // Calculate exact animation time based on 41.70 mL/second flow rate
+  float baseFlowRateMLperSecond = 41.70;
+  float estimatedSeconds = ml / baseFlowRateMLperSecond;
+  
+  // NO minimum time, NO extra seconds - exact timing only
+  int animationSeconds = (int)estimatedSeconds;
+  
   Serial.print("DEBUG: Starting dispense - ML: ");
   Serial.print(ml);
-  Serial.print(", PulsesPerLiter: ");
-  Serial.print(pulsesPerLiter);
-  Serial.print(", TargetPulses: ");
-  Serial.println(targetPulses);
+  Serial.print(", Flow Rate: ");
+  Serial.print(baseFlowRateMLperSecond);
+  Serial.print(" mL/s, ExactSeconds: ");
+  Serial.println(animationSeconds);
   
-  // DYNAMIC time estimation based on actual flow rate
-  float flowRateMLperSecond = 31.25; // Adjust this based on your calibration
-  int estimatedSeconds = (int)(ml / flowRateMLperSecond);
-  
-  // Add minimum time for small amounts and cap maximum time
-  estimatedSeconds = max(3, estimatedSeconds); // Minimum 3 seconds
-  estimatedSeconds = min(estimatedSeconds, 120); // Maximum 120 seconds (2 minutes)
-  
-  Serial.print("Dispense started. Target: ");
-  Serial.print(targetPulses);
-  Serial.print(" pulses, Estimated: ");
-  Serial.print(estimatedSeconds);
-  Serial.println(" seconds");
-  
-  // Send the animation parameters to Python
+  // Send exact animation parameters to Python
   Serial.print("ANIMATION_START:");
   Serial.print(ml);
   Serial.print(",");
-  Serial.println(estimatedSeconds);
+  Serial.println(animationSeconds);
   
-  // DEBUG: Confirm animation command was sent
   Serial.println("DEBUG: ANIMATION_START command sent to Python");
 }
 

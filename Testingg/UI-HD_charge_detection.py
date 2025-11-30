@@ -2333,6 +2333,7 @@ class WaterScreen(tk.Frame):
         self.animation_step_size = 10  # FIXED 10mL steps
         self.animation_step_delay = 0
         self.animation_current_ml = 0
+        self.animation_dispensed_so_far = 0  # track amount dispensed so far
         
         # Test Arduino connection
         self.test_arduino_connection()
@@ -2365,14 +2366,17 @@ class WaterScreen(tk.Frame):
                 self.debug_var.set("Dispensing started")
                 print("DISPENSE_START: Water flow started")
                 
-            # ANIMATION START - UPDATED
             elif event == 'animation_start':
                 # value should be a dict with total_ml and total_seconds
                 if isinstance(value, dict):
-                    total_ml = value.get("total_ml", 0)
-                    total_seconds = value.get("total_seconds", 0)
+                    total_ml = int(value.get("total_ml", 0))
+                    total_seconds = int(value.get("total_seconds", 0))
                     
                     if total_ml > 0 and total_seconds > 0:
+                        # OPTIONAL: ensure the WaterScreen is visible so user sees animation
+                        # Uncomment next line if you want the UI to switch to water screen automatically
+                        # self.controller.show_frame(WaterScreen)
+
                         self._start_smooth_animation(total_ml, total_seconds)
                         print(f"ANIMATION_START: {total_ml}mL in {total_seconds} seconds")
                     else:
@@ -2382,21 +2386,20 @@ class WaterScreen(tk.Frame):
                 return
                 
             elif event == 'dispense_done':
-                dispensed_ml = value
-                # Stop any running animation
-                if self.animation_job:
-                    self.after_cancel(self.animation_job)
-                    self.animation_job = None
-                
+                dispensed_ml = 0
+                try:
+                    dispensed_ml = int(value) if isinstance(value, (int, str)) else self.animation_dispensed_so_far
+                except Exception:
+                    dispensed_ml = self.animation_dispensed_so_far
+                # Stop any running animation safely
+                self._stop_animation()
                 self._end_dispensing_complete(f"Dispensing completed: {dispensed_ml}mL")
                 print(f"DISPENSE_DONE: {dispensed_ml}mL dispensed")
                 
             elif event == 'cup_removed':
                 self.cup_present = False
                 # Stop animation if cup is removed
-                if self.animation_job:
-                    self.after_cancel(self.animation_job)
-                    self.animation_job = None
+                self._stop_animation()
                     
                 if self.is_dispensing:
                     self.status_lbl.config(text="Cup removed - Dispensing paused")
@@ -2415,19 +2418,48 @@ class WaterScreen(tk.Frame):
             print(f"ERROR in WaterScreen event handler: {e}")
             self.debug_var.set(f"Event error: {e}")
 
+    def _stop_animation(self):
+        """Cancel currently running animation job if any and mark dispensing stopped."""
+        try:
+            if self.animation_job:
+                try:
+                    self.after_cancel(self.animation_job)
+                except Exception:
+                    pass
+                self.animation_job = None
+            self.is_dispensing = False
+        except Exception as e:
+            print(f"Error stopping animation: {e}")
+
     def _start_smooth_animation(self, total_ml, total_seconds):
-        """Start smooth countdown animation with FIXED 10mL steps and exact timing."""
-        
+        """Start smooth countdown animation with robust scheduling and DB updates."""
+        # Cancel any existing animation first
+        self._stop_animation()
+
         # FIXED step size of 10mL
         step_size_ml = 10
-        
-        # Calculate total steps (always round up to ensure we reach 0)
+
+        # Calculate total steps (ceiling)
         total_steps = (total_ml + step_size_ml - 1) // step_size_ml  # Ceiling division
-        
-        # Calculate step delay based on total time - ensure exact timing
-        total_time_ms = total_seconds * 1000  # Convert to milliseconds
+        if total_steps <= 0:
+            print("Animation: no steps calculated, aborting.")
+            return
+
+        # Calculate step delay (ms)
+        total_time_ms = max(1, int(total_seconds * 1000))  # avoid zero
         step_delay_ms = int(total_time_ms / total_steps)
-        
+
+        # Enforce safe minimum delay (50ms) to avoid scheduling storm / UI starvation.
+        # Many displays can handle ~100-200ms per update; 50ms is a reasonable lower bound.
+        MIN_STEP_DELAY_MS = 50
+        if step_delay_ms < MIN_STEP_DELAY_MS:
+            # Recompute step size so we still cover total_ml with a safer delay
+            # New steps = total_time_ms // MIN_STEP_DELAY_MS (floor, at least 1)
+            safe_steps = max(1, total_time_ms // MIN_STEP_DELAY_MS)
+            step_size_ml = max(1, (total_ml + safe_steps - 1) // safe_steps)
+            total_steps = (total_ml + step_size_ml - 1) // step_size_ml
+            step_delay_ms = max(MIN_STEP_DELAY_MS, int(total_time_ms / total_steps))
+
         # Store animation parameters
         self.animation_total_ml = total_ml
         self.animation_total_seconds = total_seconds
@@ -2436,53 +2468,113 @@ class WaterScreen(tk.Frame):
         self.animation_step_delay = step_delay_ms
         self.animation_current_ml = total_ml
         self.animation_start_time = time.time()
-        
+        self.animation_dispensed_so_far = 0
+
         self.is_dispensing = True
-        self.status_lbl.config(text=f"Dispensing... {total_ml}mL remaining")
+        # Update UI
+        self.time_var.set(str(int(self.animation_current_ml)))
+        self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining")
         self.debug_var.set(f"Animation: {total_steps} steps, {step_delay_ms}ms each, {step_size_ml}mL/step")
-        
-        print(f"Starting animation: {total_ml}mL → 0mL in {total_steps} steps ({step_size_ml}mL/step, {step_delay_ms}ms/step) over {total_seconds} seconds")
-        
-        # Start the animation
-        self._animation_tick()
+        self.update_idletasks()
+
+        print(f"Starting animation: {total_ml}mL → 0mL in {total_steps} steps "
+              f"({step_size_ml}mL/step, {step_delay_ms}ms/step) over {total_seconds}s")
+
+        # Kick off the tick and store job id right away for safe cancellation
+        try:
+            # schedule first tick after the computed delay (so UI has time to render)
+            self.animation_job = self.after(self.animation_step_delay, self._animation_tick)
+        except Exception as e:
+            print(f"Error scheduling animation tick: {e}")
+            self.animation_job = None
+            self.is_dispensing = False
 
     def _animation_tick(self):
-        """Update the countdown animation with fixed 10mL steps."""
-        if not self.is_dispensing or self.animation_current_ml <= 0:
-            # Animation complete or stopped
+        """Update the countdown animation with fixed step and DB updates."""
+        try:
+            # Clear job id (we will re-set it if continuing)
             self.animation_job = None
-            return
-        
-        # Calculate remaining time for more accurate display
-        elapsed = time.time() - self.animation_start_time
-        remaining_time = max(0, self.animation_total_seconds - elapsed)
-        
-        # Update display - decrement by fixed 10mL step
-        self.animation_current_ml = max(0, self.animation_current_ml - self.animation_step_size)
-        self.time_var.set(str(int(self.animation_current_ml)))
-        
-        # Update status with time remaining
-        if remaining_time > 0:
-            self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining (~{int(remaining_time)}s)")
-        else:
-            self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining")
-        
-        self.debug_var.set(f"Animation: {self.animation_current_ml}mL left")
-        
-        # Force UI update
-        self.update_idletasks()
-        
-        # Schedule next update if not finished
-        if self.animation_current_ml > 0:
-            self.animation_job = self.after(self.animation_step_delay, self._animation_tick)
-        else:
-            # Animation complete
-            self.animation_job = None
-            self.status_lbl.config(text="Dispensing complete!")
-            self.debug_var.set("Animation complete")
-            
-            # Auto-return to main after completion
-            self.after(2000, lambda: self.controller.show_frame(MainScreen))
+
+            if not self.is_dispensing or self.animation_current_ml <= 0:
+                # Nothing to do
+                self._stop_animation()
+                return
+
+            # Decrement by step (but do not go negative)
+            step = int(self.animation_step_size)
+            prev_ml = self.animation_current_ml
+            self.animation_current_ml = max(0, self.animation_current_ml - step)
+            dispensed_this_tick = prev_ml - self.animation_current_ml
+            self.animation_dispensed_so_far += dispensed_this_tick
+
+            # Update UI immediately
+            self.time_var.set(str(int(self.animation_current_ml)))
+            elapsed = time.time() - self.animation_start_time
+            remaining_time = max(0, int(self.animation_total_seconds - elapsed))
+            if remaining_time > 0:
+                self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining (~{remaining_time}s)")
+            else:
+                self.status_lbl.config(text=f"Dispensing... {int(self.animation_current_ml)}mL remaining")
+            self.debug_var.set(f"Animation: {self.animation_current_ml}mL left")
+            self.update_idletasks()
+
+            # Persist partial balance updates so DB/UI stay consistent if interrupted:
+            try:
+                # For members subtract from persistent water_balance, for guests subtract from temp_water_time
+                uid = self.controller.active_uid
+                if uid:
+                    user = read_user(uid)
+                    if user and user.get("type") == "member":
+                        # optimistic local calculation: do not write on every tick to avoid DB spam
+                        # We'll write once at the end; for safety write every few steps (not implemented here)
+                        pass
+                    else:
+                        # guest: persist remaining temp_water_time so UI and DB reflect real-time
+                        write_user(uid, {"temp_water_time": int(self.animation_current_ml)})
+                        self.temp_water_time = int(self.animation_current_ml)
+                # (members are updated when dispensing completes)
+            except Exception as e:
+                print(f"Warning: failed to persist partial balance: {e}")
+
+            # Schedule next tick or finish
+            if self.animation_current_ml > 0:
+                # schedule next
+                try:
+                    self.animation_job = self.after(self.animation_step_delay, self._animation_tick)
+                except Exception as e:
+                    print(f"Error scheduling next animation tick: {e}")
+                    self.animation_job = None
+                    self.is_dispensing = False
+            else:
+                # Completed
+                self._stop_animation()
+                self.status_lbl.config(text="Dispensing complete!")
+                self.debug_var.set("Animation complete")
+                # Final DB updates / subtract dispensed amount for members
+                try:
+                    uid = self.controller.active_uid
+                    if uid:
+                        user = read_user(uid)
+                        if user and user.get("type") == "member":
+                            current_balance = user.get("water_balance", 0) or 0
+                            new_balance = max(0, int(current_balance - self.animation_dispensed_so_far))
+                            write_user(uid, {"water_balance": new_balance})
+                        else:
+                            # ensure guest is zeroed
+                            write_user(uid, {"temp_water_time": 0})
+                            self.temp_water_time = 0
+                except Exception as e:
+                    print(f"Error during final balance update: {e}")
+
+                # Update UI then return to main after short pause
+                self.time_var.set("0")
+                self.update_idletasks()
+                self.after(2000, lambda: self.controller.show_frame(MainScreen))
+
+        except Exception as e:
+            print(f"ERROR in _animation_tick: {e}")
+            self._stop_animation()
+            self.debug_var.set(f"Anim error: {e}")
 
     def _update_water_balance(self, new_balance):
         """Update water balance in database and UI"""
@@ -2505,9 +2597,7 @@ class WaterScreen(tk.Frame):
     def _end_dispensing_complete(self, message):
         """End dispensing session completely and reset guest balance to zero."""
         # Stop any running animation
-        if self.animation_job:
-            self.after_cancel(self.animation_job)
-            self.animation_job = None
+        self._stop_animation()
         
         self.is_dispensing = False
         self.cup_present = False
@@ -2524,12 +2614,14 @@ class WaterScreen(tk.Frame):
                 self.temp_water_time = 0
                 print(f"INFO: Guest account water balance reset to zero for UID: {uid}")
             else:
-                # MEMBER ACCOUNT: Update balance normally (subtract what was dispensed)
-                current_balance = user.get("water_balance", 0) or 0
-                # Calculate what was actually dispensed from animation
-                dispensed_ml = self.animation_total_ml if hasattr(self, 'animation_total_ml') else 0
-                new_balance = max(0, current_balance - dispensed_ml)
-                write_user(uid, {"water_balance": new_balance})
+                # MEMBER ACCOUNT: Update balance normally (subtract what was actually dispensed)
+                try:
+                    current_balance = user.get("water_balance", 0) or 0
+                    dispensed_ml = self.animation_dispensed_so_far if hasattr(self, 'animation_dispensed_so_far') else 0
+                    new_balance = max(0, int(current_balance - dispensed_ml))
+                    write_user(uid, {"water_balance": new_balance})
+                except Exception as e:
+                    print(f"Warning: couldn't update member balance: {e}")
         
         # Update UI immediately
         self.time_var.set("0")
@@ -2538,7 +2630,10 @@ class WaterScreen(tk.Frame):
         
         # Cancel any jobs
         if self._water_job:
-            self.after_cancel(self._water_job)
+            try:
+                self.after_cancel(self._water_job)
+            except Exception:
+                pass
             self._water_job = None
             
         # Auto-return to main after completion
@@ -2622,9 +2717,7 @@ class WaterScreen(tk.Frame):
         self.cup_present = False
         
         # Stop any running animation
-        if self.animation_job:
-            self.after_cancel(self.animation_job)
-            self.animation_job = None
+        self._stop_animation()
         
         # Reset guest balance to zero
         uid = self.controller.active_uid
@@ -2637,14 +2730,21 @@ class WaterScreen(tk.Frame):
         
         # Cancel all jobs
         if self._water_job:
-            self.after_cancel(self._water_job)
+            try:
+                self.after_cancel(self._water_job)
+            except Exception:
+                pass
             self._water_job = None
         if self._water_nocup_job:
-            self.after_cancel(self._water_nocup_job)
+            try:
+                self.after_cancel(self._water_nocup_job)
+            except Exception:
+                pass
             self._water_nocup_job = None
             
         self.debug_var.set("Session stopped manually - Guest balance reset")
         self.controller.show_frame(MainScreen)
+
 
 # ----------------- Rund App -----------------
 if __name__ == "__main__":

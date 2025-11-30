@@ -227,7 +227,7 @@ void startDispense(int ml) {
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
   
-  // Calculate exact animation time based on 41.70 mL/second flow rate
+  // Calculate exact animation time wbased on 41.70 mL/second flow rate
   float baseFlowRateMLperSecond = 41.70;
   float estimatedSeconds = ml / baseFlowRateMLperSecond;
   

@@ -19,7 +19,7 @@ float pulsesPerLiter = 450.0;   // will be overwritten by EEPROM
 
 // ---------------- COIN CREDIT SETTINGS ----------------
 // UPDATED: Coin acceptor sends peso value as pulse count
-int coin1P_pulses = 1;    // ₱1 = 1 pulse
+int coin1P_pulses = 1;    // ₱1 = 1 spulse
 int coin5P_pulses = 5;    // ₱5 = 5 pulses (matches peso value)
 int coin10P_pulses = 10;  // ₱10 = 10 pulses (matches peso value)
 

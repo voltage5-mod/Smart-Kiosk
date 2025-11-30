@@ -219,19 +219,31 @@ class ArduinoListener:
         # Skip empty lines
         if not line.strip():
             return
- # DEBUG: Log every line to see what's coming through
+            
+        # DEBUG: Log every line to see what's coming through
         print(f"[ARDUINO_DEBUG] {line}")
 
-        # Handle animation start command
+        # Handle animation start command - IMPROVED PARSING
         if "ANIMATION_START:" in line:
             try:
-                # Extract the ANIMATION_START part only
+                print(f"DEBUG: Found ANIMATION_START in line: {line}")
+                
+                # Extract everything after ANIMATION_START:
                 anim_part = line.split("ANIMATION_START:")[1]
+                print(f"DEBUG: Animation part: {anim_part}")
+                
                 # Take only the part before any other text (like "DEBUG")
                 anim_part = anim_part.split("DEBUG")[0].strip()
+                print(f"DEBUG: Clean animation part: {anim_part}")
+                
+                # Remove any trailing non-numeric characters
+                anim_part = re.sub(r'[^0-9,].*$', '', anim_part)
+                print(f"DEBUG: Final animation part: {anim_part}")
                 
                 # Now parse the clean animation parameters
                 parts = anim_part.split(",")
+                print(f"DEBUG: Split parts: {parts}")
+                
                 if len(parts) >= 2:
                     total_ml = int(parts[0])
                     total_seconds = int(parts[1])
@@ -246,12 +258,13 @@ class ArduinoListener:
                     self._dispatch_event("animation_start", animation_data, line)
                 else:
                     self.logger.warning(f"Invalid ANIMATION_START format: {anim_part}")
+                    print(f"DEBUG: Not enough parts. Expected 2, got {len(parts)}")
                     
                 return
             except (ValueError, IndexError, AttributeError) as e:
                 self.logger.warning(f"Could not parse animation parameters: {line} - {e}")
+                print(f"DEBUG: Animation parsing error: {e}")
                 return
-
 
         # Handle COIN events - IMPROVED parsing
         if "Coin accepted: pulses=" in line:

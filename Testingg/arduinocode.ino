@@ -234,21 +234,22 @@ void startDispense(int ml) {
   // NO minimum time, NO extra seconds - exact timing only
   int animationSeconds = (int)estimatedSeconds;
   
-  // FIXED: Send animation command FIRST, then debug messages
+  // FIXED: Send clean animation command FIRST, then debug messages
   Serial.print("ANIMATION_START:");
   Serial.print(ml);
   Serial.print(",");
   Serial.println(animationSeconds);
   
-  // Then send debug messages
+  // Small delay to ensure the animation command is sent completely
+  delay(50);
+  
+  // Then send debug messages separately
   Serial.print("DEBUG: Starting dispense - ML: ");
   Serial.print(ml);
   Serial.print(", Flow Rate: ");
   Serial.print(baseFlowRateMLperSecond);
   Serial.print(" mL/s, ExactSeconds: ");
   Serial.println(animationSeconds);
-  
-  Serial.println("DEBUG: ANIMATION_START command sent to Python");
 }
 
 void handleDispensing() {

@@ -697,7 +697,9 @@ class KioskApp(tk.Tk):
                     return  # Don't route coin events to screens
             
             # Route countdown events to WaterScreen
-            elif event in ['countdown', 'countdown_end', 'cup_detected', 'dispense_start', 'dispense_done']:
+            elif event in ['countdown', 'countdown_end', 'cup_detected',
+               'dispense_start', 'dispense_done', 'animation_start']:
+
                 # Water-related events - forward to WaterScreen
                 ws = self.frames.get(WaterScreen)
                 if ws and hasattr(ws, 'handle_arduino_event'):

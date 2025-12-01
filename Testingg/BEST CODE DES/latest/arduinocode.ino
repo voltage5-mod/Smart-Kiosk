@@ -22,9 +22,9 @@
 float pulsesPerLiter = 450.0;   // will be overwritten by EEPROM
 
 // ---------------- COIN CREDIT SETTINGS ----------------
-uint8_t coin1P_pulses = 1;    // ₱1 = 1 pulse
-uint8_t coin5P_pulses = 5;    // ₱5 = 5 pulses
-uint8_t coin10P_pulses = 10;  // ₱10 = 10 pulses
+uint8_t coin1P_pulses = 1;    // P1 = 1 pulse
+uint8_t coin5P_pulses = 5;    // P5 = 5 pulses
+uint8_t coin10P_pulses = 10;  // P10 = 10 pulses
 
 uint16_t creditML_1P = 50;
 uint16_t creditML_5P = 250;
@@ -167,19 +167,19 @@ void handleCoin() {
       coinValue = 1;
       addedML = creditML_1P;
       addedSeconds = chargeSeconds_1P;
-      Serial.println(F("DEBUG: Recognized as ₱1 coin"));
+      Serial.println(F("DEBUG: Recognized as P1 coin"));
     } 
     else if (pulses == 5) {
       coinValue = 5;
       addedML = creditML_5P;
       addedSeconds = chargeSeconds_5P;
-      Serial.println(F("DEBUG: Recognized as ₱5 coin"));
+      Serial.println(F("DEBUG: Recognized as P5 coin"));
     }
     else if (pulses == 10) {
       coinValue = 10;
       addedML = creditML_10P;
       addedSeconds = chargeSeconds_10P;
-      Serial.println(F("DEBUG: Recognized as ₱10 coin"));
+      Serial.println(F("DEBUG: Recognized as P10 coin"));
     }
     else {
       Serial.print(F("Unknown coin pattern: "));
@@ -431,9 +431,9 @@ void showStatus() {
   Serial.print(F("Flow pulses: ")); Serial.println(flowPulseCount);
   Serial.print(F("Flow mL: ")); Serial.println(pulsesToML(flowPulseCount), 2);
   Serial.print(F("Flow calibration: ")); Serial.println(pulsesPerLiter);
-  Serial.print(F("Coin patterns - ₱1: ")); Serial.print(coin1P_pulses);
-  Serial.print(F(", ₱5: ")); Serial.print(coin5P_pulses);
-  Serial.print(F(", ₱10: ")); Serial.println(coin10P_pulses);
+  Serial.print(F("Coin patterns - P1: ")); Serial.print(coin1P_pulses);
+  Serial.print(F(", P5: ")); Serial.print(coin5P_pulses);
+  Serial.print(F(", P10: ")); Serial.println(coin10P_pulses);
   Serial.println(F("===================="));
 }
 
@@ -479,21 +479,21 @@ void calibrateCoins() {
   waitForCoinPulse();
   coin1P_pulses = coinPulseCount;
   EEPROM.put(0, coin1P_pulses);
-  Serial.print(F("₱1 coin: ")); Serial.print(coin1P_pulses); Serial.println(F(" pulses"));
+  Serial.print(F("P1 coin: ")); Serial.print(coin1P_pulses); Serial.println(F(" pulses"));
 
   coinPulseCount = 0;
   Serial.println(F("Insert 5 Peso coin..."));
   waitForCoinPulse();
   coin5P_pulses = coinPulseCount;
   EEPROM.put(4, coin5P_pulses);
-  Serial.print(F("₱5 coin: ")); Serial.print(coin5P_pulses); Serial.println(F(" pulses"));
+  Serial.print(F("P5 coin: ")); Serial.print(coin5P_pulses); Serial.println(F(" pulses"));
 
   coinPulseCount = 0;
   Serial.println(F("Insert 10 Peso coin..."));
   waitForCoinPulse();
   coin10P_pulses = coinPulseCount;
   EEPROM.put(8, coin10P_pulses);
-  Serial.print(F("₱10 coin: ")); Serial.print(coin10P_pulses); Serial.println(F(" pulses"));
+  Serial.print(F("P10 coin: ")); Serial.print(coin10P_pulses); Serial.println(F(" pulses"));
 
   Serial.println(F("Coin calibration saved to EEPROM."));
 }
@@ -566,9 +566,9 @@ void testCoinPatterns() {
       Serial.println(F(" pulses"));
       
       // Try to identify the coin
-      if (pulses == 1) Serial.println(F("TEST: This appears to be a ₱1 coin"));
-      else if (pulses == 5) Serial.println(F("TEST: This appears to be a ₱5 coin"));
-      else if (pulses == 10) Serial.println(F("TEST: This appears to be a ₱10 coin"));
+      if (pulses == 1) Serial.println(F("TEST: This appears to be a P1 coin"));
+      else if (pulses == 5) Serial.println(F("TEST: This appears to be a P5 coin"));
+      else if (pulses == 10) Serial.println(F("TEST: This appears to be a P10 coin"));
       else Serial.println(F("TEST: Unknown coin pattern"));
     }
     

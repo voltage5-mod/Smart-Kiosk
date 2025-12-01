@@ -41,6 +41,13 @@ class ArduinoListener:
         self.callbacks = []
         self.actual_port = None
         
+        # Add these for duplicate prevention
+        self._processed_lines = []  # Track processed message hashes
+        self._last_coin_time = 0    # Last coin processing time
+        self._last_coin_value = 0   # Last coin value processed
+        
+        # ... rest of initialization ...
+
         # Enhanced coin validation state
         self.last_coin_time = 0
         self.coin_debounce_delay = 1.0  # 1 second between coin events
@@ -213,162 +220,148 @@ class ArduinoListener:
     # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """Parse and dispatch Arduino messages with enhanced validation."""
-        self.logger.debug(f"[Arduino RAW] {line}")
-
-        # Skip empty lines
+        """Parse Arduino messages - IGNORE ALL DUPLICATES."""
         if not line.strip():
             return
-            
-        # DEBUG: Log every line to see what's coming through
-        print(f"[ARDUINO_DEBUG] {line}")
-
-        # Handle simple coin event format - NEW PARSER
-        if "COIN_EVENT:" in line:
+        
+        # ========== CRITICAL: Track processed lines to prevent duplicates ==========
+        # Initialize if not exists
+        if not hasattr(self, '_processed_lines'):
+            self._processed_lines = []
+        
+        # Create a simple hash to detect duplicates (first 40 chars is usually enough)
+        line_stripped = line.strip()
+        line_hash = hash(line_stripped[:40])
+        
+        # Check if we've already processed this line
+        if line_hash in self._processed_lines:
+            self.logger.debug(f"IGNORING DUPLICATE: {line_stripped[:40]}...")
+            return
+        
+        # Store this hash to prevent re-processing
+        self._processed_lines.append(line_hash)
+        
+        # Keep only last 15 lines to avoid memory buildup
+        if len(self._processed_lines) > 15:
+            self._processed_lines.pop(0)
+        
+        # ========== ONLY PROCESS THESE SPECIFIC MESSAGE TYPES ==========
+        
+        # 1. COIN_EVENT: - Process ONLY this format for coins
+        if line.startswith("COIN_EVENT:"):
             try:
-                coin_value = int(line.split("COIN_EVENT:")[1].strip())
+                # Extract just the number after COIN_EVENT:
+                parts = line.split("COIN_EVENT:")
+                if len(parts) < 2:
+                    return
                 
-                # Enhanced coin validation
+                # Get the number (strip any extra text after it)
+                number_part = parts[1].strip()
+                # Take only digits (in case there's extra text)
+                coin_value = int(''.join(filter(str.isdigit, number_part)))
+                
+                # Validate it's a real coin value
+                if coin_value not in [1, 5, 10]:
+                    self.logger.warning(f"Invalid coin value: {coin_value}")
+                    return
+                
+                # Rate limiting: Don't process coins too fast
                 current_time = time.time()
+                if not hasattr(self, '_last_coin_time'):
+                    self._last_coin_time = 0
                 
-                # Check debounce delay
-                if current_time - self.last_coin_time < self.coin_debounce_delay:
-                    self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
+                # Debounce: Minimum 0.3 seconds between coins
+                if current_time - self._last_coin_time < 0.3:
+                    self.logger.debug(f"DEBOUNCED: Coin P{coin_value} too fast")
                     return
                 
-                # Check rate limiting
-                if self.coin_event_count >= self.max_coin_events_per_second:
-                    self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
-                    return
+                self._last_coin_time = current_time
                 
-                # Validate coin value
-                if coin_value not in self.valid_coin_values:
-                    self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                    return
-                
-                # Valid coin detected - update state
-                self.last_coin_time = current_time
-                self.coin_event_count += 1
-                
-                self.logger.info(f"COIN EVENT: P{coin_value}")
-                
-                # Send simple coin value
+                # FINALLY: Process this single coin event
+                self.logger.info(f"PROCESSING COIN: P{coin_value}")
                 self._dispatch_event("coin", coin_value, line)
                 return
                 
             except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse COIN_EVENT: {line} - {e}")
+                self.logger.warning(f"Failed to parse COIN_EVENT: {e} - Line: {line}")
                 return
-
-        # Handle animation start command - IMPROVED PARSING
-        if "ANIMATION_START:" in line:
+        
+        # 2. ANIMATION_START: - Process animations
+        elif "ANIMATION_START:" in line:
             try:
-                print(f"DEBUG: Found ANIMATION_START in line: {line}")
-                
-                # Extract everything after ANIMATION_START:
+                # Extract animation parameters
                 anim_part = line.split("ANIMATION_START:")[1]
-                print(f"DEBUG: Animation part: {anim_part}")
                 
-                # Take only the part before any other text (like "DEBUG")
+                # Clean up the string (remove debug text that might be appended)
                 anim_part = anim_part.split("DEBUG")[0].strip()
-                print(f"DEBUG: Clean animation part: {anim_part}")
                 
-                # Remove any trailing non-numeric characters
-                anim_part = re.sub(r'[^0-9,].*$', '', anim_part)
-                print(f"DEBUG: Final animation part: {anim_part}")
+                # Find the numbers (ml,seconds)
+                import re
+                numbers = re.findall(r'\d+', anim_part)
                 
-                # Now parse the clean animation parameters
-                parts = anim_part.split(",")
-                print(f"DEBUG: Split parts: {parts}")
-                
-                if len(parts) >= 2:
-                    total_ml = int(parts[0])
-                    total_seconds = int(parts[1])
+                if len(numbers) >= 2:
+                    total_ml = int(numbers[0])
+                    total_seconds = int(numbers[1])
                     
-                    self.logger.info(f"Animation start parsed: {total_ml}mL in {total_seconds} seconds")
-                    
-                    # Send animation parameters
                     animation_data = {
                         "total_ml": total_ml,
                         "total_seconds": total_seconds
                     }
+                    
+                    self.logger.info(f"ANIMATION: {total_ml}mL in {total_seconds}s")
                     self._dispatch_event("animation_start", animation_data, line)
                 else:
-                    self.logger.warning(f"Invalid ANIMATION_START format: {anim_part}")
-                    print(f"DEBUG: Not enough parts. Expected 2, got {len(parts)}")
-                    
-                return
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse animation parameters: {line} - {e}")
-                print(f"DEBUG: Animation parsing error: {e}")
-                return
-
-        # Handle COIN events - IMPROVED parsing
-        if "Coin accepted: pulses=" in line:
-            try:
-                # More robust parsing that handles different formats
-                pulses_match = re.search(r'pulses=(\d+)', line)
-                value_match = re.search(r'value=P?(\d+)', line)
-                added_match = re.search(r'added=(\d+)', line)
+                    self.logger.warning(f"Invalid ANIMATION_START format: {line}")
                 
-                if pulses_match and value_match:
-                    pulses = int(pulses_match.group(1))
-                    coin_value = int(value_match.group(1))
-                    
-                    # Enhanced coin validation
-                    current_time = time.time()
-                    
-                    # Check debounce delay
-                    if current_time - self.last_coin_time < self.coin_debounce_delay:
-                        self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
-                        return
-                    
-                    # Check rate limiting
-                    if self.coin_event_count >= self.max_coin_events_per_second:
-                        self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
-                        return
-                    
-                    # Validate coin value
-                    if coin_value not in self.valid_coin_values:
-                        self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                        return
-                    
-                    # Valid coin detected - update state
-                    self.last_coin_time = current_time
-                    self.coin_event_count += 1
-                    
-                    added_ml = 0
-                    if added_match:
-                        added_ml = int(added_match.group(1))
-                    
-                    self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
-                    
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
-                    
                 return
-                
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse coin details from: {line} - {e}")
-                return
-
-        # Handle TEST Coin events
-        elif "TEST Coin:" in line:
-            try:
-                # Extract from test coin format using regex
-                value_match = re.search(r'value=P?(\d+)', line)
-                if value_match:
-                    coin_value = int(value_match.group(1))
                     
-                    self.logger.info(f"TEST COIN: P{coin_value}")
-                    
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
-                    
+            except Exception as e:
+                self.logger.warning(f"Failed to parse animation: {e}")
                 return
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse TEST coin details: {line} - {e}")
+        
+        # ========== IGNORE ALL OTHER COIN-RELATED MESSAGES ==========
+        # These are the duplicate messages causing double counting:
+        
+        coin_keywords = [
+            "Coin accepted: pulses=",
+            "WATER Coin accepted:",
+            "CHARGING Coin accepted:",
+            "DEBUG: Received",
+            "TEST: Detected",
+            "TEST Coin:",
+            "pulses=",
+            "value=P",
+            "added=",
+            "total=",
+            "Coin accepted:",
+            "Recognized as"
+        ]
+        
+        # If line contains ANY of these keywords (and isn't COIN_EVENT:), ignore it
+        for keyword in coin_keywords:
+            if keyword in line:
+                self.logger.debug(f"IGNORING DUPLICATE COIN MESSAGE: {line[:50]}...")
                 return
+        
+        # ========== LOG OTHER MESSAGES FOR DEBUGGING ONLY ==========
+        
+        # Log system status messages
+        if any(keyword in line for keyword in ["MODE:", "CREDIT_ML:", "CHARGE_SECONDS:", "FLOW_PULSES:"]):
+            self.logger.debug(f"[Arduino Status] {line.strip()}")
+            return
+        
+        # Log debug messages (optional)
+        if "DEBUG:" in line:
+            self.logger.debug(f"[Arduino Debug] {line.strip()}")
+            return
+        
+        # Log info messages
+        if "INFO:" in line or "System Ready" in line or "Dispensing" in line:
+            self.logger.info(f"[Arduino] {line.strip()}")
+            return
+        
+        # Log everything else at debug level
+        self.logger.debug(f"[Arduino Other] {line.strip()}")
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""

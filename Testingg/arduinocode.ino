@@ -1,6 +1,6 @@
 #include <EEPROM.h>
 
-// ---------------- PINU DEFINITIONS ----------------
+// ---------------- PINUs DEFINITIONS ----------------
 #define COIN_PIN          3     // Coin slot signal pin (interrupt)
 #define FLOW_SENSOR_PIN   2     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger

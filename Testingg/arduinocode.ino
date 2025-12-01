@@ -1,6 +1,6 @@
 #include <EEPROM.h>
 
-// ---------------- PINUs DEFINITIONS ----------------
+// ---------------- PINs DEFINITIONS ----------------
 #define COIN_PIN          3     // Coin slot signal pin 
 #define FLOW_SENSOR_PIN   2     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger
@@ -182,14 +182,27 @@ void handleCoin() {
   }
 }
 
+
 // ---------------- CUP HANDLER ----------------
+// In arduinocode.ino, update the handleCup() function:
 void handleCup() {
   // Only detect cup if in WATER mode with credit
+  if (currentMode != MODE_WATER) {
+    return;  // Don't check cup if not in WATER mode
+  }
+  
+  if (creditML <= 0) {
+    // Optional debug message
+    // Serial.println(F("DEBUG: Cup detected but no credit"));
+    return;
+  }
+  
   if (detectCup() && creditML > 0 && !dispensing) {
     Serial.println(F("Cup detected. Starting dispense..."));
     startDispense(creditML);
   }
 }
+
 
 // ---------------- DISPENSING ----------------
 void startDispense(uint16_t ml) {

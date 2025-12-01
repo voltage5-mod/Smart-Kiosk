@@ -641,9 +641,11 @@ class KioskApp(tk.Tk):
         except Exception:
             _do_totals()
 
+    # In KioskApp._arduino_event_callback, replace with this:
+
     def _arduino_event_callback(self, event, value):
         """Clean event handler - Arduino sends only coin value, Python decides usage."""
-        print(f"DEBUG: Arduino event: {event} = {value}")
+        print(f"DEBUG ARDUINO EVENT: {event} = {value} (type: {type(value)})")
         
         try:
             # Handle COIN events centrally
@@ -652,33 +654,37 @@ class KioskApp(tk.Tk):
                 uid = self.active_uid
                 current_frame = getattr(self, 'current_frame', None)
                 
+                if not uid:
+                    print("WARN: No active user - please scan RFID first")
+                    return
+                    
+                print(f"INFO: User: {uid}, Screen: {current_frame}")
+                
                 # Apply coin based on current screen
                 if current_frame == 'WaterScreen':
-                    # Water mode: P1=50mL, P5=250mL, P10=500mL
                     water_ml_map = {1: 50, 5: 250, 10: 500}
                     added_ml = water_ml_map.get(value, 0)
                     
-                    if added_ml > 0 and uid:
+                    if added_ml > 0:
+                        print(f"INFO: Adding {added_ml}mL water for user {uid}")
                         self._handle_water_coin(uid, value, added_ml)
                     else:
-                        print(f"ERROR: No user or invalid coin for water")
+                        print(f"ERROR: Invalid coin value for water: {value}")
                         
                 elif current_frame in ['SlotSelectScreen', 'ChargingScreen']:
-                    # Charging mode: P1=120s, P5=600s, P10=1200s
                     charging_seconds_map = {1: 120, 5: 600, 10: 1200}
                     added_seconds = charging_seconds_map.get(value, 0)
                     
-                    if added_seconds > 0 and uid:
+                    if added_seconds > 0:
+                        print(f"INFO: Adding {added_seconds}s charging for user {uid}")
                         self._handle_charging_coin(uid, value, added_seconds)
                     else:
-                        print(f"ERROR: No user or invalid coin for charging")
+                        print(f"ERROR: Invalid coin value for charging: {value}")
                         
                 else:
-                    # Coin inserted but not in service screen
-                    print(f"INFO: Coin P{value} ignored - select service first")
-                    if uid:
-                        self.show_coin_popup(uid, peso=value, added_ml="Select service first", total_ml="")
-                
+                    print(f"INFO: Coin P{value} received but user is in {current_frame}")
+                    print("WARN: Switch to Water or Charging screen to use coins")
+                    
                 # Refresh all user info
                 self.refresh_all_user_info()
                 
@@ -777,6 +783,7 @@ class KioskApp(tk.Tk):
         except Exception as e:
             print(f"ERROR in _handle_charging_coin: {e}")       
 
+    # In KioskApp.show_frame(), replace the Arduino mode section:
     def show_frame(self, cls):
         # Record current frame name for context
         try:
@@ -795,21 +802,21 @@ class KioskApp(tk.Tk):
         # FIXED: Set Arduino mode based on current screen
         if self.arduino_available:
             try:
-                if cls.__name__ == 'WaterScreen':
-                    # Water mode: enable cup sensor and water dispensing
-                    if self.send_arduino_command('MODE WATER'):
-                        print('INFO: Arduino in WATER mode - cup sensor ENABLED')
+                desired_mode = 'WATER' if cls.__name__ == 'WaterScreen' else 'CHARGING'
+                
+                # Check if we're already in this mode
+                if not hasattr(self, '_last_arduino_mode'):
+                    self._last_arduino_mode = None
+                    
+                if self._last_arduino_mode != desired_mode:
+                    if self.send_arduino_command(f'MODE {desired_mode}'):
+                        self._last_arduino_mode = desired_mode
+                        print(f'INFO: Arduino set to {desired_mode} mode')
                     else:
-                        print('WARN: Failed to set Arduino to WATER mode')
-                else:
-                    # Any other mode: disable cup sensor
-                    if self.send_arduino_command('MODE CHARGING'):
-                        print('INFO: Arduino in CHARGING mode - cup sensor DISABLED')
-                    else:
-                        print('WARN: Failed to set Arduino to CHARGING mode')
+                        print(f'WARN: Failed to set Arduino to {desired_mode} mode')
             except Exception as e:
                 print(f'ERROR during Arduino mode switch: {e}')
-                
+                    
         frame.tkraise()
     
     def cleanup(self):

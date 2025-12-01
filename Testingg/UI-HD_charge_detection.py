@@ -778,6 +778,8 @@ class KioskApp(tk.Tk):
                 write_user(uid, {"temp_water_time": new_balance})
                 print(f"Updated guest water balance: {current_balance} + {added_ml} = {new_balance}mL")
             
+            self.refresh_all_user_info()
+
             # Update WaterScreen display
             ws = self.frames.get(WaterScreen)
             if ws:
@@ -810,6 +812,8 @@ class KioskApp(tk.Tk):
             
             print(f"Updated charging balance: {current_balance} + {added_seconds} = {new_balance}s")
             
+            self.refresh_all_user_info()
+
             # Update UI based on current screen
             current_frame = getattr(self, 'current_frame', None)
             if current_frame == 'ChargingScreen':

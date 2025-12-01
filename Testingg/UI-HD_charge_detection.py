@@ -694,12 +694,16 @@ class KioskApp(tk.Tk):
         """Clean event handler - Arduino sends only coin value, Python decides usage."""
         print(f"DEBUG ARDUINO EVENT: {event} = {value} (type: {type(value)})")
         
+        current_frame = getattr(self, 'current_frame', None)
+        print(f"Current frame: {current_frame}")
+        print(f"Active UID: {self.active_uid}")
+
         try:
             # Handle COIN events centrally
             if event == 'coin' and isinstance(value, int):
                 print(f"COIN DETECTED: P{value}")
                 uid = self.active_uid
-                current_frame = getattr(self, 'current_frame', None)
+                
                 
                 if not uid:
                     print("WARN: No active user - please scan RFID first")
@@ -2453,7 +2457,47 @@ class WaterScreen(tk.Frame):
         print(f"WaterScreen received: {event} = {value}")
         
         try:
-            if event == 'cup_detected':
+         
+            if event == 'coin':
+                # DIRECT HANDLING - bypass KioskApp routing
+                print(f"DIRECT COIN HANDLING IN WATERSCREEN: P{value}")
+                uid = self.controller.active_uid
+                if not uid:
+                    print("No user logged in")
+                    return
+                    
+                water_ml_map = {1: 50, 5: 250, 10: 500}
+                added_ml = water_ml_map.get(value, 0)
+                
+                if added_ml > 0:
+                    # Update user balance directly
+                    user = read_user(uid)
+                    if user.get("type") == "member":
+                        current_balance = user.get("water_balance", 0) or 0
+                        new_balance = current_balance + added_ml
+                        write_user(uid, {"water_balance": new_balance})
+                    else:
+                        current_balance = user.get("temp_water_time", 0) or 0
+                        new_balance = current_balance + added_ml
+                        write_user(uid, {"temp_water_time": new_balance})
+                    
+                    # Update WaterScreen UI
+                    self.time_var.set(str(new_balance))
+                    if new_balance > 0:
+                        self.status_lbl.config(text=f"Balance: {new_balance}mL - Place cup to start")
+                    
+                    # Force UserInfoFrame update
+                    if hasattr(self.controller, 'refresh_all_user_info'):
+                        self.controller.refresh_all_user_info()
+                    
+                    # Show popup
+                    self.controller.show_coin_popup(uid, peso=value, added_ml=added_ml, total_ml=new_balance)
+                    
+                    print(f"Updated balance: {new_balance}mL")
+                return
+       
+
+            elif event == 'cup_detected':
                 self.cup_present = True
                 self.status_lbl.config(text="Cup detected - Starting countdown...")
                 self.debug_var.set("Cup detected - Countdown starting")

@@ -308,6 +308,8 @@ class ArduinoListener:
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
+        print(f"DEBUG _dispatch_event: event='{event}', value={value}, raw='{raw_line}'")
+        
         payload = {
             "event": event,
             "value": value,
@@ -318,16 +320,25 @@ class ArduinoListener:
         # Send to main event callback (KioskApp)
         if self.event_callback:
             try:
+                print(f"DEBUG: Calling main callback: {self.event_callback}")
                 self.event_callback(event, value)
             except Exception as e:
                 self.logger.error(f"Error in main event_callback: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: No main event_callback set!")
 
         # Send to additional UI callbacks (e.g., WaterScreen)
+        print(f"DEBUG: Number of callbacks: {len(self.callbacks)}")
         for callback in self.callbacks[:]:  # Use slice to avoid modification during iteration
             try:
+                print(f"DEBUG: Calling callback: {callback}")
                 callback(payload)
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
+                import traceback
+                traceback.print_exc()
 
     # -------------------------------------------------
     # SEND COMMANDS TO ARDUINO

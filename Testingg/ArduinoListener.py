@@ -220,46 +220,83 @@ class ArduinoListener:
     # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """Parse Arduino messages - clean and simple."""
+        """Parse Arduino messages - IGNORE ALL DUPLICATES."""
         if not line.strip():
             return
         
-        line_stripped = line.strip()
+        # ========== CRITICAL: Track processed lines to prevent duplicates ==========
+        # Initialize if not exists
+        if not hasattr(self, '_processed_lines'):
+            self._processed_lines = []
         
-        # 1. COIN MESSAGES - Single format: "COIN:1", "COIN:5", "COIN:10"
-        if line_stripped.startswith("COIN:"):
+        # Create a simple hash to detect duplicates (first 40 chars is usually enough)
+        line_stripped = line.strip()
+        line_hash = hash(line_stripped[:40])
+        
+        # Check if we've already processed this line
+        if line_hash in self._processed_lines:
+            self.logger.debug(f"IGNORING DUPLICATE: {line_stripped[:40]}...")
+            return
+        
+        # Store this hash to prevent re-processing
+        self._processed_lines.append(line_hash)
+        
+        # Keep only last 15 lines to avoid memory buildup
+        if len(self._processed_lines) > 15:
+            self._processed_lines.pop(0)
+        
+        # ========== ONLY PROCESS THESE SPECIFIC MESSAGE TYPES ==========
+        
+        # 1. COIN_EVENT: - Process ONLY this format for coins
+        if line.startswith("COIN_EVENT:"):
             try:
-                # Extract just the number after "COIN:"
-                coin_str = line_stripped.split("COIN:")[1].strip()
-                coin_value = int(coin_str)
+                # Extract just the number after COIN_EVENT:
+                parts = line.split("COIN_EVENT:")
+                if len(parts) < 2:
+                    return
                 
-                # Validate it's a real coin
+                # Get the number (strip any extra text after it)
+                number_part = parts[1].strip()
+                # Take only digits (in case there's extra text)
+                coin_value = int(''.join(filter(str.isdigit, number_part)))
+                
+                # Validate it's a real coin value
                 if coin_value not in [1, 5, 10]:
                     self.logger.warning(f"Invalid coin value: {coin_value}")
                     return
                 
-                # Simple debounce (0.5 seconds between coins)
+                # Rate limiting: Don't process coins too fast
                 current_time = time.time()
-                if hasattr(self, '_last_coin_time'):
-                    if current_time - self._last_coin_time < 0.5:
-                        self.logger.debug(f"DEBOUNCED: Coin P{coin_value} too soon")
-                        return
+                if not hasattr(self, '_last_coin_time'):
+                    self._last_coin_time = 0
+                
+                # Debounce: Minimum 0.3 seconds between coins
+                if current_time - self._last_coin_time < 0.3:
+                    self.logger.debug(f"DEBOUNCED: Coin P{coin_value} too fast")
+                    return
                 
                 self._last_coin_time = current_time
                 
-                # Process this single coin
-                self.logger.info(f"COIN DETECTED: P{coin_value}")
-                self._dispatch_event("coin", coin_value, line_stripped)
+                # FINALLY: Process this single coin event
+                self.logger.info(f"PROCESSING COIN: P{coin_value}")
+                self._dispatch_event("coin", coin_value, line)
+                return
                 
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Failed to parse COIN message: {e} - Line: {line_stripped}")
-            return
+            except (ValueError, IndexError, AttributeError) as e:
+                self.logger.warning(f"Failed to parse COIN_EVENT: {e} - Line: {line}")
+                return
         
-        # 2. ANIMATION_START messages
-        elif "ANIMATION_START:" in line_stripped:
+        # 2. ANIMATION_START: - Process animations
+        elif "ANIMATION_START:" in line:
             try:
-                anim_part = line_stripped.split("ANIMATION_START:")[1].strip()
-                # Extract numbers
+                # Extract animation parameters
+                anim_part = line.split("ANIMATION_START:")[1]
+                
+                # Clean up the string (remove debug text that might be appended)
+                anim_part = anim_part.split("DEBUG")[0].strip()
+                
+                # Find the numbers (ml,seconds)
+                import re
                 numbers = re.findall(r'\d+', anim_part)
                 
                 if len(numbers) >= 2:
@@ -272,44 +309,62 @@ class ArduinoListener:
                     }
                     
                     self.logger.info(f"ANIMATION: {total_ml}mL in {total_seconds}s")
-                    self._dispatch_event("animation_start", animation_data, line_stripped)
+                    self._dispatch_event("animation_start", animation_data, line)
+                else:
+                    self.logger.warning(f"Invalid ANIMATION_START format: {line}")
+                
+                return
+                    
             except Exception as e:
                 self.logger.warning(f"Failed to parse animation: {e}")
-            return
+                return
         
-        # 3. IGNORE ALL COIN-RELATED DEBUG MESSAGES
-        coin_debug_keywords = [
-            "Coin accepted:",
-            "DEBUG: Received",
+        # ========== IGNORE ALL OTHER COIN-RELATED MESSAGES ==========
+        # These are the duplicate messages causing double counting:
+        
+        coin_keywords = [
+            "Coin accepted: pulses=",
             "WATER Coin accepted:",
             "CHARGING Coin accepted:",
+            "DEBUG: Received",
+            "TEST: Detected",
+            "TEST Coin:",
             "pulses=",
             "value=P",
             "added=",
             "total=",
+            "Coin accepted:",
             "Recognized as"
         ]
         
-        for keyword in coin_debug_keywords:
-            if keyword in line_stripped:
-                self.logger.debug(f"Ignoring coin debug: {line_stripped[:50]}...")
+        # If line contains ANY of these keywords (and isn't COIN_EVENT:), ignore it
+        for keyword in coin_keywords:
+            if keyword in line:
+                self.logger.debug(f"IGNORING DUPLICATE COIN MESSAGE: {line[:50]}...")
                 return
         
-        # 4. Log other messages
-        if "DEBUG:" in line_stripped:
-            self.logger.debug(f"[Arduino Debug] {line_stripped}")
-        elif "ERROR:" in line_stripped:
-            self.logger.error(f"[Arduino Error] {line_stripped}")
-        elif "INFO:" in line_stripped or "System Ready" in line_stripped:
-            self.logger.info(f"[Arduino] {line_stripped}")
-        else:
-            self.logger.debug(f"[Arduino] {line_stripped}")
-            
+        # ========== LOG OTHER MESSAGES FOR DEBUGGING ONLY ==========
+        
+        # Log system status messages
+        if any(keyword in line for keyword in ["MODE:", "CREDIT_ML:", "CHARGE_SECONDS:", "FLOW_PULSES:"]):
+            self.logger.debug(f"[Arduino Status] {line.strip()}")
+            return
+        
+        # Log debug messages (optional)
+        if "DEBUG:" in line:
+            self.logger.debug(f"[Arduino Debug] {line.strip()}")
+            return
+        
+        # Log info messages
+        if "INFO:" in line or "System Ready" in line or "Dispensing" in line:
+            self.logger.info(f"[Arduino] {line.strip()}")
+            return
+        
+        # Log everything else at debug level
+        self.logger.debug(f"[Arduino Other] {line.strip()}")
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
-        print(f"DEBUG _dispatch_event: event='{event}', value={value}, raw='{raw_line}'")
-        
         payload = {
             "event": event,
             "value": value,
@@ -320,25 +375,16 @@ class ArduinoListener:
         # Send to main event callback (KioskApp)
         if self.event_callback:
             try:
-                print(f"DEBUG: Calling main callback: {self.event_callback}")
                 self.event_callback(event, value)
             except Exception as e:
                 self.logger.error(f"Error in main event_callback: {e}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print("DEBUG: No main event_callback set!")
 
         # Send to additional UI callbacks (e.g., WaterScreen)
-        print(f"DEBUG: Number of callbacks: {len(self.callbacks)}")
         for callback in self.callbacks[:]:  # Use slice to avoid modification during iteration
             try:
-                print(f"DEBUG: Calling callback: {callback}")
                 callback(payload)
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
-                import traceback
-                traceback.print_exc()
 
     # -------------------------------------------------
     # SEND COMMANDS TO ARDUINO

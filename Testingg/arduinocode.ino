@@ -1,7 +1,7 @@
 #include <EEPROM.h>
 
 // ---------------- PINUs DEFINITIONS ----------------
-#define COIN_PIN          3     // Coin slot signal pin (interrupt)
+#define COIN_PIN          3     // Coin slot signal pin 
 #define FLOW_SENSOR_PIN   2     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger
 #define CUP_ECHO_PIN      10    // Ultrasonic echo

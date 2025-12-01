@@ -356,7 +356,7 @@ class SessionManager:
 # ----------------- Tkinter UI -----------------
 # ----------------- Tkinter UI -----------------
 # ----------------- Tkinter UI -----------------
-c# ----------------- Tkinter UI -----------------
+# ----------------- Tkinter UI -----------------
 class KioskApp(tk.Tk):
     def __init__(self):
         super().__init__()

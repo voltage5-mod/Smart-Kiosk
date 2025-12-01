@@ -307,13 +307,19 @@ def seconds_to_min_display(sec):
     return f"{sec//60}m {sec%60}s"
 
 def water_seconds_to_liters(sec):
+    """Convert water balance in mL to liters for display."""
     if sec is None:
         return "N/A"
     try:
-        ml = float(sec or 0)
+        # Convert to float first, handle both int and string
+        if isinstance(sec, str):
+            ml = float(sec) if sec.strip() else 0.0
+        else:
+            ml = float(sec or 0)
         liters = ml / 1000.0
         return f"{liters:.2f} L"
-    except Exception:
+    except (ValueError, TypeError) as e:
+        print(f"WARN: Could not convert water balance '{sec}' to liters: {e}")
         return "N/A"
 
 # Mock append_audit_log if not available
@@ -592,25 +598,67 @@ class KioskApp(tk.Tk):
         except Exception:
             pass
 
-    def show_coin_popup(self, uid, peso: int = None, added_ml: int = None, total_ml: int = None):
+    def show_coin_popup(self, uid, peso: int = None, added_ml=None, total_ml=None):
         """Display a simple coin popup WITHOUT blocking UI updates."""
         def _do():
             # ONLY show popup for valid coins (1, 5, 10)
             valid_coins = [1, 5, 10]
-            if peso not in valid_coins:
+            if peso is not None and peso not in valid_coins:
                 print(f"DEBUG: Skipping popup for invalid coin: P{peso}")
                 return
                 
             parts = []
             if peso is not None:
                 parts.append(f"Inserted: P{peso}")
-            if added_ml is not None and added_ml > 0:
-                parts.append(f"Added: {added_ml} mL")
-            if total_ml is not None:
-                parts.append(f"Total: {total_ml} mL")
-            msg = "\n".join(parts) if parts else "Coin event"
             
-            # Show popup but don't update balance here (already done above)
+            # Handle added_ml - it might be int, string, or something else
+            if added_ml is not None:
+                try:
+                    # Convert to int safely
+                    if isinstance(added_ml, (int, float)):
+                        added_value = int(added_ml)
+                    elif isinstance(added_ml, str):
+                        # Try to extract numbers from string
+                        import re
+                        numbers = re.findall(r'\d+', added_ml)
+                        if numbers:
+                            added_value = int(numbers[0])
+                        else:
+                            added_value = 0
+                    else:
+                        added_value = 0
+                    
+                    if added_value > 0:
+                        if "minute" in str(added_ml) or "m" in str(added_ml):
+                            parts.append(f"Added: {added_value} minutes")
+                        else:
+                            parts.append(f"Added: {added_value} mL")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: Could not parse added_ml '{added_ml}': {e}")
+                    pass
+                    
+            # Handle total_ml
+            if total_ml is not None:
+                try:
+                    if isinstance(total_ml, (int, float)):
+                        total_value = int(total_ml)
+                        parts.append(f"Total: {total_value} mL")
+                    elif isinstance(total_ml, str):
+                        if "m" in total_ml and "s" in total_ml:  # Format like "2m 0s"
+                            parts.append(f"Total time: {total_ml}")
+                        else:
+                            # Try to extract number
+                            import re
+                            numbers = re.findall(r'\d+', total_ml)
+                            if numbers:
+                                total_value = int(numbers[0])
+                                parts.append(f"Total: {total_value} mL")
+                except (ValueError, TypeError) as e:
+                    print(f"DEBUG: Could not parse total_ml '{total_ml}': {e}")
+                    pass
+                    
+            msg = "\n".join(parts) if parts else "Coin inserted"
+            
             try:
                 messagebox.showinfo("Coin Inserted", msg)
                 print(f"POPUP SHOWN: {msg}")
@@ -618,7 +666,6 @@ class KioskApp(tk.Tk):
                 print(f"POPUP ERROR: {e} - {msg}")
 
         try:
-            # Use short delay to ensure UI updates first
             self.after(100, _do)
         except Exception as e:
             print(f"Error scheduling popup: {e}")
@@ -740,8 +787,11 @@ class KioskApp(tk.Tk):
                 except Exception as e:
                     print(f"Error updating WaterScreen UI: {e}")
             
-            # Show coin popup
-            self.show_coin_popup(uid, peso=coin_value, added_ml=added_ml, total_ml=new_balance)
+            # Show coin popup - Pass all as integers
+            self.show_coin_popup(uid, 
+                                peso=coin_value, 
+                                added_ml=added_ml,  # This is int
+                                total_ml=new_balance)  # This is int
             
         except Exception as e:
             print(f"ERROR in _handle_water_coin: {e}")
@@ -774,14 +824,19 @@ class KioskApp(tk.Tk):
                     except Exception as e:
                         print(f"Error updating SlotSelectScreen UI: {e}")
             
-            # Show popup
+            # Show popup with CORRECT types
             mins = new_balance // 60
             secs = new_balance % 60
             added_mins = added_seconds // 60
-            self.show_coin_popup(uid, peso=coin_value, added_ml=f"{added_mins} minutes", total_ml=f"{mins}m {secs}s")
+            
+            # Pass as integer for peso, string for added_ml, string for total_ml
+            self.show_coin_popup(uid, 
+                                peso=coin_value, 
+                                added_ml=f"{added_mins} minutes", 
+                                total_ml=f"{mins}m {secs}s")
             
         except Exception as e:
-            print(f"ERROR in _handle_charging_coin: {e}")       
+            print(f"ERROR in _handle_charging_coin: {e}") 
 
     # In KioskApp.show_frame(), replace the Arduino mode section:
     def show_frame(self, cls):

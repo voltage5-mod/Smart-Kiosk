@@ -1092,7 +1092,6 @@ class UserInfoFrame(tk.Frame):
             self.info_lbl.config(text=f"UID: {uid}    Student ID: -")
             self.bal_lbl.config(text="Water: -    Charge: -")
             return
-        
         # show Guest if non-member
         name = user.get("name", "Guest") if user.get("type") == "member" else "Guest"
         sid = user.get("student_id", "")

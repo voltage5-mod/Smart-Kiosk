@@ -223,46 +223,44 @@ class ArduinoListener:
         # DEBUG: Log every line to see what's coming through
         print(f"[ARDUINO_DEBUG] {line}")
 
-        # ===================================================
-        # FIX: COIN DETECTION - SINGLE POINT OF TRUTH
-        # ===================================================
-        
-        # Try to extract coin value from ANY format, but process only once
-        coin_value = self._extract_coin_value(line)
-        
-        if coin_value is not None:
-            # Enhanced coin validation
-            current_time = time.time()
-            
-            # Check debounce delay
-            if current_time - self.last_coin_time < self.coin_debounce_delay:
-                self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
+        # Handle simple coin event format - NEW PARSER
+        if "COIN_EVENT:" in line:
+            try:
+                coin_value = int(line.split("COIN_EVENT:")[1].strip())
+                
+                # Enhanced coin validation
+                current_time = time.time()
+                
+                # Check debounce delay
+                if current_time - self.last_coin_time < self.coin_debounce_delay:
+                    self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
+                    return
+                
+                # Check rate limiting
+                if self.coin_event_count >= self.max_coin_events_per_second:
+                    self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
+                    return
+                
+                # Validate coin value
+                if coin_value not in self.valid_coin_values:
+                    self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
+                    return
+                
+                # Valid coin detected - update state
+                self.last_coin_time = current_time
+                self.coin_event_count += 1
+                
+                self.logger.info(f"COIN EVENT: P{coin_value}")
+                
+                # Send simple coin value
+                self._dispatch_event("coin", coin_value, line)
                 return
-            
-            # Check rate limiting
-            if self.coin_event_count >= self.max_coin_events_per_second:
-                self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
+                
+            except (ValueError, IndexError, AttributeError) as e:
+                self.logger.warning(f"Could not parse COIN_EVENT: {line} - {e}")
                 return
-            
-            # Validate coin value
-            if coin_value not in self.valid_coin_values:
-                self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                return
-            
-            # Valid coin detected - update state
-            self.last_coin_time = current_time
-            self.coin_event_count += 1
-            
-            self.logger.info(f"COIN EVENT: P{coin_value}")
-            
-            # Send simple coin value - ONLY ONCE
-            self._dispatch_event("coin", coin_value, line)
-            return  # CRITICAL: Return after processing coin
-        
-        # ===================================================
-        # ANIMATION START PARSING
-        # ===================================================
-        
+
+        # Handle animation start command - IMPROVED PARSING
         if "ANIMATION_START:" in line:
             try:
                 print(f"DEBUG: Found ANIMATION_START in line: {line}")
@@ -304,62 +302,73 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse animation parameters: {line} - {e}")
                 print(f"DEBUG: Animation parsing error: {e}")
                 return
-        
-        # ===================================================
-        # OTHER MESSAGES (status, debugging, etc.)
-        # ===================================================
-        
-        # Handle other non-coin messages if needed
-        if "MODE:" in line:
-            self.logger.info(f"Arduino mode change: {line}")
-        elif "DEBUG:" in line:
-            self.logger.debug(f"Arduino debug: {line}")
-        elif "Dispensing complete" in line:
-            self.logger.info("Arduino: Dispensing complete")
-        elif "System Ready" in line:
-            self.logger.info("Arduino: System Ready")
 
-    def _extract_coin_value(self, line):
-        """
-        Extract coin value from ANY coin message format.
-        Returns None if no coin detected, or integer coin value.
-        """
-        # Method 1: COIN_EVENT: format (new parser)
-        if "COIN_EVENT:" in line:
+        # Handle COIN events - IMPROVED parsing
+        if "Coin accepted: pulses=" in line:
             try:
-                return int(line.split("COIN_EVENT:")[1].strip())
-            except (ValueError, IndexError, AttributeError):
-                pass
-        
-        # Method 2: "Coin accepted:" format
-        if "Coin accepted:" in line:
+                # More robust parsing that handles different formats
+                pulses_match = re.search(r'pulses=(\d+)', line)
+                value_match = re.search(r'value=P?(\d+)', line)
+                added_match = re.search(r'added=(\d+)', line)
+                
+                if pulses_match and value_match:
+                    pulses = int(pulses_match.group(1))
+                    coin_value = int(value_match.group(1))
+                    
+                    # Enhanced coin validation
+                    current_time = time.time()
+                    
+                    # Check debounce delay
+                    if current_time - self.last_coin_time < self.coin_debounce_delay:
+                        self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
+                        return
+                    
+                    # Check rate limiting
+                    if self.coin_event_count >= self.max_coin_events_per_second:
+                        self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
+                        return
+                    
+                    # Validate coin value
+                    if coin_value not in self.valid_coin_values:
+                        self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
+                        return
+                    
+                    # Valid coin detected - update state
+                    self.last_coin_time = current_time
+                    self.coin_event_count += 1
+                    
+                    added_ml = 0
+                    if added_match:
+                        added_ml = int(added_match.group(1))
+                    
+                    self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
+                    
+                    # Send simple coin value
+                    self._dispatch_event("coin", coin_value, line)
+                    
+                return
+                
+            except (ValueError, IndexError, AttributeError) as e:
+                self.logger.warning(f"Could not parse coin details from: {line} - {e}")
+                return
+
+        # Handle TEST Coin events
+        elif "TEST Coin:" in line:
             try:
+                # Extract from test coin format using regex
                 value_match = re.search(r'value=P?(\d+)', line)
                 if value_match:
-                    return int(value_match.group(1))
-            except (ValueError, AttributeError):
-                pass
-        
-        # Method 3: "TEST Coin:" format
-        if "TEST Coin:" in line:
-            try:
-                value_match = re.search(r'value=P?(\d+)', line)
-                if value_match:
-                    return int(value_match.group(1))
-            except (ValueError, AttributeError):
-                pass
-        
-        # Method 4: Direct value pattern (e.g., "P5" or "5")
-        try:
-            # Look for patterns like "P5" or "5" with context
-            if "pulse" in line.lower() or "coin" in line.lower():
-                match = re.search(r'P?(\d+)\s*(pulse|coin|peso|₱)', line, re.IGNORECASE)
-                if match:
-                    return int(match.group(1))
-        except (ValueError, AttributeError):
-            pass
-        
-        return None  # No coin detected
+                    coin_value = int(value_match.group(1))
+                    
+                    self.logger.info(f"TEST COIN: P{coin_value}")
+                    
+                    # Send simple coin value
+                    self._dispatch_event("coin", coin_value, line)
+                    
+                return
+            except (ValueError, IndexError, AttributeError) as e:
+                self.logger.warning(f"Could not parse TEST coin details: {line} - {e}")
+                return
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""

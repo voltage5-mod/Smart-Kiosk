@@ -6,7 +6,7 @@ import sys
 import os
 import re
 
-# ----------------- CONFIaGURATION -----------------
+# ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
 ARDUINO_PORTS = [
     "/dev/ttyUSB0",    # Most common for USB-serial adapters
@@ -41,6 +41,13 @@ class ArduinoListener:
         self.callbacks = []
         self.actual_port = None
         
+        # Add these for duplicate prevention
+        self._processed_lines = []  # Track processed message hashes
+        self._last_coin_time = 0    # Last coin processing time
+        self._last_coin_value = 0   # Last coin value processed
+        
+        # ... rest of initialization ...
+
         # Enhanced coin validation state
         self.last_coin_time = 0
         self.coin_debounce_delay = 1.0  # 1 second between coin events
@@ -213,82 +220,96 @@ class ArduinoListener:
     # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """Parse and dispatch Arduino messages with enhanced validation."""
-        self.logger.debug(f"[Arduino RAW] {line}")
-
-        # Skip empty lines
+        """Parse Arduino messages - clean and simple."""
         if not line.strip():
             return
-
-        # Handle COIN events - IMPROVED parsing
-        if "Coin accepted: pulses=" in line:
+        
+        line_stripped = line.strip()
+        
+        # 1. COIN MESSAGES - Single format: "COIN:1", "COIN:5", "COIN:10"
+        if line_stripped.startswith("COIN:"):
             try:
-                # More robust parsing that handles different formats
-                pulses_match = re.search(r'pulses=(\d+)', line)
-                value_match = re.search(r'value=P?(\d+)', line)
-                added_match = re.search(r'added=(\d+)', line)
+                # Extract just the number after "COIN:"
+                coin_str = line_stripped.split("COIN:")[1].strip()
+                coin_value = int(coin_str)
                 
-                if pulses_match and value_match:
-                    pulses = int(pulses_match.group(1))
-                    coin_value = int(value_match.group(1))
-                    
-                    # Enhanced coin validation
-                    current_time = time.time()
-                    
-                    # Check debounce delay
-                    if current_time - self.last_coin_time < self.coin_debounce_delay:
-                        self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
-                        return
-                    
-                    # Check rate limiting
-                    if self.coin_event_count >= self.max_coin_events_per_second:
-                        self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
-                        return
-                    
-                    # Validate coin value
-                    if coin_value not in self.valid_coin_values:
-                        self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                        return
-                    
-                    # Valid coin detected - update state
-                    self.last_coin_time = current_time
-                    self.coin_event_count += 1
-                    
-                    added_ml = 0
-                    if added_match:
-                        added_ml = int(added_match.group(1))
-                    
-                    self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
-                    
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
-                    
-                return
+                # Validate it's a real coin
+                if coin_value not in [1, 5, 10]:
+                    self.logger.warning(f"Invalid coin value: {coin_value}")
+                    return
                 
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse coin details from: {line} - {e}")
-                return
-
-        # Handle TEST Coin events
-        elif "TEST Coin:" in line:
+                # Simple debounce (0.5 seconds between coins)
+                current_time = time.time()
+                if hasattr(self, '_last_coin_time'):
+                    if current_time - self._last_coin_time < 0.5:
+                        self.logger.debug(f"DEBOUNCED: Coin P{coin_value} too soon")
+                        return
+                
+                self._last_coin_time = current_time
+                
+                # Process this single coin
+                self.logger.info(f"COIN DETECTED: P{coin_value}")
+                self._dispatch_event("coin", coin_value, line_stripped)
+                
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Failed to parse COIN message: {e} - Line: {line_stripped}")
+            return
+        
+        # 2. ANIMATION_START messages
+        elif "ANIMATION_START:" in line_stripped:
             try:
-                # Extract from test coin format using regex
-                value_match = re.search(r'value=P?(\d+)', line)
-                if value_match:
-                    coin_value = int(value_match.group(1))
+                anim_part = line_stripped.split("ANIMATION_START:")[1].strip()
+                # Extract numbers
+                numbers = re.findall(r'\d+', anim_part)
+                
+                if len(numbers) >= 2:
+                    total_ml = int(numbers[0])
+                    total_seconds = int(numbers[1])
                     
-                    self.logger.info(f"TEST COIN: P{coin_value}")
+                    animation_data = {
+                        "total_ml": total_ml,
+                        "total_seconds": total_seconds
+                    }
                     
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
-                    
+                    self.logger.info(f"ANIMATION: {total_ml}mL in {total_seconds}s")
+                    self._dispatch_event("animation_start", animation_data, line_stripped)
+            except Exception as e:
+                self.logger.warning(f"Failed to parse animation: {e}")
+            return
+        
+        # 3. IGNORE ALL COIN-RELATED DEBUG MESSAGES
+        coin_debug_keywords = [
+            "Coin accepted:",
+            "DEBUG: Received",
+            "WATER Coin accepted:",
+            "CHARGING Coin accepted:",
+            "pulses=",
+            "value=P",
+            "added=",
+            "total=",
+            "Recognized as"
+        ]
+        
+        for keyword in coin_debug_keywords:
+            if keyword in line_stripped:
+                self.logger.debug(f"Ignoring coin debug: {line_stripped[:50]}...")
                 return
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse TEST coin details: {line} - {e}")
-                return
+        
+        # 4. Log other messages
+        if "DEBUG:" in line_stripped:
+            self.logger.debug(f"[Arduino Debug] {line_stripped}")
+        elif "ERROR:" in line_stripped:
+            self.logger.error(f"[Arduino Error] {line_stripped}")
+        elif "INFO:" in line_stripped or "System Ready" in line_stripped:
+            self.logger.info(f"[Arduino] {line_stripped}")
+        else:
+            self.logger.debug(f"[Arduino] {line_stripped}")
+            
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
+        print(f"DEBUG _dispatch_event: event='{event}', value={value}, raw='{raw_line}'")
+        
         payload = {
             "event": event,
             "value": value,
@@ -299,16 +320,25 @@ class ArduinoListener:
         # Send to main event callback (KioskApp)
         if self.event_callback:
             try:
+                print(f"DEBUG: Calling main callback: {self.event_callback}")
                 self.event_callback(event, value)
             except Exception as e:
                 self.logger.error(f"Error in main event_callback: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: No main event_callback set!")
 
         # Send to additional UI callbacks (e.g., WaterScreen)
+        print(f"DEBUG: Number of callbacks: {len(self.callbacks)}")
         for callback in self.callbacks[:]:  # Use slice to avoid modification during iteration
             try:
+                print(f"DEBUG: Calling callback: {callback}")
                 callback(payload)
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
+                import traceback
+                traceback.print_exc()
 
     # -------------------------------------------------
     # SEND COMMANDS TO ARDUINO

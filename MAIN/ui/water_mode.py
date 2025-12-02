@@ -12,12 +12,14 @@ class WaterMode(tk.Frame):
         self.pulse_count = 0
         self.total_cost = 0.00
         self.stop_countdown = 0
+        self.cup_detected = False
         
         self.setup_ui()
+        self.start_cup_check()
     
     def setup_ui(self):
         # Back button
-        back_btn = tk.Button(self, text="← BACK TO MENU", font=("Arial", 14),
+        back_btn = tk.Button(self, text="BACK TO MENU", font=("Arial", 14),
                            command=self.return_to_menu, bg="#7f8c8d", fg="white")
         back_btn.place(x=10, y=10)
         
@@ -47,7 +49,7 @@ class WaterMode(tk.Frame):
         self.liters_label.pack(expand=True)
         
         # Cost display
-        self.cost_label = tk.Label(display_frame, text="P0.00", 
+        self.cost_label = tk.Label(display_frame, text="0.00", 
                                   font=("Arial", 36), fg="yellow", bg="black")
         self.cost_label.pack(expand=True)
         
@@ -70,7 +72,7 @@ class WaterMode(tk.Frame):
                                   font=("Arial", 24, "bold"),
                                   bg="#27ae60", fg="white", width=15, height=2,
                                   command=self.start_water,
-                                  state="normal" if self.has_balance() else "disabled")
+                                  state="disabled")
         self.start_btn.grid(row=0, column=0, padx=20)
         
         self.stop_btn = tk.Button(control_frame, text="STOP", 
@@ -89,8 +91,35 @@ class WaterMode(tk.Frame):
         self.countdown_label = tk.Label(self, text="", 
                                        font=("Arial", 14), fg="#f39c12", bg="#2c3e50")
         
-        # Start cup detection
-        self.check_cup_interval()
+        # Instructions
+        instructions = tk.Label(self, text="Insert coins first, then place cup, then start", 
+                               font=("Arial", 12), fg="#bdc3c7", bg="#2c3e50")
+        instructions.pack(pady=20)
+    
+    def start_cup_check(self):
+        """Start periodic cup checking"""
+        self.check_cup()
+        self.after(1000, self.start_cup_check)
+    
+    def check_cup(self):
+        """Check cup presence"""
+        if self.dispensing:
+            return
+        
+        # In real system, this would come from Arduino
+        # For now, we'll update from Arduino messages via set_cup_status
+        pass
+    
+    def set_cup_status(self, has_cup):
+        """Set cup status from Arduino"""
+        self.cup_detected = has_cup
+        if has_cup:
+            self.cup_status.config(text="Cup ready", fg="#2ecc71")
+            if self.has_balance():
+                self.start_btn.config(state="normal")
+        else:
+            self.cup_status.config(text="Place cup under dispenser", fg="#e74c3c")
+            self.start_btn.config(state="disabled")
     
     def has_balance(self):
         """Check if user has water balance"""
@@ -104,39 +133,50 @@ class WaterMode(tk.Frame):
             # Member needs water balance
             return self.app.session.current_user['water_balance'] > 0
     
-    def check_cup_interval(self):
-        """Periodically check cup presence"""
-        if self.dispensing:
-            self.after(100, self.check_cup_interval)
-            return
-        
-        # Check ultrasonic sensor
-        has_cup = self.check_cup()
-        
-        if has_cup:
-            self.cup_status.config(text="Cup ready", fg="#2ecc71")
-            self.start_btn.config(state="normal" if self.has_balance() else "disabled")
-        else:
-            self.cup_status.config(text="Place cup under dispenser", fg="#e74c3c")
-            self.start_btn.config(state="disabled")
-        
-        self.after(500, self.check_cup_interval)
+    def update_balance_display(self):
+        """Update balance display"""
+        if self.app.session.current_user:
+            if self.app.session.is_guest():
+                balance = self.app.session.coins_inserted
+                self.balance_label.config(text=f"{balance:.2f}")
+            else:
+                balance = self.app.session.current_user['water_balance']
+                self.balance_label.config(text=f"{balance:.2f}")
     
-    def check_cup(self):
-        """Check if cup is present using ultrasonic"""
-        # Implementation depends on your hardware
-        # For now, simulate detection
-        return True
+    def add_flow_pulses(self, pulses):
+        """Add flow pulses from Arduino"""
+        if self.dispensing:
+            self.pulse_count += pulses
+            self.update_display()
+    
+    def update_display(self):
+        """Update display with current values"""
+        liters = self.pulse_count / Config.PULSES_PER_LITER
+        self.total_cost = liters * Config.WATER_PRICE_PER_LITER
+        
+        self.liters_label.config(text=f"{liters:.2f} L")
+        self.cost_label.config(text=f"{self.total_cost:.2f}")
+        
+        # Check balance for members
+        if self.app.session.is_member():
+            balance = self.app.session.current_user['water_balance']
+            if balance <= self.total_cost:
+                self.stop_water()
     
     def start_water(self):
         """Start water dispensing"""
-        if not self.check_cup():
+        if not self.cup_detected:
             messagebox.showerror("Error", "Please place a cup first!")
             return
         
         if not self.has_balance():
             messagebox.showerror("Error", "No balance available!")
             return
+        
+        # Send start command to Arduino
+        success = self.app.send_to_arduino("PUMP:ON")
+        if not success:
+            messagebox.showwarning("Warning", "Cannot communicate with Arduino. Starting simulation.")
         
         self.dispensing = True
         self.pulse_count = 0
@@ -145,11 +185,8 @@ class WaterMode(tk.Frame):
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal" if self.app.session.is_member() else "disabled")
         
-        # Start Arduino pump
-        self.app.hardware.relay_on('pump_relay')
-        
-        # Start flow monitoring
-        self.monitor_thread = threading.Thread(target=self.monitor_flow)
+        # Start monitoring thread (for simulation if Arduino fails)
+        self.monitor_thread = threading.Thread(target=self.simulate_flow)
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
         
@@ -157,42 +194,33 @@ class WaterMode(tk.Frame):
         if self.app.session.is_guest():
             self.auto_stop_for_guest()
     
-    def monitor_flow(self):
-        """Monitor water flow"""
+    def simulate_flow(self):
+        """Simulate flow if Arduino not available"""
         while self.dispensing:
-            # Read flow sensor pulses (from Arduino or GPIO)
-            # For simulation, add pulses
+            # In real system, pulses come from Arduino
+            # For simulation, add small amount
             self.pulse_count += 2
-            
-            # Calculate
-            liters = self.pulse_count / Config.PULSES_PER_LITER
-            self.total_cost = liters * Config.WATER_PRICE_PER_LITER
-            
-            # Update display
-            self.liters_label.config(text=f"{liters:.2f} L")
-            self.cost_label.config(text=f"P{self.total_cost:.2f}")
-            
-            # Check balance for members
-            if self.app.session.is_member():
-                balance = self.app.session.current_user['water_balance']
-                if balance <= self.total_cost:
-                    self.stop_water()
-                    break
-            
+            self.update_display()
             time.sleep(0.1)
     
     def auto_stop_for_guest(self):
         """Auto-stop for guest when coins run out"""
         if self.app.session.is_guest():
             coins = self.app.session.coins_inserted
-            max_liters = coins / Config.WATER_PRICE_PER_LITER
+            max_cost = coins
+            max_liters = max_cost / Config.WATER_PRICE_PER_LITER
             max_pulses = max_liters * Config.PULSES_PER_LITER
             
             def check():
-                if self.dispensing and self.pulse_count >= max_pulses:
-                    self.stop_water()
-                elif self.dispensing:
-                    self.after(100, check)
+                if self.dispensing:
+                    # Calculate current cost
+                    liters = self.pulse_count / Config.PULSES_PER_LITER
+                    current_cost = liters * Config.WATER_PRICE_PER_LITER
+                    
+                    if current_cost >= max_cost or self.pulse_count >= max_pulses:
+                        self.stop_water()
+                    else:
+                        self.after(100, check)
             
             self.after(100, check)
     
@@ -201,10 +229,10 @@ class WaterMode(tk.Frame):
         if not self.dispensing:
             return
         
-        self.dispensing = False
+        # Send stop command to Arduino
+        self.app.send_to_arduino("PUMP:OFF")
         
-        # Stop pump
-        self.app.hardware.relay_off('pump_relay')
+        self.dispensing = False
         
         # Calculate final cost
         liters = self.pulse_count / Config.PULSES_PER_LITER
@@ -214,7 +242,15 @@ class WaterMode(tk.Frame):
         if self.app.session.current_user:
             if self.app.session.is_member():
                 # Deduct from water balance
-                self.app.session.current_user['water_balance'] -= final_cost
+                new_balance = self.app.session.current_user['water_balance'] - final_cost
+                self.app.session.current_user['water_balance'] = max(0, new_balance)
+                
+                # Update Firebase
+                if hasattr(self.app, 'firebase') and self.app.firebase:
+                    self.app.firebase.update_user_balance(
+                        self.app.session.current_user['id'],
+                        water_balance=self.app.session.current_user['water_balance']
+                    )
                 
                 # Start 5-second countdown
                 self.start_countdown()
@@ -228,7 +264,7 @@ class WaterMode(tk.Frame):
         
         # Show completion
         messagebox.showinfo("Complete", 
-                          f"Dispensed {liters:.2f}L\nCost: P{final_cost:.2f}")
+                          f"Dispensed {liters:.2f}L\nCost: {final_cost:.2f}")
     
     def start_countdown(self):
         """Start 5-second countdown to return to menu"""
@@ -251,16 +287,30 @@ class WaterMode(tk.Frame):
         """Return to main menu"""
         self.app.show_screen('main_menu')
     
+    def update_coin_display(self):
+        """Update display when coins are inserted"""
+        self.update_balance_display()
+        if self.cup_detected and self.has_balance():
+            self.start_btn.config(state="normal")
+    
     def on_show(self):
         """Called when screen is shown"""
         self.update_balance_display()
-    
-    def update_balance_display(self):
-        """Update balance display"""
-        if self.app.session.current_user:
-            if self.app.session.is_guest():
-                balance = self.app.session.coins_inserted
-            else:
-                balance = self.app.session.current_user['water_balance']
-            
-            self.balance_label.config(text=f"P{balance:.2f}")
+        
+        # Check if user is logged in
+        if not self.app.session.current_user:
+            messagebox.showerror("Error", "Please login first")
+            self.app.show_screen('account')
+            return
+        
+        # Reset display
+        self.liters_label.config(text="0.00 L")
+        self.cost_label.config(text="0.00")
+        
+        # Update button states
+        if self.cup_detected and self.has_balance():
+            self.start_btn.config(state="normal")
+        else:
+            self.start_btn.config(state="disabled")
+        
+        self.stop_btn.config(state="disabled")

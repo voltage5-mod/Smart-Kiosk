@@ -6,7 +6,7 @@ import sys
 import os
 import re
 
-# ----------------- CONFIGURATION -----------------
+# ----------------- CONFIaGURATION -----------------
 # Common Arduino ports - will try each in order
 ARDUINO_PORTS = [
     "/dev/ttyUSB0",    # Most common for USB-serial adapters
@@ -219,89 +219,6 @@ class ArduinoListener:
         # Skip empty lines
         if not line.strip():
             return
-            
-        # DEBUG: Log every line to see what's coming through
-        print(f"[ARDUINO_DEBUG] {line}")
-
-        # Handle simple coin event format - NEW PARSER
-        if "COIN_EVENT:" in line:
-            try:
-                coin_value = int(line.split("COIN_EVENT:")[1].strip())
-                
-                # Enhanced coin validation
-                current_time = time.time()
-                
-                # Check debounce delay
-                if current_time - self.last_coin_time < self.coin_debounce_delay:
-                    self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
-                    return
-                
-                # Check rate limiting
-                if self.coin_event_count >= self.max_coin_events_per_second:
-                    self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
-                    return
-                
-                # Validate coin value
-                if coin_value not in self.valid_coin_values:
-                    self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                    return
-                
-                # Valid coin detected - update state
-                self.last_coin_time = current_time
-                self.coin_event_count += 1
-                
-                self.logger.info(f"COIN EVENT: P{coin_value}")
-                
-                # Send simple coin value
-                self._dispatch_event("coin", coin_value, line)
-                return
-                
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse COIN_EVENT: {line} - {e}")
-                return
-
-        # Handle animation start command - IMPROVED PARSING
-        if "ANIMATION_START:" in line:
-            try:
-                print(f"DEBUG: Found ANIMATION_START in line: {line}")
-                
-                # Extract everything after ANIMATION_START:
-                anim_part = line.split("ANIMATION_START:")[1]
-                print(f"DEBUG: Animation part: {anim_part}")
-                
-                # Take only the part before any other text (like "DEBUG")
-                anim_part = anim_part.split("DEBUG")[0].strip()
-                print(f"DEBUG: Clean animation part: {anim_part}")
-                
-                # Remove any trailing non-numeric characters
-                anim_part = re.sub(r'[^0-9,].*$', '', anim_part)
-                print(f"DEBUG: Final animation part: {anim_part}")
-                
-                # Now parse the clean animation parameters
-                parts = anim_part.split(",")
-                print(f"DEBUG: Split parts: {parts}")
-                
-                if len(parts) >= 2:
-                    total_ml = int(parts[0])
-                    total_seconds = int(parts[1])
-                    
-                    self.logger.info(f"Animation start parsed: {total_ml}mL in {total_seconds} seconds")
-                    
-                    # Send animation parameters
-                    animation_data = {
-                        "total_ml": total_ml,
-                        "total_seconds": total_seconds
-                    }
-                    self._dispatch_event("animation_start", animation_data, line)
-                else:
-                    self.logger.warning(f"Invalid ANIMATION_START format: {anim_part}")
-                    print(f"DEBUG: Not enough parts. Expected 2, got {len(parts)}")
-                    
-                return
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse animation parameters: {line} - {e}")
-                print(f"DEBUG: Animation parsing error: {e}")
-                return
 
         # Handle COIN events - IMPROVED parsing
         if "Coin accepted: pulses=" in line:

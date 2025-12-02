@@ -189,12 +189,12 @@ void handleCup() {
   bool cupNow = detectCup();
 
   if (cupNow && !lastCupState) {
-    Serial.println("CUP_DETECTED");
+    Serial.println("cup_detected");
     cupDetectedTime = millis();
   }
 
   if (!cupNow && lastCupState) {
-    Serial.println("CUP_REMOVED");
+    Serial.println("cup_removed");
   }
 
   lastCupState = cupNow;
@@ -205,12 +205,12 @@ void handleCup() {
   int countdown = 3 - (elapsed / 1000);
 
   if (countdown > 0) {
-    Serial.print("COUNTDOWN:");
+    Serial.print("countdown:");
     Serial.println(countdown);
     return;
   }
 
-  Serial.println("COUNTDOWN_END");
+  Serial.println("countdown_end");
   startDispenseWithEvents();
 }
 
@@ -241,7 +241,7 @@ void startDispense(uint16_t ml) {
   float flowRate = 41.7;
   float seconds = (ml / flowRate) + 4.0;
 
-  Serial.print("ANIMATION_START:");
+  Serial.print("animation_start:");
   Serial.print(ml);
   Serial.print(",");
   Serial.println((uint16_t)(seconds + 0.5));

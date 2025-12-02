@@ -192,7 +192,8 @@ void handleCup() {
   }
   
   if (creditML <= 0) {
-    Serial.println(F("DEBUG: Cup detected but no credit"));
+    // Optional debug message
+    // Serial.println(F("DEBUG: Cup detected but no credit"));
     return;
   }
   

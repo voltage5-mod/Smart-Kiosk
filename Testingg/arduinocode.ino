@@ -206,7 +206,7 @@ void handleCup() {
 
 // ---------------- DISPENSING ----------------
 void startDispense(uint16_t ml) {
-  // Only allow dispensing in WATER mode
+  // Only allow diaspensing in WATER mode
   if (currentMode != MODE_WATER) {
     Serial.println(F("ERROR: Cannot dispense in CHARGING mode"));
     return;

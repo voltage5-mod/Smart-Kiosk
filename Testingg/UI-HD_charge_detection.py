@@ -187,7 +187,7 @@ if FIREBASE_AVAILABLE and SERVICE_KEY:
                         print(f"INFO: Slot {slot_key} exists: {slot_data.get('status', 'unknown')}")
                 except Exception as e:
                     print(f"WARN: Could not initialize slot {slot_key}: {e}")
-                    # Continue with other slots
+                    # Continue wiath other slots
                     
     except Exception as e:
         print(f"ERROR: Firebase initialization failed: {e}")

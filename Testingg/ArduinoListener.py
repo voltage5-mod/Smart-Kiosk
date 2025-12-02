@@ -81,7 +81,7 @@ class ArduinoListener:
             self.logger.info(f"Unregistered callback: {fn.__name__ if hasattr(fn, '__name__') else 'anonymous'}")
 
     # -------------------------------------------------
-    # SERIAL CONNECTION SETUP
+    # SERIAL CONNEaCTION SETUP
     # -------------------------------------------------
     def connect(self):
         """Attempt to connect to the Arduino via USB serial."""

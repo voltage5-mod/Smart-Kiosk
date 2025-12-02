@@ -83,7 +83,6 @@ class ArduinoListener:
     # -------------------------------------------------
     # SERIAL CONNECTION SETUP
     # -------------------------------------------------
-    # In the connect() method, replace with this:
     def connect(self):
         """Attempt to connect to the Arduino via USB serial."""
         if self.connected and self.ser and self.ser.is_open:
@@ -95,35 +94,25 @@ class ArduinoListener:
             try:
                 self.logger.info(f"Trying to connect to {port}...")
                 self.ser = serial.Serial(port, self.baud_rate, timeout=1)
-                time.sleep(2)  # Wait for Arduino reset
+                time.sleep(2)  # Allow Arduino reset after serial connection
                 
-                # Clear buffers
+                # Clear any existing data
                 self.ser.reset_input_buffer()
-                self.ser.reset_output_buffer()
                 
-                # Send a simple test command
-                self.ser.write(b"\n")  # Just send newline to wake up
-                time.sleep(0.1)
-                
-                # Check if Arduino responds
+                # Test communication by sending a status request
                 self.ser.write(b"STATUS\n")
                 time.sleep(0.5)
                 
-                # Try multiple times to read
-                for _ in range(3):
-                    if self.ser.in_waiting > 0:
-                        response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                        if response:
-                            self.logger.info(f"Arduino responded: {response}")
-                            self.connected = True
-                            self.actual_port = port
-                            return True
-                    time.sleep(0.1)
+                # Try to read response to verify connection
+                if self.ser.in_waiting > 0:
+                    test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    self.logger.info(f"Arduino responded: {test_response}")
+                else:
+                    self.logger.info("Arduino connected (no response to STATUS)")
                 
-                # If we get here but no response, still consider connected
-                self.logger.info(f"Arduino connected on {port} (no response to STATUS)")
                 self.connected = True
                 self.actual_port = port
+                self.logger.info(f"SUCCESS: ArduinoListener connected on {port} @ {self.baud_rate} baud")
                 return True
                 
             except (serial.SerialException, OSError) as e:
@@ -133,6 +122,7 @@ class ArduinoListener:
                 self.logger.debug(f"Unexpected error with {port}: {e}")
                 continue
         
+        # If we get here, no ports worked
         self.logger.error("ERROR: Failed to connect to Arduino on any port")
         self.connected = False
         return False

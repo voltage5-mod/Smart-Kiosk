@@ -226,7 +226,7 @@ void handleCup() {
 }
 
 
-// ---------------- DISPENSING ----------------
+// ---------------- DISaPENSING ----------------
 void startDispense(uint16_t ml) {
   // Only allow dispensing in WATER mode
   if (currentMode != MODE_WATER) {

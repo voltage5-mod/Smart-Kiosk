@@ -9,37 +9,44 @@
 #define VALVE_PIN         7     // Solenoid valve relay
 
 // ---------------- CONSTANTS ----------------
-#define COIN_DEBOUNCE_MS  50
-#define COIN_TIMEOUT_MS   800
-#define INACTIVITY_TIMEOUT 300000 // 5 min
-#define CUP_DISTANCE_CM   10.0
+#define COIN_DEBOUNCE_MS       40
+#define COIN_MIN_PULSE_SPACING 30
+#define COIN_ISR_RATE_LIMIT    3
+#define COIN_TIMEOUT_MS        700
+#define INACTIVITY_TIMEOUT     300000 // 5 minutes
+#define CUP_DETECT_THRESHOLD_CM 20.0
+#define CUP_STABLE_MS 200
+
+// Countdown settings
+bool countdownActive = false;
+unsigned long countdownStart = 0;
+int countdownValue = 3;
 
 // ---------------- FLOW CALIBRATION ----------------
-float pulsesPerLiter = 450.0;   // will be overwritten by EEPROM
+float pulsesPerLiter = 450.0;
 
 // ---------------- COIN CREDIT SETTINGS ----------------
-// UPDATED: Coin acceptor sends peso value as pulse count
-int coin1P_pulses = 1;    // ₱1 = 1 spulse
-int coin5P_pulses = 5;    // ₱5 = 5 pulses (matches peso value)
-int coin10P_pulses = 10;  // ₱10 = 10 pulses (matches peso value)
+int coin1P_pulses = 1;
+int coin5P_pulses = 3;
+int coin10P_pulses = 5;
 
-int creditML_1P = 50;
-int creditML_5P = 250;
-int creditML_10P = 500;
+int creditML_1P  = 50;   // ✔ 1 peso = 50 ml
+int creditML_5P  = 250;  // ✔ 5 peso = 250 ml
+int creditML_10P = 500;  // ✔ 10 peso = 500 ml
 
 // ---------------- VOLATILES ----------------
 volatile unsigned long lastCoinPulseTime = 0;
-volatile unsigned long lastCoinMicros = 0;
 volatile int coinPulseCount = 0;
 volatile unsigned long flowPulseCount = 0;
 
 // ---------------- SYSTEM STATE ----------------
 bool dispensing = false;
-bool coinInputEnabled = true;
-
+bool cupDetected = false;
 int creditML = 0;
+
 unsigned long targetPulses = 0;
 unsigned long startFlowCount = 0;
+
 unsigned long lastActivity = 0;
 
 // Serial change detection
@@ -47,21 +54,32 @@ int last_creditML = -1;
 bool last_dispensing = false;
 unsigned long last_flowCount = 0;
 
+// Coin validation state
+unsigned long lastValidCoinTime = 0;
+bool coinValidationActive = false;
+unsigned long coinValidationStart = 0;
+#define COIN_VALIDATION_TIMEOUT 1000 // 1 second to validate coin pattern
+
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
-  if (!coinInputEnabled) return;
-
-  unsigned long nowMicros = micros();
-
-  // Noise pulses are <5ms apart
-  if (nowMicros - lastCoinMicros < 5000) return;
-
-  lastCoinMicros = nowMicros;
-
   unsigned long now = millis();
+
+  // Rate limiting - prevent multiple triggers in quick succession
+  if (now - lastCoinPulseTime < COIN_ISR_RATE_LIMIT) return;
+  
+  // Minimum spacing between pulses
+  if (now - lastCoinPulseTime < COIN_MIN_PULSE_SPACING) return;
+
+  // Debounce check
   if (now - lastCoinPulseTime > COIN_DEBOUNCE_MS) {
     coinPulseCount++;
     lastCoinPulseTime = now;
+    
+    // Start coin validation timer on first pulse
+    if (coinPulseCount == 1 && !coinValidationActive) {
+      coinValidationActive = true;
+      coinValidationStart = now;
+    }
   }
 }
 
@@ -86,15 +104,11 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(COIN_PIN), coinISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowISR, RISING);
 
-  EEPROM.get(0, coin1P_pulses);
-  EEPROM.get(4, coin5P_pulses);
-  EEPROM.get(8, coin10P_pulses);
   EEPROM.get(12, pulsesPerLiter);
-
-  if (isnan(pulsesPerLiter) || pulsesPerLiter < 200 || pulsesPerLiter > 10000)
+  if (isnan(pulsesPerLiter) || pulsesPerLiter < 200 || pulsesPerLiter > 5000)
     pulsesPerLiter = 450.0;
 
-  Serial.println("System Ready. Insert coin or type 'CAL'/'FLOWCAL'.");
+  Serial.println("System Ready — Cup Movement Trigger Mode Enabled.");
   lastActivity = millis();
 }
 
@@ -102,33 +116,40 @@ void setup() {
 void loop() {
   handleCoin();
   handleCup();
+  handleCountdown();
   handleDispensing();
 
   if (millis() - lastActivity > INACTIVITY_TIMEOUT && !dispensing)
     resetSystem();
 
-  if (Serial.available()) handleSerialCommand();
+  if (Serial.available())
+    handleSerialCommand();
 
-  if (creditML != last_creditML || dispensing != last_dispensing || flowPulseCount != last_flowCount) {
+  // UI Updates
+  if (creditML != last_creditML ||
+      dispensing != last_dispensing ||
+      flowPulseCount != last_flowCount) {
+
     Serial.print("CREDIT_ML: "); Serial.println(creditML);
     Serial.print("DISPENSING: "); Serial.println(dispensing ? "YES" : "NO");
     Serial.print("FLOW_PULSES: "); Serial.println(flowPulseCount);
-    Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount), 2);
+    Serial.print("DISPENSED_ML: "); Serial.println(pulsesToML(flowPulseCount - startFlowCount));
+
     last_creditML = creditML;
     last_dispensing = dispensing;
     last_flowCount = flowPulseCount;
   }
 
-  delay(100);
+  delay(80);
 }
 
-// ---------------- HELPERS ----------------
+// ---------------- HELPER FUNCTIONS ----------------
 float pulsesToML(unsigned long pulses) {
   return (pulses / pulsesPerLiter) * 1000.0;
 }
 
-// Cup detection
-bool detectCup() {
+// --------------- RAW CUP READING ----------------
+bool rawCupReading() {
   digitalWrite(CUP_TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(CUP_TRIG_PIN, HIGH);
@@ -137,143 +158,66 @@ bool detectCup() {
 
   long duration = pulseIn(CUP_ECHO_PIN, HIGH, 30000);
   float distance = duration * 0.034 / 2;
-  return (distance > 0 && distance < CUP_DISTANCE_CM);
-}
 
-// ---------------- COIN HANDLER ----------------
-void handleCoin() {
-  if (!coinInputEnabled) {
-    coinPulseCount = 0;
-    return;
-  }
-
-  if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
-    int pulses = coinPulseCount;
-    coinPulseCount = 0;
-
-    // DEBUG: Show what we received
-    Serial.print("DEBUG: Received ");
-    Serial.print(pulses);
-    Serial.println(" pulse(s)");
-
-    if (pulses < 1 || pulses > 12) {
-      Serial.println("Rejected noise pulses.");
-      return;
-    }
-
-    // EXACT MATCHING for peso-value-as-pulse-count pattern
-    int coinValue = 0;
-    int addedML = 0;
-    
-    if (pulses == 1) {
-      coinValue = 1;
-      addedML = creditML_1P;
-      Serial.println("DEBUG: Recognized as ₱1 coin");
-    } 
-    else if (pulses == 5) {
-      coinValue = 5;
-      addedML = creditML_5P;
-      Serial.println("DEBUG: Recognized as ₱5 coin");
-    }
-    else if (pulses == 10) {
-      coinValue = 10;
-      addedML = creditML_10P;
-      Serial.println("DEBUG: Recognized as ₱10 coin");
-    }
-    else {
-      Serial.print("Unknown coin pattern: ");
-      Serial.println(pulses);
-      return;
-    }
-
-    creditML += addedML;
-
-    Serial.print("Coin accepted: pulses=");
-    Serial.print(pulses);
-    Serial.print(", value=P");
-    Serial.print(coinValue);
-    Serial.print(", added=");
-    Serial.print(addedML);
-    Serial.print("mL, total=");
-    Serial.print(creditML);
-    Serial.println("mL");
-
-    lastActivity = millis();
-  }
+  return (distance > 0 && distance < CUP_DETECT_THRESHOLD_CM);
 }
 
 // ---------------- CUP HANDLER ----------------
 void handleCup() {
-  if (detectCup() && creditML > 0 && !dispensing) {
-    Serial.println("Cup detected. Starting dispense...");
-    startDispense(creditML);
+  bool cupPresent = rawCupReading();
+
+  if (!cupDetected && cupPresent && creditML > 0 && !dispensing && !countdownActive) {
+    cupDetected = true;
+
+    Serial.println("CUP_DETECTED");
+
+    // Start 3 second countdown
+    countdownActive = true;
+    countdownStart = millis();
+    countdownValue = 3;
+    Serial.println("COUNTDOWN 3");
   }
 }
 
-// ---------------- DISPENSING ----------------
+// ---------------- COUNTDOWN HANDLER ----------------
+void handleCountdown() {
+  if (!countdownActive) return;
+
+  unsigned long elapsed = millis() - countdownStart;
+
+  if (elapsed >= (3000 - (countdownValue * 1000))) {
+    if (countdownValue > 1) {
+      countdownValue--;
+      Serial.print("COUNTDOWN ");
+      Serial.println(countdownValue);
+    } else {
+      Serial.println("COUNTDOWN_END");
+      countdownActive = false;
+      startDispense(creditML);
+    }
+  }
+}
+
+// ---------------- DISPENSING ENGINE ----------------
 void startDispense(int ml) {
-  coinInputEnabled = false;
-  detachInterrupt(digitalPinToInterrupt(COIN_PIN));
-  coinPulseCount = 0;
-
-  // Accurate target pulses (pure formula)
-  targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
   startFlowCount = flowPulseCount;
-
-  // Flow stabilization for horizontal sensor
-  delay(200);
+  targetPulses = (unsigned long)((ml / 1000.0) * pulsesPerLiter);
 
   digitalWrite(PUMP_PIN, HIGH);
   digitalWrite(VALVE_PIN, HIGH);
   dispensing = true;
-  
-  // Calculate exact animation time based on 41.70 mL/second flow rate
-  float baseFlowRateMLperSecond = 41.70;
-  float estimatedSeconds = ml / baseFlowRateMLperSecond;
 
-    estimatedSeconds += 4.0;
-  
-  // NO minimum time, NO extra seconds - exact timing only
-   int animationSeconds = (int)(estimatedSeconds + 0.5f); 
-  
-  // FIXED: Send clean animation command FIRST, then debug messages
-  Serial.print("ANIMATION_START:");
-  Serial.print(ml);
-  Serial.print(",");
-  Serial.println(animationSeconds);
-  
-  // Small delay to ensure the animation command is sent completely
-  delay(50);
-  
-  // Then send debug messages separately
-  Serial.print("DEBUG: Starting dispense - ML: ");
-  Serial.print(ml);
-  Serial.print(", Flow Rate: ");
-  Serial.print(baseFlowRateMLperSecond);
-  Serial.print(" mL/s, ExactSeconds: ");
-  Serial.println(animationSeconds);
+  Serial.println("DISPENSE_START");
+  lastActivity = millis();
 }
 
 void handleDispensing() {
   if (!dispensing) return;
 
   unsigned long dispensedPulses = flowPulseCount - startFlowCount;
-  
-  // Show dispensing progress
-  static unsigned long lastProgress = 0;
-  if (millis() - lastProgress > 1000) {
-    float progressML = pulsesToML(dispensedPulses);
-    Serial.print("Dispensing progress: ");
-    Serial.print(progressML, 1);
-    Serial.print("mL / ");
-    Serial.print(creditML);
-    Serial.println("mL");
-    lastProgress = millis();
-  }
-  
-  if (dispensedPulses >= targetPulses) {
+
+  if (dispensedPulses >= targetPulses)
     stopDispense();
-  }
 }
 
 void stopDispense() {
@@ -282,18 +226,71 @@ void stopDispense() {
   dispensing = false;
 
   float dispensedML = pulsesToML(flowPulseCount - startFlowCount);
-  Serial.print("Dispensing complete. Total: ");
-  Serial.print(dispensedML, 1);
-  Serial.println(" ml");
+
+  Serial.print("DISPENSE_DONE ");
+  Serial.println(dispensedML);
 
   creditML = 0;
+  cupDetected = false;
+  lastActivity = millis();
+}
 
-  delay(300); // noise-clearing window
+// ---------------- COIN HANDLER ----------------
+void handleCoin() {
+  // Handle coin validation timeout
+  if (coinValidationActive && (millis() - coinValidationStart > COIN_VALIDATION_TIMEOUT)) {
+    // Coin validation period expired - process whatever pulses we have
+    processCoinPulses();
+    coinValidationActive = false;
+    return;
+  }
+  
+  // If we have pulses and sufficient time has passed since last pulse, process them
+  if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
+    processCoinPulses();
+  }
+}
 
+void processCoinPulses() {
+  if (coinPulseCount == 0) return;
+
+  int pulses = coinPulseCount;
   coinPulseCount = 0;
-  lastCoinMicros = micros();
-  coinInputEnabled = true;
-  attachInterrupt(digitalPinToInterrupt(COIN_PIN), coinISR, FALLING);
+  coinValidationActive = false;
+
+  // Enhanced coin validation with stricter matching
+  int coinValue = 0;
+  int addedML = 0;
+  
+  if (pulses == coin1P_pulses) {
+    coinValue = 1;
+    addedML = creditML_1P;
+  } else if (pulses == coin5P_pulses) {
+    coinValue = 5;
+    addedML = creditML_5P;
+  } else if (pulses == coin10P_pulses) {
+    coinValue = 10;
+    addedML = creditML_10P;
+  } else {
+    // Invalid coin pattern - log but don't add credit
+    Serial.print("Unknown coin pattern: ");
+    Serial.println(pulses);
+    return;
+  }
+
+  // Valid coin detected
+  creditML += addedML;
+  lastValidCoinTime = millis();
+
+  Serial.print("Coin accepted: pulses=");
+  Serial.print(pulses);
+  Serial.print(", value=P");
+  Serial.print(coinValue);
+  Serial.print(", added=");
+  Serial.print(addedML);
+  Serial.print("mL, total=");
+  Serial.print(creditML);
+  Serial.println("mL");
 
   lastActivity = millis();
 }
@@ -303,141 +300,48 @@ void handleSerialCommand() {
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
 
-  if (cmd.equalsIgnoreCase("CAL")) calibrateCoins();
-  else if (cmd.equalsIgnoreCase("FLOWCAL")) calibrateFlow();
-  else if (cmd.equalsIgnoreCase("STATUS")) {
-    Serial.print("Credit: "); Serial.print(creditML); Serial.println(" mL");
-    Serial.print("Flow pulses: "); Serial.println(flowPulseCount);
-    Serial.print("Flow mL: "); Serial.println(pulsesToML(flowPulseCount), 2);
-    Serial.print("Flow calibration: "); Serial.println(pulsesPerLiter);
-    Serial.print("Coin patterns - ₱1: "); Serial.print(coin1P_pulses);
-    Serial.print(", ₱5: "); Serial.print(coin5P_pulses);
-    Serial.print(", ₱10: "); Serial.println(coin10P_pulses);
-  }
-  else if (cmd.equalsIgnoreCase("RESET")) resetSystem();
-  else if (cmd.equalsIgnoreCase("TEST")) testCoinPatterns();
-}
-
-// ---------------- CALIBRATION ----------------
-void calibrateCoins() {
-  Serial.println("=== COIN CALIBRATION ===");
-  Serial.println("Insert coins when prompted...");
-
-  coinPulseCount = 0;
-  Serial.println("Insert 1 Peso coin...");
-  waitForCoinPulse();
-  coin1P_pulses = coinPulseCount;
-  EEPROM.put(0, coin1P_pulses);
-  Serial.print("₱1 coin: "); Serial.print(coin1P_pulses); Serial.println(" pulses");
-
-  coinPulseCount = 0;
-  Serial.println("Insert 5 Peso coin...");
-  waitForCoinPulse();
-  coin5P_pulses = coinPulseCount;
-  EEPROM.put(4, coin5P_pulses);
-  Serial.print("₱5 coin: "); Serial.print(coin5P_pulses); Serial.println(" pulses");
-
-  coinPulseCount = 0;
-  Serial.println("Insert 10 Peso coin...");
-  waitForCoinPulse();
-  coin10P_pulses = coinPulseCount;
-  EEPROM.put(8, coin10P_pulses);
-  Serial.print("₱10 coin: "); Serial.print(coin10P_pulses); Serial.println(" pulses");
-
-  Serial.println("Coin calibration saved to EEPROM.");
-}
-
-void waitForCoinPulse() {
-  unsigned long start = millis();
-  while (millis() - start < 15000) { // 15 second timeout
-    if (coinPulseCount > 0 && millis() - lastCoinPulseTime > COIN_TIMEOUT_MS) {
-      Serial.print("Detected: "); Serial.print(coinPulseCount); Serial.println(" pulses");
-      return;
-    }
-    delay(100);
-  }
-  Serial.println("Timeout. No coin detected.");
-}
-
-// ---------------- FLOW CALIBRATION ----------------
-void calibrateFlow() {
-  Serial.println("=== FLOW CALIBRATION ===");
-  Serial.println("Collect exactly 1000 ml and type DONE when ready.");
-
-  flowPulseCount = 0;
-  digitalWrite(PUMP_PIN, HIGH);
-  digitalWrite(VALVE_PIN, HIGH);
-
-  while (true) {
-    if (Serial.available()) {
-      String cmd = Serial.readStringUntil('\n');
-      cmd.trim();
-      if (cmd.equalsIgnoreCase("DONE")) break;
-    }
-    // Show progress
-    static unsigned long lastUpdate = 0;
-    if (millis() - lastUpdate > 1000) {
-      Serial.print("Current pulses: "); Serial.println(flowPulseCount);
-      lastUpdate = millis();
+  if (cmd.equalsIgnoreCase("RESET"))
+    resetSystem();
+  else if (cmd.equalsIgnoreCase("STATUS"))
+    printStatus();
+  else if (cmd.startsWith("CALIBRATE")) {
+    // Calibration command format: CALIBRATE 450.0
+    int spaceIndex = cmd.indexOf(' ');
+    if (spaceIndex > 0) {
+      String valueStr = cmd.substring(spaceIndex + 1);
+      float newCalibration = valueStr.toFloat();
+      if (newCalibration >= 200 && newCalibration <= 5000) {
+        pulsesPerLiter = newCalibration;
+        EEPROM.put(12, pulsesPerLiter);
+        Serial.print("Calibration updated: ");
+        Serial.println(pulsesPerLiter);
+      }
     }
   }
-
-  digitalWrite(PUMP_PIN, LOW);
-  digitalWrite(VALVE_PIN, LOW);
-
-  pulsesPerLiter = flowPulseCount;
-  EEPROM.put(12, pulsesPerLiter);
-
-  Serial.print("New calibration saved: ");
-  Serial.print(pulsesPerLiter);
-  Serial.println(" pulses per liter.");
 }
 
-// ---------------- TEST FUNCTION ----------------
-void testCoinPatterns() {
-  Serial.println("=== COIN TEST MODE ===");
-  Serial.println("Insert coins to see pulse counts. Type any key to exit.");
-  Serial.println("Waiting for coins...");
-
-  unsigned long startTime = millis();
-  while (millis() - startTime < 60000) { // Run for 60 seconds
-    if (coinPulseCount > 0 && (millis() - lastCoinPulseTime > COIN_TIMEOUT_MS)) {
-      int pulses = coinPulseCount;
-      coinPulseCount = 0;
-      
-      Serial.print("TEST: Detected ");
-      Serial.print(pulses);
-      Serial.println(" pulses");
-      
-      // Try to identify the coin
-      if (pulses == 1) Serial.println("TEST: This appears to be a ₱1 coin");
-      else if (pulses == 5) Serial.println("TEST: This appears to be a ₱5 coin");
-      else if (pulses == 10) Serial.println("TEST: This appears to be a ₱10 coin");
-      else Serial.println("TEST: Unknown coin pattern");
-    }
-    
-    if (Serial.available()) {
-      Serial.readString(); // Clear buffer
-      break;
-    }
-    
-    delay(100);
-  }
-  Serial.println("=== TEST MODE ENDED ===");
+void printStatus() {
+  Serial.println("=== SYSTEM STATUS ===");
+  Serial.print("Credit: "); Serial.print(creditML); Serial.println(" mL");
+  Serial.print("Dispensing: "); Serial.println(dispensing ? "YES" : "NO");
+  Serial.print("Cup Detected: "); Serial.println(cupDetected ? "YES" : "NO");
+  Serial.print("Countdown Active: "); Serial.println(countdownActive ? "YES" : "NO");
+  Serial.print("Flow Pulses: "); Serial.println(flowPulseCount);
+  Serial.print("Pulses/Liter: "); Serial.println(pulsesPerLiter);
+  Serial.println("===================");
 }
 
 // ---------------- RESET ----------------
 void resetSystem() {
   creditML = 0;
   dispensing = false;
-
-  coinInputEnabled = true;
+  countdownActive = false;
+  cupDetected = false;
   coinPulseCount = 0;
+  coinValidationActive = false;
 
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);
-
-  attachInterrupt(digitalPinToInterrupt(COIN_PIN), coinISR, FALLING);
 
   Serial.println("System reset.");
   lastActivity = millis();

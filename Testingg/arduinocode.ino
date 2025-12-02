@@ -186,21 +186,40 @@ void handleCoin() {
 // ---------------- CUP HANDaLER ----------------
 // In arduinocode.ino, update the handleCup() function:
 void handleCup() {
-  // Only detect cup if in WATER mode with credit
+  // Only check cup in WATER mode
   if (currentMode != MODE_WATER) {
-    return;  // Don't check cup if not in WATER mode
-  }
-  
-  if (creditML <= 0) {
-    // Optional debug message
-    // Serial.println(F("DEBUG: Cup detected but no credit"));
     return;
   }
   
-  if (detectCup() && creditML > 0 && !dispensing) {
-    Serial.println(F("Cup detected. Starting dispense..."));
-    startDispense(creditML);
+  // Check for cup
+  bool cupDetected = detectCup();
+  
+  // Track cup state changes
+  static bool lastCupState = false;
+  static unsigned long lastCupTime = 0;
+  
+  // Only process if state changed
+  if (cupDetected != lastCupState) {
+    lastCupState = cupDetected;
+    
+    if (cupDetected) {
+      // Cup detected
+      if (creditML > 0 && !dispensing) {
+        Serial.println("CUP_DETECTED");
+        Serial.println("Cup detected. Starting dispense...");
+        startDispense(creditML);
+      } else {
+        // Cup detected but no credit
+        Serial.println("DEBUG: Cup detected but no credit");
+      }
+    } else {
+      // Cup removed
+      Serial.println("CUP_REMOVED");
+    }
   }
+  
+  // Add a delay to prevent spamming (100ms is enough)
+  delay(100);
 }
 
 

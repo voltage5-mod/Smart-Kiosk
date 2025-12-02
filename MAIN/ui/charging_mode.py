@@ -34,7 +34,7 @@ class ChargingMode(tk.Frame):
         self.balance_label.place(relx=0.35, rely=0.2)
         
         # Instructions
-        tk.Label(self, text="INSERT COIN → SELECT SLOT → PLUG DEVICE → AUTO-START", 
+        tk.Label(self, text="INSERT COIN -> SELECT SLOT -> PLUG DEVICE -> AUTO-START", 
                 font=("Arial", 14), fg="#f39c12", bg="#2c3e50").pack(pady=10)
         
         tk.Label(self, text=f"Rate: P{Config.CHARGING_RATE:.2f} per 30 minutes",

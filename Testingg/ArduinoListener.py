@@ -4,9 +4,8 @@ import time
 import logging
 import sys
 import os
-import re
 
-# ----------------- CONFIaGURATION -----------------
+# ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
 ARDUINO_PORTS = [
     "/dev/ttyUSB0",    # Most common for USB-serial adapters
@@ -41,12 +40,10 @@ class ArduinoListener:
         self.callbacks = []
         self.actual_port = None
         
-        # Enhanced coin validation state
+        # Coin validation state
         self.last_coin_time = 0
-        self.coin_debounce_delay = 1.0  # 1 second between coin events
+        self.coin_debounce_delay = 0.5  # Minimum 500ms between coin events
         self.valid_coin_values = [1, 5, 10]  # Only accept these coin values
-        self.coin_event_count = 0
-        self.max_coin_events_per_second = 2  # Maximum 2 coin events per second
         
         # Set up logging without Unicode emojis
         logging.basicConfig(
@@ -166,17 +163,8 @@ class ArduinoListener:
         """Continuously read from Arduino and parse messages."""
         self.logger.info("Starting Arduino read loop...")
         
-        # Reset coin event counter every second
-        last_reset_time = time.time()
-        
         while self.running:
             try:
-                # Reset coin event counter every second
-                current_time = time.time()
-                if current_time - last_reset_time >= 1.0:
-                    self.coin_event_count = 0
-                    last_reset_time = current_time
-                
                 if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
                     line = self.ser.readline().decode("utf-8", errors="ignore").strip()
                     if line:
@@ -213,36 +201,38 @@ class ArduinoListener:
     # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """Parse and dispatch Arduino messages with enhanced validation."""
+        """Parse and dispatch Arduino messages."""
         self.logger.debug(f"[Arduino RAW] {line}")
 
         # Skip empty lines
         if not line.strip():
             return
 
-        # Handle COIN events - IMPROVED parsing
+        # Handle COIN events in various formats
         if "Coin accepted: pulses=" in line:
             try:
-                # More robust parsing that handles different formats
-                pulses_match = re.search(r'pulses=(\d+)', line)
-                value_match = re.search(r'value=P?(\d+)', line)
-                added_match = re.search(r'added=(\d+)', line)
-                
-                if pulses_match and value_match:
-                    pulses = int(pulses_match.group(1))
-                    coin_value = int(value_match.group(1))
+                # Extract pulse count from "Coin accepted: pulses=1, value=P1, added=50mL, total=50mL"
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    # Get pulse count
+                    pulse_part = parts[0]
+                    pulse_str = pulse_part.split("pulses=")[1].strip()
+                    pulses = int(pulse_str)
                     
-                    # Enhanced coin validation
+                    # Get coin value
+                    value_part = parts[1]
+                    value_str = value_part.split("value=P")[1].strip()
+                    coin_value = int(value_str)
+                    
+                    # Get added mL
+                    added_part = parts[2]
+                    added_str = added_part.split("added=")[1].replace("mL", "").strip()
+                    added_ml = int(added_str)
+                    
+                    # Apply coin debouncing
                     current_time = time.time()
-                    
-                    # Check debounce delay
                     if current_time - self.last_coin_time < self.coin_debounce_delay:
                         self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
-                        return
-                    
-                    # Check rate limiting
-                    if self.coin_event_count >= self.max_coin_events_per_second:
-                        self.logger.warning(f"Coin rate limited: too many coins per second (P{coin_value})")
                         return
                     
                     # Validate coin value
@@ -250,18 +240,16 @@ class ArduinoListener:
                         self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
                         return
                     
-                    # Valid coin detected - update state
+                    # Valid coin detected
                     self.last_coin_time = current_time
-                    self.coin_event_count += 1
                     
-                    added_ml = 0
-                    if added_match:
-                        added_ml = int(added_match.group(1))
+                    event = "coin"
+                    value = coin_value
+                    self.logger.info(f"COIN ACCEPTED: {event} = P{value}, pulses={pulses}, added={added_ml}mL")
                     
-                    self.logger.info(f"COIN ACCEPTED: P{coin_value}, pulses={pulses}, added={added_ml}mL")
-                    
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
+                    # Dispatch both coin event and water credit event
+                    self._dispatch_event(event, value, line)
+                    self._dispatch_event("coin_water", added_ml, line)
                     
                 return
                 
@@ -269,23 +257,116 @@ class ArduinoListener:
                 self.logger.warning(f"Could not parse coin details from: {line} - {e}")
                 return
 
-        # Handle TEST Coin events
-        elif "TEST Coin:" in line:
+        # Handle COIN: format (legacy)
+        elif line.startswith("COIN:"):
             try:
-                # Extract from test coin format using regex
-                value_match = re.search(r'value=P?(\d+)', line)
-                if value_match:
-                    coin_value = int(value_match.group(1))
-                    
-                    self.logger.info(f"TEST COIN: P{coin_value}")
-                    
-                    # Send simple coin value
-                    self._dispatch_event("coin", coin_value, line)
-                    
+                coin_value = int(line.split(":")[1].strip())
+                
+                # Apply coin debouncing
+                current_time = time.time()
+                if current_time - self.last_coin_time < self.coin_debounce_delay:
+                    self.logger.warning(f"Coin debounced (legacy): too soon since last coin (P{coin_value})")
+                    return
+                
+                # Validate coin value
+                if coin_value not in self.valid_coin_values:
+                    self.logger.warning(f"Invalid coin value rejected (legacy): P{coin_value}")
+                    return
+                
+                self.last_coin_time = current_time
+                
+                event = "coin"
+                value = coin_value
+                self.logger.info(f"COIN ACCEPTED (legacy): {event} = P{value} from: {line}")
+                self._dispatch_event(event, value, line)
                 return
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse TEST coin details: {line} - {e}")
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COIN: value from: {line}")
                 return
+
+        # Handle CUP_DETECTED
+        elif line.startswith("CUP_DETECTED"):
+            event = "cup_detected"
+            value = True
+            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle COUNTDOWN events
+        elif line.startswith("COUNTDOWN "):
+            try:
+                countdown_value = int(line.split()[1])
+                event = "countdown"
+                value = countdown_value
+                self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
+                return
+
+        # Handle COUNTDOWN_END
+        elif line.startswith("COUNTDOWN_END"):
+            event = "countdown_end"
+            value = True
+            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle DISPENSE_START
+        elif line.startswith("DISPENSE_START"):
+            event = "dispense_start"
+            value = True
+            self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle DISPENSE_DONE
+        elif line.startswith("DISPENSE_DONE"):
+            try:
+                # Format: "DISPENSE_DONE 100.82"
+                ml_dispensed = float(line.split()[1])
+                event = "dispense_done"
+                value = ml_dispensed
+                self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
+                self._dispatch_event(event, value, line)
+                return
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
+                return
+
+        # Handle CREDIT_ML updates (for debugging)
+        elif line.startswith("CREDIT_ML:"):
+            try:
+                credit_ml = int(line.split(":")[1].strip())
+                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
+                # You could dispatch this as an event if needed
+                return
+            except (ValueError, IndexError) as e:
+                pass
+
+        # Handle SYSTEM READY
+        elif "System Ready" in line or "READY" in line:
+            event = "system_ready"
+            value = True
+            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
+            self._dispatch_event(event, value, line)
+            return
+
+        # Handle SYSTEM STATUS
+        elif line.startswith("=== SYSTEM STATUS ==="):
+            self.logger.info("Arduino status report received")
+            # Don't dispatch this as an event, just log it
+            return
+
+        # Skip debug status lines (they're too frequent)
+        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
+            self.logger.debug(f"Status update: {line}")
+            return
+
+        # Log unhandled lines for debugging
+        else:
+            self.logger.info(f"UNHANDLED: {line}")
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
@@ -374,7 +455,6 @@ class ArduinoListener:
     def reset_coin_debounce(self):
         """Reset the coin debounce timer (useful for testing)."""
         self.last_coin_time = 0
-        self.coin_event_count = 0
         self.logger.info("Coin debounce timer reset")
 
 
@@ -402,11 +482,7 @@ def test_arduino_listener():
             
             # Test sending commands
             listener.send_command("STATUS")
-            listener.send_command("TEST_COIN_1")
-            time.sleep(1)
-            listener.send_command("TEST_COIN_5")
-            time.sleep(1)
-            listener.send_command("TEST_COIN_10")
+            listener.send_command("RESET")
             
             # Run for 30 seconds to capture events
             print("LISTENING: Listening for Arduino events for 30 seconds...")

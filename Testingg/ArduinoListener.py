@@ -4,6 +4,7 @@ import time
 import logging
 import sys
 import os
+import re
 
 # ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
@@ -40,10 +41,19 @@ class ArduinoListener:
         self.callbacks = []
         self.actual_port = None
         
-        # Coin validation state
+        # Add these for duplicate prevention
+        self._processed_lines = []  # Track processed message hashes
+        self._last_coin_time = 0    # Last coin processing time
+        self._last_coin_value = 0   # Last coin value processed
+        
+        # ... rest of initialization ...
+
+        # Enhanced coin validation state
         self.last_coin_time = 0
-        self.coin_debounce_delay = 0.5  # Minimum 500ms between coin events
+        self.coin_debounce_delay = 1.0  # 1 second between coin events
         self.valid_coin_values = [1, 5, 10]  # Only accept these coin values
+        self.coin_event_count = 0
+        self.max_coin_events_per_second = 2  # Maximum 2 coin events per second
         
         # Set up logging without Unicode emojis
         logging.basicConfig(
@@ -73,6 +83,7 @@ class ArduinoListener:
     # -------------------------------------------------
     # SERIAL CONNECTION SETUP
     # -------------------------------------------------
+    # In the connect() method, replace with this:
     def connect(self):
         """Attempt to connect to the Arduino via USB serial."""
         if self.connected and self.ser and self.ser.is_open:
@@ -84,25 +95,35 @@ class ArduinoListener:
             try:
                 self.logger.info(f"Trying to connect to {port}...")
                 self.ser = serial.Serial(port, self.baud_rate, timeout=1)
-                time.sleep(2)  # Allow Arduino reset after serial connection
+                time.sleep(2)  # Wait for Arduino reset
                 
-                # Clear any existing data
+                # Clear buffers
                 self.ser.reset_input_buffer()
+                self.ser.reset_output_buffer()
                 
-                # Test communication by sending a status request
+                # Send a simple test command
+                self.ser.write(b"\n")  # Just send newline to wake up
+                time.sleep(0.1)
+                
+                # Check if Arduino responds
                 self.ser.write(b"STATUS\n")
                 time.sleep(0.5)
                 
-                # Try to read response to verify connection
-                if self.ser.in_waiting > 0:
-                    test_response = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    self.logger.info(f"Arduino responded: {test_response}")
-                else:
-                    self.logger.info("Arduino connected (no response to STATUS)")
+                # Try multiple times to read
+                for _ in range(3):
+                    if self.ser.in_waiting > 0:
+                        response = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        if response:
+                            self.logger.info(f"Arduino responded: {response}")
+                            self.connected = True
+                            self.actual_port = port
+                            return True
+                    time.sleep(0.1)
                 
+                # If we get here but no response, still consider connected
+                self.logger.info(f"Arduino connected on {port} (no response to STATUS)")
                 self.connected = True
                 self.actual_port = port
-                self.logger.info(f"SUCCESS: ArduinoListener connected on {port} @ {self.baud_rate} baud")
                 return True
                 
             except (serial.SerialException, OSError) as e:
@@ -112,7 +133,6 @@ class ArduinoListener:
                 self.logger.debug(f"Unexpected error with {port}: {e}")
                 continue
         
-        # If we get here, no ports worked
         self.logger.error("ERROR: Failed to connect to Arduino on any port")
         self.connected = False
         return False
@@ -163,8 +183,17 @@ class ArduinoListener:
         """Continuously read from Arduino and parse messages."""
         self.logger.info("Starting Arduino read loop...")
         
+        # Reset coin event counter every second
+        last_reset_time = time.time()
+        
         while self.running:
             try:
+                # Reset coin event counter every second
+                current_time = time.time()
+                if current_time - last_reset_time >= 1.0:
+                    self.coin_event_count = 0
+                    last_reset_time = current_time
+                
                 if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
                     line = self.ser.readline().decode("utf-8", errors="ignore").strip()
                     if line:
@@ -201,175 +230,96 @@ class ArduinoListener:
     # MESSAGE PARSER
     # -------------------------------------------------
     def _process_line(self, line):
-        """Parse and dispatch Arduino messages."""
-        self.logger.debug(f"[Arduino RAW] {line}")
-
-        # Skip empty lines
+        """Parse Arduino messages - clean and simple."""
         if not line.strip():
             return
-
-        # Handle COIN events in various formats
-        if "Coin accepted: pulses=" in line:
+        
+        line_stripped = line.strip()
+        
+        # 1. COIN MESSAGES - Single format: "COIN:1", "COIN:5", "COIN:10"
+        if line_stripped.startswith("COIN:"):
             try:
-                # Extract pulse count from "Coin accepted: pulses=1, value=P1, added=50mL, total=50mL"
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    # Get pulse count
-                    pulse_part = parts[0]
-                    pulse_str = pulse_part.split("pulses=")[1].strip()
-                    pulses = int(pulse_str)
-                    
-                    # Get coin value
-                    value_part = parts[1]
-                    value_str = value_part.split("value=P")[1].strip()
-                    coin_value = int(value_str)
-                    
-                    # Get added mL
-                    added_part = parts[2]
-                    added_str = added_part.split("added=")[1].replace("mL", "").strip()
-                    added_ml = int(added_str)
-                    
-                    # Apply coin debouncing
-                    current_time = time.time()
-                    if current_time - self.last_coin_time < self.coin_debounce_delay:
-                        self.logger.warning(f"Coin debounced: too soon since last coin (P{coin_value})")
-                        return
-                    
-                    # Validate coin value
-                    if coin_value not in self.valid_coin_values:
-                        self.logger.warning(f"Invalid coin value rejected: P{coin_value}")
-                        return
-                    
-                    # Valid coin detected
-                    self.last_coin_time = current_time
-                    
-                    event = "coin"
-                    value = coin_value
-                    self.logger.info(f"COIN ACCEPTED: {event} = P{value}, pulses={pulses}, added={added_ml}mL")
-                    
-                    # Dispatch both coin event and water credit event
-                    self._dispatch_event(event, value, line)
-                    self._dispatch_event("coin_water", added_ml, line)
-                    
-                return
+                # Extract just the number after "COIN:"
+                coin_str = line_stripped.split("COIN:")[1].strip()
+                coin_value = int(coin_str)
                 
-            except (ValueError, IndexError, AttributeError) as e:
-                self.logger.warning(f"Could not parse coin details from: {line} - {e}")
-                return
-
-        # Handle COIN: format (legacy)
-        elif line.startswith("COIN:"):
-            try:
-                coin_value = int(line.split(":")[1].strip())
+                # Validate it's a real coin
+                if coin_value not in [1, 5, 10]:
+                    self.logger.warning(f"Invalid coin value: {coin_value}")
+                    return
                 
-                # Apply coin debouncing
+                # Simple debounce (0.5 seconds between coins)
                 current_time = time.time()
-                if current_time - self.last_coin_time < self.coin_debounce_delay:
-                    self.logger.warning(f"Coin debounced (legacy): too soon since last coin (P{coin_value})")
-                    return
+                if hasattr(self, '_last_coin_time'):
+                    if current_time - self._last_coin_time < 0.5:
+                        self.logger.debug(f"DEBOUNCED: Coin P{coin_value} too soon")
+                        return
                 
-                # Validate coin value
-                if coin_value not in self.valid_coin_values:
-                    self.logger.warning(f"Invalid coin value rejected (legacy): P{coin_value}")
-                    return
+                self._last_coin_time = current_time
                 
-                self.last_coin_time = current_time
+                # Process this single coin
+                self.logger.info(f"COIN DETECTED: P{coin_value}")
+                self._dispatch_event("coin", coin_value, line_stripped)
                 
-                event = "coin"
-                value = coin_value
-                self.logger.info(f"COIN ACCEPTED (legacy): {event} = P{value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
             except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COIN: value from: {line}")
-                return
-
-        # Handle CUP_DETECTED
-        elif line.startswith("CUP_DETECTED"):
-            event = "cup_detected"
-            value = True
-            self.logger.info(f"CUP EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
+                self.logger.warning(f"Failed to parse COIN message: {e} - Line: {line_stripped}")
             return
-
-        # Handle COUNTDOWN events
-        elif line.startswith("COUNTDOWN "):
+        
+        # 2. ANIMATION_START messages
+        elif "ANIMATION_START:" in line_stripped:
             try:
-                countdown_value = int(line.split()[1])
-                event = "countdown"
-                value = countdown_value
-                self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
-                return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse COUNTDOWN value from: {line}")
-                return
-
-        # Handle COUNTDOWN_END
-        elif line.startswith("COUNTDOWN_END"):
-            event = "countdown_end"
-            value = True
-            self.logger.info(f"COUNTDOWN EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
+                anim_part = line_stripped.split("ANIMATION_START:")[1].strip()
+                # Extract numbers
+                numbers = re.findall(r'\d+', anim_part)
+                
+                if len(numbers) >= 2:
+                    total_ml = int(numbers[0])
+                    total_seconds = int(numbers[1])
+                    
+                    animation_data = {
+                        "total_ml": total_ml,
+                        "total_seconds": total_seconds
+                    }
+                    
+                    self.logger.info(f"ANIMATION: {total_ml}mL in {total_seconds}s")
+                    self._dispatch_event("animation_start", animation_data, line_stripped)
+            except Exception as e:
+                self.logger.warning(f"Failed to parse animation: {e}")
             return
-
-        # Handle DISPENSE_START
-        elif line.startswith("DISPENSE_START"):
-            event = "dispense_start"
-            value = True
-            self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle DISPENSE_DONE
-        elif line.startswith("DISPENSE_DONE"):
-            try:
-                # Format: "DISPENSE_DONE 100.82"
-                ml_dispensed = float(line.split()[1])
-                event = "dispense_done"
-                value = ml_dispensed
-                self.logger.info(f"DISPENSE EVENT: {event} = {value} from: {line}")
-                self._dispatch_event(event, value, line)
+        
+        # 3. IGNORE ALL COIN-RELATED DEBUG MESSAGES
+        coin_debug_keywords = [
+            "Coin accepted:",
+            "DEBUG: Received",
+            "WATER Coin accepted:",
+            "CHARGING Coin accepted:",
+            "pulses=",
+            "value=P",
+            "added=",
+            "total=",
+            "Recognized as"
+        ]
+        
+        for keyword in coin_debug_keywords:
+            if keyword in line_stripped:
+                self.logger.debug(f"Ignoring coin debug: {line_stripped[:50]}...")
                 return
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Could not parse DISPENSE_DONE value from: {line}")
-                return
-
-        # Handle CREDIT_ML updates (for debugging)
-        elif line.startswith("CREDIT_ML:"):
-            try:
-                credit_ml = int(line.split(":")[1].strip())
-                self.logger.debug(f"Credit ML updated: {credit_ml}mL")
-                # You could dispatch this as an event if needed
-                return
-            except (ValueError, IndexError) as e:
-                pass
-
-        # Handle SYSTEM READY
-        elif "System Ready" in line or "READY" in line:
-            event = "system_ready"
-            value = True
-            self.logger.info(f"SYSTEM EVENT: {event} = {value} from: {line}")
-            self._dispatch_event(event, value, line)
-            return
-
-        # Handle SYSTEM STATUS
-        elif line.startswith("=== SYSTEM STATUS ==="):
-            self.logger.info("Arduino status report received")
-            # Don't dispatch this as an event, just log it
-            return
-
-        # Skip debug status lines (they're too frequent)
-        elif any(prefix in line for prefix in ["CREDIT_ML:", "DISPENSING:", "FLOW_PULSES:", "DISPENSED_ML:"]):
-            self.logger.debug(f"Status update: {line}")
-            return
-
-        # Log unhandled lines for debugging
+        
+        # 4. Log other messages
+        if "DEBUG:" in line_stripped:
+            self.logger.debug(f"[Arduino Debug] {line_stripped}")
+        elif "ERROR:" in line_stripped:
+            self.logger.error(f"[Arduino Error] {line_stripped}")
+        elif "INFO:" in line_stripped or "System Ready" in line_stripped:
+            self.logger.info(f"[Arduino] {line_stripped}")
         else:
-            self.logger.info(f"UNHANDLED: {line}")
+            self.logger.debug(f"[Arduino] {line_stripped}")
+            
         
     def _dispatch_event(self, event, value, raw_line):
         """Dispatch event to all registered callbacks."""
+        print(f"DEBUG _dispatch_event: event='{event}', value={value}, raw='{raw_line}'")
+        
         payload = {
             "event": event,
             "value": value,
@@ -380,16 +330,25 @@ class ArduinoListener:
         # Send to main event callback (KioskApp)
         if self.event_callback:
             try:
+                print(f"DEBUG: Calling main callback: {self.event_callback}")
                 self.event_callback(event, value)
             except Exception as e:
                 self.logger.error(f"Error in main event_callback: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("DEBUG: No main event_callback set!")
 
         # Send to additional UI callbacks (e.g., WaterScreen)
+        print(f"DEBUG: Number of callbacks: {len(self.callbacks)}")
         for callback in self.callbacks[:]:  # Use slice to avoid modification during iteration
             try:
+                print(f"DEBUG: Calling callback: {callback}")
                 callback(payload)
             except Exception as e:
                 self.logger.error(f"Error in callback {callback}: {e}")
+                import traceback
+                traceback.print_exc()
 
     # -------------------------------------------------
     # SEND COMMANDS TO ARDUINO
@@ -455,6 +414,7 @@ class ArduinoListener:
     def reset_coin_debounce(self):
         """Reset the coin debounce timer (useful for testing)."""
         self.last_coin_time = 0
+        self.coin_event_count = 0
         self.logger.info("Coin debounce timer reset")
 
 
@@ -482,7 +442,11 @@ def test_arduino_listener():
             
             # Test sending commands
             listener.send_command("STATUS")
-            listener.send_command("RESET")
+            listener.send_command("TEST_COIN_1")
+            time.sleep(1)
+            listener.send_command("TEST_COIN_5")
+            time.sleep(1)
+            listener.send_command("TEST_COIN_10")
             
             # Run for 30 seconds to capture events
             print("LISTENING: Listening for Arduino events for 30 seconds...")

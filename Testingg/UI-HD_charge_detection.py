@@ -848,7 +848,7 @@ class KioskApp(tk.Tk):
 
     # In KioskApp.show_frame(), replace the Arduino mode section:
     def show_frame(self, cls):
-        # Record current frame name for context
+    # Record current frame name for context
         try:
             self.current_frame = cls.__name__
         except Exception:
@@ -861,7 +861,7 @@ class KioskApp(tk.Tk):
                 frame.refresh()
             except Exception as e:
                 print(f"WARN: Error refreshing {cls.__name__}: {e}")
-                
+                    
         # FIXED: Set Arduino mode based on current screen
         if self.arduino_available:
             try:
@@ -872,14 +872,17 @@ class KioskApp(tk.Tk):
                     self._last_arduino_mode = None
                     
                 if self._last_arduino_mode != desired_mode:
+                    self.send_arduino_command('RESET')  # <-- ADD THIS
+                    time.sleep(0.1)  # Small delay for Arduino to reset
+                    
                     if self.send_arduino_command(f'MODE {desired_mode}'):
                         self._last_arduino_mode = desired_mode
-                        print(f'INFO: Arduino set to {desired_mode} mode')
+                        print(f'INFO: Arduino reset and set to {desired_mode} mode')
                     else:
                         print(f'WARN: Failed to set Arduino to {desired_mode} mode')
             except Exception as e:
                 print(f'ERROR during Arduino mode switch: {e}')
-                    
+                        
         frame.tkraise()
     
     def cleanup(self):
@@ -2380,6 +2383,7 @@ class ChargingScreen(tk.Frame):
                 append_audit_log(actor=uid, action='stop_charging', meta={'slot': slot})
             except Exception:
                 pass
+            
         # clear stored session uid so future ticks don't reference this session
         try:
             self.charging_uid = None
@@ -2395,6 +2399,10 @@ class ChargingScreen(tk.Frame):
             self._session_valid = False
         except Exception:
             pass
+
+        if self.controller.arduino_available:
+            self.controller.send_arduino_command('RESET')
+    
         print("INFO: Charging session stopped.")
         self.controller.show_frame(MainScreen)
 

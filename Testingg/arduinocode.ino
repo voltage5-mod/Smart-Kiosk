@@ -1,7 +1,7 @@
 #include <EEPROM.h>
 
-// ---------------- PIN DEFINITIONS ----------------
-#define COIN_PIN          3     // Coin slot signal pin (interrupt)
+// ---------------- PINs DEFINITIONS ----------------
+#define COIN_PIN          3     // Coin slot signal pin 
 #define FLOW_SENSOR_PIN   2     // YF-S201 flow sensor (interrupt)
 #define CUP_TRIG_PIN      9     // Ultrasonic trigger
 #define CUP_ECHO_PIN      10    // Ultrasonic echo
@@ -26,14 +26,7 @@ uint8_t coin1P_pulses = 1;    // P1 = 1 pulse
 uint8_t coin5P_pulses = 5;    // P5 = 5 pulses
 uint8_t coin10P_pulses = 10;  // P10 = 10 pulses
 
-uint16_t creditML_1P = 50;
-uint16_t creditML_5P = 250;
-uint16_t creditML_10P = 500;
 
-// Charging time in seconds (2min, 10min, 20min)
-uint16_t chargeSeconds_1P = 120;   // 2 minutes
-uint16_t chargeSeconds_5P = 600;   // 10 minutes  
-uint16_t chargeSeconds_10P = 1200; // 20 minutes
 
 // ---------------- SYSTEM STATE ----------------
 uint8_t currentMode = MODE_WATER;  // 0=WATER, 1=CHARGING
@@ -148,38 +141,28 @@ void handleCoin() {
     uint8_t pulses = coinPulseCount;
     coinPulseCount = 0;
 
-    Serial.print(F("DEBUG: Received "));
-    Serial.print(pulses);
-    Serial.print(F(" pulse(s) in "));
-    Serial.println(currentMode == MODE_WATER ? "WATER" : "CHARGING");
+    // REMOVE ALL DEBUG MESSAGES - keep it clean
+    // Serial.print(F("DEBUG: Received "));
+    // Serial.print(pulses);
+    // Serial.print(F(" pulse(s) in "));
+    // Serial.println(currentMode == MODE_WATER ? "WATER" : "CHARGING");
 
     if (pulses < 1 || pulses > 12) {
       Serial.println(F("Rejected noise pulses."));
       return;
     }
 
-    // EXACT MATCHING for peso-value-as-pulse-count pattern
+    // EXACT MATCHING - only determine coin value
     uint8_t coinValue = 0;
-    uint16_t addedML = 0;
-    uint16_t addedSeconds = 0;
     
     if (pulses == 1) {
       coinValue = 1;
-      addedML = creditML_1P;
-      addedSeconds = chargeSeconds_1P;
-      Serial.println(F("DEBUG: Recognized as P1 coin"));
     } 
     else if (pulses == 5) {
       coinValue = 5;
-      addedML = creditML_5P;
-      addedSeconds = chargeSeconds_5P;
-      Serial.println(F("DEBUG: Recognized as P5 coin"));
     }
     else if (pulses == 10) {
       coinValue = 10;
-      addedML = creditML_10P;
-      addedSeconds = chargeSeconds_10P;
-      Serial.println(F("DEBUG: Recognized as P10 coin"));
     }
     else {
       Serial.print(F("Unknown coin pattern: "));
@@ -187,55 +170,39 @@ void handleCoin() {
       return;
     }
 
-    // Handle based on current mode
-    if (currentMode == MODE_WATER) {
-      creditML += addedML;
-      
-      Serial.print(F("WATER Coin accepted: pulses="));
-      Serial.print(pulses);
-      Serial.print(F(", value=P"));
-      Serial.print(coinValue);
-      Serial.print(F(", added="));
-      Serial.print(addedML);
-      Serial.print(F("mL, total="));
-      Serial.print(creditML);
-      Serial.println(F("mL"));
-
-      // Send simple coin event for Python listener
-      Serial.print(F("COIN_EVENT:"));
-      Serial.println(coinValue);
-
-    } 
-    else if (currentMode == MODE_CHARGING) {
-      chargeSeconds += addedSeconds;
-      
-      Serial.print(F("CHARGING Coin accepted: pulses="));
-      Serial.print(pulses);
-      Serial.print(F(", value=P"));
-      Serial.print(coinValue);
-      Serial.print(F(", added="));
-      Serial.print(addedSeconds);
-      Serial.print(F("s, total="));
-      Serial.print(chargeSeconds);
-      Serial.println(F("s"));
-
-      // Send simple coin event for Python listener
-      Serial.print(F("COIN_EVENT:"));
-      Serial.println(coinValue);
-    }
+    // Send ONLY ONE clean message with coin value
+    // Format: "COIN:1" or "COIN:5" or "COIN:10"
+    Serial.print(F("COIN:"));
+    Serial.println(coinValue);
+    
+    // Small delay to ensure message is sent
+    delay(10);
 
     lastActivity = millis();
   }
 }
 
+
 // ---------------- CUP HANDLER ----------------
+// In arduinocode.ino, update the handleCup() function:
 void handleCup() {
   // Only detect cup if in WATER mode with credit
+  if (currentMode != MODE_WATER) {
+    return;  // Don't check cup if not in WATER mode
+  }
+  
+  if (creditML <= 0) {
+    // Optional debug message
+    // Serial.println(F("DEBUG: Cup detected but no credit"));
+    return;
+  }
+  
   if (detectCup() && creditML > 0 && !dispensing) {
     Serial.println(F("Cup detected. Starting dispense..."));
     startDispense(creditML);
   }
 }
+
 
 // ---------------- DISPENSING ----------------
 void startDispense(uint16_t ml) {

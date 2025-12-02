@@ -183,7 +183,7 @@ void handleCoin() {
 }
 
 
-// ---------------- CUP HANDLER ----------------
+// ---------------- CUP HANDaLER ----------------
 // In arduinocode.ino, update the handleCup() function:
 void handleCup() {
   // Only detect cup if in WATER mode with credit

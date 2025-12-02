@@ -173,21 +173,34 @@ class ArduinoListener:
         """Continuously read from Arduino and parse messages."""
         self.logger.info("Starting Arduino read loop...")
         
-        # Reset coin event counter every second
-        last_reset_time = time.time()
-        
         while self.running:
             try:
-                # Reset coin event counter every second
-                current_time = time.time()
-                if current_time - last_reset_time >= 1.0:
-                    self.coin_event_count = 0
-                    last_reset_time = current_time
-                
                 if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                    if line:
-                        self._process_line(line)
+                    # DEBUG: Read all available data at once
+                    available = self.ser.in_waiting
+                    raw_data = self.ser.read(available)
+                    
+                    try:
+                        # Decode the raw bytes
+                        decoded = raw_data.decode("utf-8", errors="ignore")
+                        
+                        # Print raw debug info
+                        print("=" * 50)
+                        print(f"DEBUG ARDUINO READ: {available} bytes available")
+                        print(f"RAW BYTES: {raw_data}")
+                        print(f"DECODED: '{decoded}'")
+                        print("=" * 50)
+                        
+                        # Process each line
+                        for line in decoded.split('\n'):
+                            line = line.strip()
+                            if line:
+                                print(f"DEBUG: Processing line: '{line}'")
+                                self._process_line(line)
+                    except Exception as decode_error:
+                        print(f"DEBUG: Error decoding Arduino data: {decode_error}")
+                        print(f"RAW bytes that failed: {raw_data}")
+                
                 time.sleep(READ_INTERVAL)
                 
             except serial.SerialException as e:

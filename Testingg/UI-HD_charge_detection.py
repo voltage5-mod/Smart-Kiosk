@@ -935,30 +935,53 @@ class KioskApp(tk.Tk):
                 frame.refresh()
             except Exception as e:
                 print(f"WARN: Error refreshing {cls.__name__}: {e}")
-                    
+        
         # FIXED: Set Arduino mode based on current screen
         if self.arduino_available:
+            desired_mode = None  # Initialize here to avoid NameError
+            
             try:
-                self.send_arduino_command(desired_mode)
+                # Determine desired_mode based on current screen
+                frame_name = cls.__name__
+                if frame_name == 'WaterScreen':
+                    desired_mode = 'WATER'
+                elif frame_name in ['SlotSelectScreen', 'ChargingScreen']:
+                    desired_mode = 'CHARGING'
+                else:
+                    desired_mode = 'RESET'  # Reset for other screens
+                
+                print(f"DEBUG: Switching to frame {frame_name}, Arduino mode: {desired_mode}")
                 
                 # Check if we're already in this mode
                 if not hasattr(self, '_last_arduino_mode'):
                     self._last_arduino_mode = None
                     
                 if self._last_arduino_mode != desired_mode:
-                    self.send_arduino_command('RESET')  # <-- ADD THIS
+                    # Send RESET command first
+                    print(f"DEBUG: Sending RESET command to Arduino")
+                    self.send_arduino_command('RESET')
                     time.sleep(0.1)  # Small delay for Arduino to reset
                     
-                    if self.send_arduino_command(f'MODE {desired_mode}'):
-                        self._last_arduino_mode = desired_mode
-                        print(f'INFO: Arduino reset and set to {desired_mode} mode')
+                    if desired_mode != 'RESET':
+                        # Send mode command
+                        print(f"DEBUG: Setting Arduino to {desired_mode} mode")
+                        if self.send_arduino_command(desired_mode):
+                            self._last_arduino_mode = desired_mode
+                            print(f'INFO: Arduino set to {desired_mode} mode')
+                        else:
+                            print(f'WARN: Failed to set Arduino to {desired_mode} mode')
                     else:
-                        print(f'WARN: Failed to set Arduino to {desired_mode} mode')
+                        print('INFO: Arduino reset to default mode')
+                        self._last_arduino_mode = desired_mode
             except Exception as e:
                 print(f'ERROR during Arduino mode switch: {e}')
-                        
+                if desired_mode:  # Only print if defined
+                    print(f'  Mode was: {desired_mode}')
+                import traceback
+                traceback.print_exc()
+        
         frame.tkraise()
-    
+        
     def cleanup(self):
         """Gracefully shutdown resources on app exit."""
         # Stop all background jobs in all frames

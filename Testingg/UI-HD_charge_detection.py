@@ -868,7 +868,7 @@ class KioskApp(tk.Tk):
                 except Exception as e:
                     print(f"Error updating WaterScreen UI: {e}")
             
-            # Show coin popup - Pass all as integers
+            # Show coin popups - Pass all as integers
             self.show_coin_popup(uid, 
                                 peso=coin_value, 
                                 added_ml=added_ml,  # This is int

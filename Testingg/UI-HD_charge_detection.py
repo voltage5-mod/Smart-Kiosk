@@ -465,6 +465,11 @@ class KioskApp(tk.Tk):
             print(f"ERROR: Unexpected error during ArduinoListener initialization: {e}")
             self.arduino_listener = None
 
+        # ========== TIMER DISPLAY ARDUINO INITIALIZATION ==========
+        self.timer_serial = None
+        self.timer_available = False
+        self.setup_timer_displays()
+
         # Initialize ArduinoListener for water service hardware integration
         if not self.arduino_listener:
             print("INFO: ArduinoListener not available - using simulation mode for water service")
@@ -482,6 +487,89 @@ class KioskApp(tk.Tk):
             self.show_frame(ScanScreen)
         except Exception:
             pass
+
+    def setup_timer_displays(self):
+        """Setup connection to 4-slot timer Arduino"""
+        try:
+            import serial
+            
+            # Try to find timer Arduino (different from main Arduino)
+            timer_ports = [
+                '/dev/ttyUSB2', '/dev/ttyUSB3', 
+                '/dev/ttyACM2', '/dev/ttyACM3',
+                'COM7', 'COM8', 'COM9', 'COM10'
+            ]
+            
+            for port in timer_ports:
+                try:
+                    print(f"Trying timer port: {port}")
+                    self.timer_serial = serial.Serial(
+                        port, 115200, 
+                        timeout=1,
+                        write_timeout=1
+                    )
+                    time.sleep(2.5)  # Longer delay for display init
+                    
+                    # Clear buffer
+                    self.timer_serial.reset_input_buffer()
+                    
+                    # Wait for ready message
+                    timeout = time.time() + 5
+                    while time.time() < timeout:
+                        if self.timer_serial.in_waiting > 0:
+                            response = self.timer_serial.readline().decode('utf-8', errors='ignore').strip()
+                            if "4SLOT_TIMER_READY" in response or "READY" in response:
+                                self.timer_available = True
+                                print(f"SUCCESS: 4-slot timer connected on {port}")
+                                
+                                # Set brightness
+                                self.send_timer_command("BRIGHT:5")
+                                
+                                # Initialize all slots to "waiting" state
+                                for slot in range(1, 5):
+                                    self.send_timer_command(f"SLOT{slot}:-")
+                                
+                                return
+                    
+                    print(f"No response from timer on {port}")
+                    self.timer_serial.close()
+                    
+                except Exception as e:
+                    print(f"Failed {port}: {e}")
+                    continue
+                    
+            print("WARN: No timer display found")
+            
+        except Exception as e:
+            print(f"ERROR setting up timer displays: {e}")
+            self.timer_available = False
+    
+    def send_timer_command(self, command):
+        """Send command to timer Arduino"""
+        if not self.timer_available or not self.timer_serial:
+            return False
+            
+        try:
+            full_cmd = command + "\n"
+            self.timer_serial.write(full_cmd.encode())
+            print(f"TIMER CMD: {command}")
+            return True
+        except Exception as e:
+            print(f"ERROR sending timer command: {e}")
+            self.timer_available = False
+            return False
+    
+    def update_timer_display(self, slot_num, seconds):
+        """Update specific slot's timer display"""
+        if not self.timer_available:
+            return False
+            
+        if seconds <= 0:
+            # Show "waiting" state
+            return self.send_timer_command(f"SLOT{slot_num}:-")
+        else:
+            # Update with remaining seconds
+            return self.send_timer_command(f"SLOT{slot_num}:{seconds}")
 
     def send_arduino_command(self, command):
         """Safely send command to Arduino if available."""
@@ -688,8 +776,6 @@ class KioskApp(tk.Tk):
         except Exception:
             _do_totals()
 
-    # In KioskApp._arduino_event_callback, replace with this:
-
     def _arduino_event_callback(self, event, value):
         """Clean event handler - Arduino sends only coin value, Python decides usage."""
         print(f"DEBUG ARDUINO EVENT: {event} = {value} (type: {type(value)})")
@@ -703,7 +789,6 @@ class KioskApp(tk.Tk):
             if event == 'coin' and isinstance(value, int):
                 print(f"COIN DETECTED: P{value}")
                 uid = self.active_uid
-                
                 
                 if not uid:
                     print("WARN: No active user - please scan RFID first")
@@ -844,11 +929,10 @@ class KioskApp(tk.Tk):
                                 total_ml=f"{mins}m {secs}s")
             
         except Exception as e:
-            print(f"ERROR in _handle_charging_coin: {e}") 
+            print(f"ERROR in _handle_charging_coin: {e}")
 
-    # In KioskApp.show_frame(), replace the Arduino mode section:
     def show_frame(self, cls):
-    # Record current frame name for context
+        # Record current frame name for context
         try:
             self.current_frame = cls.__name__
         except Exception:
@@ -936,6 +1020,17 @@ class KioskApp(tk.Tk):
                     print("INFO: ArduinoListener closed.")
         except Exception as e:
             print(f"WARN: Error stopping ArduinoListener: {e}")
+
+        # Stop timer display Arduino
+        try:
+            if self.timer_available and self.timer_serial:
+                # Clear all displays
+                for slot in range(1, 5):
+                    self.send_timer_command(f"SLOT{slot}:OFF")
+                self.timer_serial.close()
+                print("INFO: Timer display Arduino closed.")
+        except Exception as e:
+            print(f"WARN: Error closing timer display: {e}")
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):
@@ -1434,43 +1529,96 @@ class SlotSelectScreen(tk.Frame):
         # change background to match MainScreen
         super().__init__(parent, bg="#34495e")
         self.controller = controller
+        
         # top user info so details persist while selecting slot
         self.user_info = UserInfoFrame(self, controller)
         self.user_info.pack(fill="x")
 
         tk.Label(self, text="Select Charging Slot", font=("Arial", 22, "bold"),
                  fg="white", bg="#34495e").pack(pady=6)
+        
         # allow adding coins before selecting slot (coins shown here per request)
         hw = getattr(controller, 'hw', None)
-        self.coin_frame_top = tk.LabelFrame(self, text=("Coinslot - add charge before slot" if hw else "Coinslot - use physical coins"), font=("Arial", 12, "bold"),
-                                            fg="white", bg="#34495e", bd=2, labelanchor="n")
+        self.coin_frame_top = tk.LabelFrame(self, 
+            text=("Coinslot - add charge before slot" if hw else "Coinslot - use physical coins"), 
+            font=("Arial", 12, "bold"),
+            fg="white", bg="#34495e", bd=2, labelanchor="n")
         self.coin_frame_top.pack(pady=6)
+        
         # status label to show recent coin inserts and expected time
-        # Use grid for children inside the coin frame to avoid mixing pack/grid
         self.coin_status_lbl = tk.Label(self.coin_frame_top, text="", fg="white", bg="#34495e")
-        # place status on the first row spanning available columns
         self.coin_status_lbl.grid(row=0, column=0, columnspan=3, pady=(4, 0))
         
-        # REMOVED THE MANUAL COIN BUTTONS - Only show message
+        # Instruction for physical coin acceptor
         tk.Label(self.coin_frame_top, text="Use physical coin acceptor to add charging time", 
                 fg="white", bg="#34495e", font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=6)
+
+        # Balance display for current user
+        self.balance_lbl = tk.Label(self.coin_frame_top, text="", fg="#f39c12", bg="#34495e", 
+                                    font=("Arial", 11, "bold"))
+        self.balance_lbl.grid(row=2, column=0, columnspan=3, pady=(0, 6))
 
         self.slot_buttons = {}
         grid = tk.Frame(self, bg="#34495e")
         grid.pack(pady=8)
+        
+        # Create 4 slot buttons in a 2x2 grid
         for i in range(1, 5):
             btn = tk.Button(grid, text=f"Slot {i}\n(Checking...)", font=("Arial", 14, "bold"),
                             bg="#95a5a6", fg="black", width=14, height=2,
                             command=lambda s=i: self.select_slot(s))
-            btn.grid(row=(i-1)//3, column=(i-1)%3, padx=10, pady=8)
+            row = (i-1) // 2  # 2 buttons per row
+            col = (i-1) % 2   # 2 columns
+            btn.grid(row=row, column=col, padx=10, pady=8)
             self.slot_buttons[f"slot{i}"] = btn
-        # move Back button up so it is visible on non-fullscreen displays
+        
+        # Back button
         tk.Button(self, text="Back", font=("Arial", 14, "bold"), bg="#c0392b", fg="white",
                   command=lambda: controller.show_frame(MainScreen)).pack(pady=6, anchor='nw', padx=8)
 
+    def _update_timer_display(self):
+        """Update all 4 timer displays based on current slot status"""
+        if not self.controller.timer_available:
+            return
+            
+        for i in range(1, 5):
+            slot_key = f"slot{i}"
+            slot = read_slot(slot_key)
+            
+            if not slot:
+                # Slot doesn't exist in DB, show as available
+                self.controller.send_timer_command(f"SLOT{i}:-")
+                continue
+                
+            status = slot.get("status", "inactive")
+            current_user = slot.get("current_user", "none")
+            
+            if status == "active" and current_user != "none":
+                # Slot is actively charging - show remaining time
+                user = read_user(current_user)
+                if user:
+                    remaining = user.get("charge_balance", 0)
+                    if remaining > 0:
+                        self.controller.send_timer_command(f"SLOT{i}:{remaining}")
+                    else:
+                        self.controller.send_timer_command(f"SLOT{i}:-")
+                else:
+                    self.controller.send_timer_command(f"SLOT{i}:-")
+            elif current_user != "none":
+                # Slot assigned but not active (waiting for plug)
+                self.controller.send_timer_command(f"SLOT{i}:-")
+            else:
+                # Slot is free/available
+                self.controller.send_timer_command(f"SLOT{i}:-")
+
     def refresh(self):
-        # refresh user info and slot statuses
+        """Refresh the slot selection screen with current status"""
+        # refresh user info
         self.user_info.refresh()
+        
+        # Update timer displays
+        self._update_timer_display()
+        
         # only show the top coin frame when no slot currently assigned to this session
         if self.controller.active_slot:
             try:
@@ -1482,109 +1630,202 @@ class SlotSelectScreen(tk.Frame):
                 self.coin_frame_top.pack(pady=6)
             except Exception:
                 pass
+        
+        # Update each slot button based on current status
         for i in range(1, 5):
             key = f"slot{i}"
             slot = read_slot(key)
+            
             # Default values
             text = f"Slot {i}\nFree"
             color = "#2ecc71"  # green for free
+            enabled = True
+            
             try:
                 if slot is None:
-                    # keep defaults
-                    pass
+                    # Slot doesn't exist in DB, show as available but disabled
+                    text = f"Slot {i}\nError"
+                    color = "#95a5a6"
+                    enabled = False
                 else:
                     status = slot.get("status", "inactive")
                     cur = slot.get("current_user", "none")
                     uid = self.controller.active_uid
+                    
                     if cur != "none":
-                        # assigned to someone
+                        # Slot assigned to someone
                         if cur == uid:
-                            # assigned to current user
-                            text = f"Slot {i}\nIn Use"
-                            color = "#95a5a6"  # neutral
+                            # Assigned to current user
+                            if status == "active":
+                                text = f"Slot {i}\nCharging"
+                                color = "#3498db"  # blue for charging
+                            else:
+                                text = f"Slot {i}\nAssigned"
+                                color = "#f39c12"  # orange for assigned
+                            enabled = True  # User can select their own assigned slot
                         else:
-                            text = f"Slot {i}\nOccupied"
-                            color = "#e74c3c"  # red
+                            # Assigned to another user
+                            if status == "active":
+                                text = f"Slot {i}\nOccupied"
+                                color = "#e74c3c"  # red for occupied
+                            else:
+                                text = f"Slot {i}\nIn Use"
+                                color = "#e67e22"  # darker orange
+                            enabled = False  # Cannot select other user's slot
                     else:
-                        # no current_user assigned
+                        # No current_user assigned
                         if status == "active":
                             text = f"Slot {i}\nIn Use"
                             color = "#e74c3c"
+                            enabled = False
                         else:
                             text = f"Slot {i}\nFree"
                             color = "#2ecc71"
-            except Exception:
-                # on any error keep defaults
-                text = f"Slot {i}\nFree"
-                color = "#2ecc71"
+                            enabled = True
+            except Exception as e:
+                print(f"Error reading slot {key}: {e}")
+                text = f"Slot {i}\nError"
+                color = "#95a5a6"
+                enabled = False
+            
+            # Update button appearance
             try:
-                self.slot_buttons[key].config(text=text, bg=color)
-            except Exception:
-                pass
-        # show coin status for current user if any
+                btn = self.slot_buttons[key]
+                btn.config(text=text, bg=color, 
+                          state="normal" if enabled else "disabled")
+            except Exception as e:
+                print(f"Error updating slot button {key}: {e}")
+        
+        # Update coin and balance information
         try:
             uid = self.controller.active_uid
             if uid:
-                rec = self.controller.coin_counters.get(uid)
-                if rec:
-                    # show value: for water this is mL, for charging it's seconds
-                    val = rec.get('value', 0)
-                    # if user is member and this is water screen we show mL; otherwise show seconds
-                    self.coin_status_lbl.config(text=f"Coins inserted: {rec.get('coins',0)} (≈ {val})")
+                user = read_user(uid)
+                if user:
+                    # Show charging balance
+                    cb = user.get("charge_balance", 0) or 0
+                    minutes = cb // 60
+                    seconds = cb % 60
+                    
+                    if minutes > 0:
+                        balance_text = f"Charging Balance: {minutes}m {seconds}s"
+                    else:
+                        balance_text = f"Charging Balance: {seconds}s"
+                    
+                    self.balance_lbl.config(text=balance_text)
+                    
+                    # Show recent coins if any
+                    rec = self.controller.coin_counters.get(uid)
+                    if rec and rec.get('coins', 0) > 0:
+                        coin_text = f"Coins inserted: {rec.get('coins', 0)} coins"
+                        self.coin_status_lbl.config(text=coin_text)
+                    else:
+                        if cb > 0:
+                            self.coin_status_lbl.config(text="Insert more coins to add time")
+                        else:
+                            self.coin_status_lbl.config(text="Insert coins to add charging time")
                 else:
+                    self.balance_lbl.config(text="")
                     self.coin_status_lbl.config(text="")
             else:
+                self.balance_lbl.config(text="")
                 self.coin_status_lbl.config(text="")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error updating balance display: {e}")
+            self.balance_lbl.config(text="")
+            self.coin_status_lbl.config(text="")
 
     def select_slot(self, i):
+        """Handle slot selection"""
         uid = self.controller.active_uid
         if not uid:
             print("WARN: No user; scan first before selecting a slot.")
             return
-        # require a positive charge balance before allowing slot assignment
+        
+        # Check user has positive charge balance
         user = read_user(uid)
         cb = user.get("charge_balance", 0) if user else 0
         if (cb or 0) <= 0:
             print("WARN: No charge balance; insert coins before selecting a slot.")
+            # Show error message to user
+            self.balance_lbl.config(text="ERROR: Add coins first!", fg="#e74c3c")
+            self.after(2000, lambda: self.refresh())  # Reset after 2 seconds
             return
+        
         slot_key = f"slot{i}"
         slot = read_slot(slot_key)
-        # if the slot is already active or assigned to someone else, prevent selection
+        
+        # Validate slot is available
         if slot is not None:
             cur = slot.get("current_user", "none")
             status = slot.get("status", "inactive")
+            
             if cur != "none" and cur != uid:
                 print(f"WARN: {slot_key} is already assigned to another user.")
+                # Update button to show it's occupied
+                self.slot_buttons[slot_key].config(text=f"Slot {i}\nOccupied", bg="#e74c3c")
                 return
+            
             if status == "active" and cur != uid:
                 print(f"WARN: {slot_key} is currently in use. Please choose another slot.")
+                self.slot_buttons[slot_key].config(text=f"Slot {i}\nIn Use", bg="#e74c3c")
                 return
-        # assign slot to user (assigned, not active)
-        write_user(uid, {"occupied_slot": slot_key})
-        if FIREBASE_AVAILABLE and users_ref:
-            users_ref.child(uid).child("slot_status").update({slot_key: "inactive"})
-        write_slot(slot_key, {"status": "inactive", "current_user": uid})
+        
+        # Update timer display to show slot is assigned (but not yet charging)
+        if self.controller.timer_available:
+            # Show remaining time on the physical display
+            self.controller.send_timer_command(f"SLOT{i}:{cb}")
+        
+        # Assign slot to user
         try:
-            append_audit_log(actor=uid, action='assign_slot', meta={'slot': slot_key})
-        except Exception:
-            pass
-        self.controller.active_slot = slot_key
-        # disable/hide top coin slot to prevent adding coins after selection (require top-up beforehand)
-        try:
-            self.coin_frame_top.pack_forget()
-        except Exception:
-            pass
-        print(f"INFO: You selected {slot_key}. Please plug your device and press Start Charging.")
-        self.controller.show_frame(ChargingScreen)
+            write_user(uid, {"occupied_slot": slot_key})
+            
+            if FIREBASE_AVAILABLE and users_ref:
+                users_ref.child(uid).child("slot_status").update({slot_key: "inactive"})
+            
+            write_slot(slot_key, {"status": "inactive", "current_user": uid})
+            
+            try:
+                append_audit_log(actor=uid, action='assign_slot', meta={'slot': slot_key})
+            except Exception:
+                pass
+            
+            self.controller.active_slot = slot_key
+            
+            # Update button to show it's assigned
+            self.slot_buttons[slot_key].config(text=f"Slot {i}\nAssigned", bg="#f39c12")
+            
+            # Hide coin frame since slot is now assigned
+            try:
+                self.coin_frame_top.pack_forget()
+            except Exception:
+                pass
+            
+            print(f"INFO: You selected {slot_key}. Please plug your device and press Start Charging.")
+            
+            # Brief delay before switching to charging screen (shows confirmation)
+            self.after(1000, lambda: self.controller.show_frame(ChargingScreen))
+            
+        except Exception as e:
+            print(f"ERROR assigning slot: {e}")
+            # Reset button if assignment failed
+            self.slot_buttons[slot_key].config(text=f"Slot {i}\nError", bg="#95a5a6")
+            
+            # Show error message
+            self.balance_lbl.config(text="ERROR: Could not assign slot", fg="#e74c3c")
+            self.after(2000, lambda: self.refresh())  # Reset after 2 seconds
 
+    def _on_close(self):
+        """Clean up when screen is closed"""
+        # Ensure all timer displays show correct status
+        self._update_timer_display()
 
 # --------- Screen: Charging ----------
 class ChargingScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#34495e")
         self.controller = controller
+        
         # user info visible while charging
         self.user_info = UserInfoFrame(self, controller)
         self.user_info.pack(fill="x")
@@ -1649,6 +1890,9 @@ class ChargingScreen(tk.Frame):
         # Used to prevent old queued callbacks from updating display with stale data
         self._session_id = 0
         self._current_session_id = None
+        # Timer display state
+        self._last_timer_update = 0
+        self.TIMER_UPDATE_INTERVAL = 5  # Update physical timer every 5 seconds (reduces serial traffic)
 
     def _get_session_uid(self):
         """Return the uid owning the active charging session.
@@ -1667,6 +1911,44 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 pass
         return None
+
+    def _get_slot_number(self, slot_name=None):
+        """Extract slot number from slot name (e.g., 'slot3' -> 3)"""
+        if not slot_name:
+            slot_name = self.charging_slot or self.controller.active_slot
+        
+        if slot_name and slot_name.startswith("slot"):
+            try:
+                return int(slot_name[4:])  # Extract number from "slotX"
+            except ValueError:
+                pass
+        return 0
+
+    def _update_timer_display(self, force=False):
+        """Update the physical 7-segment timer display"""
+        if not self.controller.timer_available or not self.is_charging:
+            return False
+        
+        slot_num = self._get_slot_number()
+        if slot_num <= 0:
+            return False
+        
+        # Only update every TIMER_UPDATE_INTERVAL seconds to reduce serial traffic
+        current_time = time.time()
+        if not force and (current_time - self._last_timer_update) < self.TIMER_UPDATE_INTERVAL:
+            return True
+        
+        try:
+            success = self.controller.send_timer_command(f"SLOT{slot_num}:{self.remaining}")
+            if success:
+                self._last_timer_update = current_time
+                return True
+            else:
+                print(f"WARN: Failed to update timer display for slot {slot_num}")
+                return False
+        except Exception as e:
+            print(f"ERROR updating timer display: {e}")
+            return False
 
     def refresh(self):
         uid = self.controller.active_uid
@@ -1730,18 +2012,31 @@ class ChargingScreen(tk.Frame):
             self.user_info.refresh()
         except Exception:
             pass
-        # If this screen is shown fresh, ensure session totals are initialized
-        try:
-            if not hasattr(self, 'total_coins'):
-                self.total_coins = 0
-            if not hasattr(self, 'total_credit'):
-                self.total_credit = 0
-        except Exception:
-            pass
+        
+        # Initialize session totals if not already
+        if not hasattr(self, 'total_coins'):
+            self.total_coins = 0
+        if not hasattr(self, 'total_credit'):
+            self.total_credit = 0
+            
         if uid:
             user = read_user(uid)
             cb = user.get("charge_balance", 0) or 0
             self.time_var.set(str(cb))
+            
+            # Update timer display if we have a timer and this is our session
+            slot_num = self._get_slot_number()
+            if slot_num > 0 and self.controller.timer_available:
+                if self.charging_uid == uid and self.is_charging:
+                    # Our active session - update timer with current time
+                    self.controller.send_timer_command(f"SLOT{slot_num}:{self.remaining}")
+                elif user.get("charging_status") == "charging":
+                    # Someone else is charging this slot
+                    self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
+                else:
+                    # Slot available/waiting
+                    self.controller.send_timer_command(f"SLOT{slot_num}:-")
+            
             # keep local remaining in sync when not actively charging
             # If DB reports charging_status == 'charging' AND this is OUR session, ensure local tick loop is running
             if user.get("charging_status") == "charging" and self.charging_uid == uid:
@@ -1763,9 +2058,10 @@ class ChargingScreen(tk.Frame):
                     self.remaining = cb
         else:
             self.time_var.set("0")
-        # do not change is_charging or unplug_time here; refresh should be safe to call
-
-    
+            # If no user, clear timer displays
+            if self.controller.timer_available:
+                for slot_num in range(1, 5):
+                    self.controller.send_timer_command(f"SLOT{slot_num}:-")
 
     def start_charging(self):
         uid = self.controller.active_uid
@@ -1777,7 +2073,14 @@ class ChargingScreen(tk.Frame):
         if (cb or 0) <= 0:
             print("WARN: No charge balance; please add coins to charging balance.")
             return
+        
         slot = self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
+        
+        if not slot:
+            print("WARN: No slot selected.")
+            return
+        
         # remember session owner so background timers continue even if UI user logs out
         self.charging_uid = uid
         # Mark session as VALID so timer callbacks will execute
@@ -1785,14 +2088,17 @@ class ChargingScreen(tk.Frame):
         # Generate new unique session ID to invalidate old queued callbacks
         self._session_id += 1
         self._current_session_id = self._session_id
-        # bind this charging UI instance to the selected slot so subsequent timers/monitors
-        # target the correct slot even if controller.active_slot changes while the session runs
+        # bind this charging UI instance to the selected slot
         self.charging_slot = slot
+        
+        # Update timer display immediately
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
+            self._last_timer_update = time.time()
+
         # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
         # the session must only start when current is detected. Mark 'pending' so
-        # other systems know the user requested charging. For non-hardware or fallback
-        # start immediately mark as 'charging'.
-
+        # other systems know the user requested charging.
         hw = getattr(self.controller, 'hw', None)
         try:
             # if this slot has hardware mappings (ACS712 channel + relay), mark pending and wait for detection
@@ -1803,18 +2109,22 @@ class ChargingScreen(tk.Frame):
                 write_user(uid, {"charging_status": "charging"})
         except Exception:
             pass
+        
         try:
             append_audit_log(actor=uid, action='start_charging', meta={'slot': slot})
         except Exception:
             pass
+        
         if slot:
             if FIREBASE_AVAILABLE and users_ref:
                 users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
-        # prepare local state but if hardware available for slot1, enable power and wait for current
+        
+        # prepare local state
         self.db_acc = 0
         self.remaining = cb
         self.time_var.set(str(self.remaining))
+        
         # hw already assigned above; continue with hardware path if this slot is hardware-mapped
         if slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
             # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
@@ -1827,14 +2137,15 @@ class ChargingScreen(tk.Frame):
                     self._tick_job = None
             except Exception:
                 pass
+            
             self.is_charging = False
             self.unplug_time = None
+            
             # power the slot so the user can plug in
-            # Ensure ACS712 baseline is calibrated (same behavior as test_slot1)
+            # Ensure ACS712 baseline is calibrated
             try:
                 if slot not in getattr(hw, '_baseline', {}):
                     try:
-                        # non-blocking calibration notice
                         print(f"INFO: Calibrating current sensor for {slot}. Ensure nothing is plugged into the port.")
                     except Exception:
                         pass
@@ -1845,11 +2156,13 @@ class ChargingScreen(tk.Frame):
                         print('Calibration failed:', e)
             except Exception:
                 pass
+            
             try:
                 hw.relay_on(slot)
             except Exception:
                 pass
-            # init TM1637 display for countdown (if present) - use the specific slot's display
+            
+            # init TM1637 display for countdown (if present)
             try:
                 if hasattr(hw, 'tm1637_init_slot'):
                     self.tm = hw.tm1637_init_slot(slot)
@@ -1863,15 +2176,18 @@ class ChargingScreen(tk.Frame):
                         pass
             except Exception:
                 self.tm = None
+            
             # Unlock slot for a short window (5 seconds) to allow plugging
             try:
                 hw.lock_slot(slot, lock=True)
             except Exception:
                 pass
+            
             try:
                 self.slot_lbl.config(text=f"{slot} - UNLOCKED: please plug in (5s)")
             except Exception:
                 pass
+            
             def _end_unlock_and_start_poll():
                 try:
                     hw.lock_slot(slot, lock=False)
@@ -1882,7 +2198,7 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 # start polling loop to detect charging start
-                # reset consecutive-sample counter and rolling sample buffer, then schedule the polling loop
+                # reset consecutive-sample counter and rolling sample buffer
                 self._charge_consecutive = 0
                 try:
                     self._charge_samples = []
@@ -1907,16 +2223,19 @@ class ChargingScreen(tk.Frame):
                     self._poll_timeout_job = self.after(60000, self._poll_no_detect_timeout)
                 except Exception:
                     self._poll_timeout_job = None
+            
             try:
                 self.after(5000, _end_unlock_and_start_poll)
             except Exception:
                 if self._wait_job is None:
                     self._wait_job = self.after(1000, self._poll_for_charging_start)
             return
-        # fallback: begin charging immediately (no hardware)
+        
+        # fallback: begin charging immediately (no hardware detection)
         self.is_charging = True
         if self._tick_job is None:
             self._charging_tick()
+        
         # Reset the plug start time when charging starts successfully
         if hasattr(self, '_plug_start_time'):   
             del self._plug_start_time
@@ -1970,6 +2289,9 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 pass
                 
+            # Update physical timer display (but not every second to reduce serial traffic)
+            self._update_timer_display()
+                
             # Periodic DB update
             self.db_acc += 1
             if self.db_acc >= CHARGE_DB_WRITE_INTERVAL:
@@ -1990,6 +2312,7 @@ class ChargingScreen(tk.Frame):
         """Clean up when charging time is exhausted"""
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
         
         print(f"[SESSION END] Time finished for {uid} in {slot}")
         
@@ -2001,6 +2324,10 @@ class ChargingScreen(tk.Frame):
                     users_ref.child(uid).child("slot_status").update({slot: "inactive"})
         except Exception as e:
             print(f"Error updating DB: {e}")
+        
+        # Update timer display to show slot is available
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
         
         # Hardware cleanup
         try:
@@ -2019,7 +2346,6 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def _poll_for_charging_start(self):
-        
         """Robust plug detection with filtering for noisy sensors"""
         self._wait_job = None
         
@@ -2110,6 +2436,11 @@ class ChargingScreen(tk.Frame):
         except Exception as e:
             print(f"Error starting charging UI: {e}")
         
+        # Update timer display
+        slot_num = self._get_slot_number(slot)
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:{self.remaining}")
+        
         # Start tick loop and monitoring
         if self._tick_job is None:
             self._charging_tick()
@@ -2125,7 +2456,6 @@ class ChargingScreen(tk.Frame):
             pass
 
     def _hardware_unplug_monitor(self):
-     
         """Robust unplug detection with filtering for noisy sensors"""
         self._hw_monitor_job = None
         
@@ -2233,33 +2563,42 @@ class ChargingScreen(tk.Frame):
         # Only proceed if this callback belongs to current session
         if my_session_id != self._current_session_id:
             return
+        
         slot = self.charging_slot or self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
         uid = self._get_session_uid()
+        
         if not uid:
             try:
                 s = read_slot(slot)
                 uid = s.get('current_user') if s else None
             except Exception:
                 uid = None
+        
         try:
-            # ensure DB cleanup and notify user
+            # ensure DB cleanup
             if uid:
                 write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
         except Exception:
             pass
+        
         if slot:
             try:
                 write_slot(slot, {"status": "inactive", "current_user": "none"})
             except Exception:
                 pass
+        
+        # Update timer display to show slot is available
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
         try:
             append_audit_log(actor=uid, action='charge_no_device_detected', meta={'slot': slot})
         except Exception:
             pass
-        try:
-            print("INFO: No device detected within the allowed time. Session ended.")
-        except Exception:
-            pass
+        
+        print("INFO: No device detected within the allowed time. Session ended.")
+        
         # ensure hardware relays off
         try:
             hw = getattr(self.controller, 'hw', None)
@@ -2274,11 +2613,13 @@ class ChargingScreen(tk.Frame):
                     pass
         except Exception:
             pass
+        
         # clear any accumulated consecutive-sample counter
         try:
             self._charge_consecutive = 0
         except Exception:
             pass
+        
         # clear UI state (only if it refers to this session's slot)
         try:
             if self.controller.active_slot == slot:
@@ -2288,16 +2629,23 @@ class ChargingScreen(tk.Frame):
                 self.controller.active_slot = None
             except Exception:
                 pass
+        
         self.controller.show_frame(MainScreen)
 
     def unlock_slot(self):
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
+        
         if not uid or not slot:
             print("WARN: No slot assigned.")
             return
             
-        # ADD SAFETY CHECK:
+        # Update timer display to show slot is unlocked
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
+        # Update database
         if FIREBASE_AVAILABLE and users_ref:
             try:
                 users_ref.child(uid).child("slot_status").update({slot: "inactive"})
@@ -2314,97 +2662,138 @@ class ChargingScreen(tk.Frame):
             pass
 
     def stop_session(self):
+        """Stop charging session and clean up all resources."""
+        
+        # Get session info BEFORE any cleanup
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
+        
+        print(f"DEBUG: Stopping session - UID: {uid}, Slot: {slot}, Slot#: {slot_num}")
+        
+        # 1. Cancel all scheduled jobs first
+        self._cancel_all_jobs()
+        
+        # 2. Update timer display (physical 7-segment) to show slot is available
+        if slot_num > 0 and self.controller.timer_available:
+            try:
+                self.controller.send_timer_command(f"SLOT{slot_num}:-")
+                print(f"INFO: Physical timer for slot {slot_num} set to available")
+            except Exception as e:
+                print(f"WARN: Could not update timer display: {e}")
+        
+        # 3. Update database
         if uid:
-            # cancel periodic tick if running
-            if self._tick_job is not None:
+            try:
+                write_user(uid, {
+                    "charging_status": "idle",
+                    "occupied_slot": "none"
+                })
+                
+                if slot:
+                    write_slot(slot, {
+                        "status": "inactive", 
+                        "current_user": "none"
+                    })
+                    
+                    if FIREBASE_AVAILABLE and users_ref:
+                        users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+            except Exception as e:
+                print(f"ERROR updating database: {e}")
+        
+        # 4. Clean hardware
+        self._clean_hardware(slot)
+        
+        # 5. Reset Arduino mode
+        if self.controller.arduino_available:
+            try:
+                self.controller.send_arduino_command('RESET')
+                print("INFO: Main Arduino reset")
+            except Exception as e:
+                print(f"WARN: Could not reset Arduino: {e}")
+        
+        # 6. Clear all session state
+        self._clear_session_state()
+        
+        # 7. Show main screen
+        print(f"INFO: Charging session stopped for slot {slot_num}")
+        self.controller.show_frame(MainScreen)
+
+    def _cancel_all_jobs(self):
+        """Cancel all scheduled jobs."""
+        jobs_to_cancel = [
+            ('_tick_job', self._tick_job),
+            ('_wait_job', self._wait_job),
+            ('_hw_monitor_job', self._hw_monitor_job),
+            ('_poll_timeout_job', self._poll_timeout_job)
+        ]
+        
+        for job_name, job_id in jobs_to_cancel:
+            if job_id is not None:
                 try:
-                    self.after_cancel(self._tick_job)
+                    self.after_cancel(job_id)
+                    setattr(self, job_name, None)
+                    print(f"DEBUG: Cancelled {job_name}")
                 except Exception:
                     pass
-                self._tick_job = None
-            write_user(uid, {"charging_status": "idle"})
-            write_user(uid, {"occupied_slot": "none"})
-            if slot:
-                write_slot(slot, {"status": "inactive", "current_user": "none"})
-                if FIREBASE_AVAILABLE and users_ref:
-                    users_ref.child(uid).child("slot_status").update({slot: "inactive"})
-                # clear assigned slot
-                self.controller.active_slot = None
-            # turn off hardware relays and cancel monitors if hardware is present
-            try:
-                hw = getattr(self.controller, 'hw', None)
-                if hw is not None:
-                    try:
-                        hw.relay_off(slot)
-                    except Exception:
-                        pass
-                    try:
-                        hw.lock_slot(slot, lock=False)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            # cancel hardware monitor jobs
-            try:
-                if self._wait_job is not None:
-                    try:
-                        self.after_cancel(self._wait_job)
-                    except Exception:
-                        pass
-                    self._wait_job = None
-                if self._hw_monitor_job is not None:
-                    try:
-                        self.after_cancel(self._hw_monitor_job)
-                    except Exception:
-                        pass
-                    self._hw_monitor_job = None
-                self.tm = None
-                self.unplug_time = None
-                # clear consecutive-sample counter when stopping
+
+    def _clean_hardware(self, slot):
+        """Clean up hardware resources."""
+        try:
+            hw = getattr(self.controller, 'hw', None)
+            if hw is not None and slot:
+                # Turn off relay
                 try:
-                    self._charge_consecutive = 0
+                    hw.relay_off(slot)
                 except Exception:
                     pass
-                # cancel poll timeout job if any
+                
+                # Unlock slot
                 try:
-                    if self._poll_timeout_job is not None:
-                        try:
-                            self.after_cancel(self._poll_timeout_job)
-                        except Exception:
-                            pass
-                        self._poll_timeout_job = None
+                    hw.lock_slot(slot, lock=False)
                 except Exception:
                     pass
-            except Exception:
-                pass
-            try:
-                append_audit_log(actor=uid, action='stop_charging', meta={'slot': slot})
-            except Exception:
-                pass
             
-        # clear stored session uid so future ticks don't reference this session
+            # Clear TM1637 display
+            self.tm = None
+            
+            # Reset hardware monitoring state
+            self.unplug_time = None
+            self._charge_consecutive = 0
+            
+            # Clear reading buffers if they exist
+            if hasattr(self, 'plug_readings'):
+                self.plug_readings = []
+            if hasattr(self, 'unplug_readings'):
+                self.unplug_readings = []
+            if hasattr(self, 'charging_reference'):
+                del self.charging_reference
+                
+        except Exception as e:
+            print(f"WARN: Error cleaning hardware: {e}")
+
+    def _clear_session_state(self):
+        """Clear all session-related state."""
         try:
             self.charging_uid = None
-        except Exception:
-            pass
-        # also clear the bound charging slot so this screen is ready for the next session
-        try:
             self.charging_slot = None
-        except Exception:
-            pass
-        # CRITICAL: Mark session as invalid to prevent any queued callbacks from executing
-        try:
+            self.is_charging = False
+            self.remaining = 0
+            self.db_acc = 0
+            
+            # Clear controller's active slot if it matches our slot
+            if hasattr(self.controller, 'active_slot'):
+                self.controller.active_slot = None
+            
+            # Mark session as invalid
             self._session_valid = False
-        except Exception:
-            pass
-
-        if self.controller.arduino_available:
-            self.controller.send_arduino_command('RESET')
-    
-        print("INFO: Charging session stopped.")
-        self.controller.show_frame(MainScreen)
+            
+            # Increment session ID to invalidate old callbacks
+            if hasattr(self, '_session_id'):
+                self._session_id += 1
+                
+        except Exception as e:
+            print(f"WARN: Error clearing session state: {e}")
 
 # --------- Screen: Water ----------
 class WaterScreen(tk.Frame):

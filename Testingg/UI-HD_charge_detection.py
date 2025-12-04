@@ -382,7 +382,7 @@ class KioskApp(tk.Tk):
         self.active_slot = None
         self.charging_task = None
         self.water_task = None
-        self._last_arduino_mode = None  # Add this line
+        self._last_arduino_mode = None
 
         # ========== DEFINE ARDUINO CALLBACK FIRST ==========
         def arduino_event_callback(event, value):
@@ -456,10 +456,9 @@ class KioskApp(tk.Tk):
         self._arduino_event_callback = arduino_event_callback
 
         container = tk.Frame(self)
-        # pack container so it expands with window
         container.pack(fill="both", expand=True)
 
-        # configure expansion behavior for the container and child frames
+        # configure expansion behavior
         try:
             self.grid_rowconfigure(0, weight=1)
             self.grid_columnconfigure(0, weight=1)
@@ -483,35 +482,19 @@ class KioskApp(tk.Tk):
         try:
             if _pinmap:
                 print(f"INFO: Using pinmap from {PINMAP_PATH}")
-                # Initialize with active-low relays by default (common for relay modules)
                 self.hw = HardwareGPIO(pinmap=_pinmap, mode='auto', relay_active_high=False)
                 try:
                     self.hw.setup()
                     print("SUCCESS: HardwareGPIO initialized in AUTO mode")
-                    
-                    # Test hardware initialization
-                    print("INFO: Testing hardware communication...")
-                    try:
-                        # Try to read from ADC channel 0
-                        test_adc = self.hw.read_adc(0)
-                        print(f"INFO: Hardware test - ADC channel 0: {test_adc}")
-                    except Exception as e:
-                        print(f"WARN: ADC test failed: {e}")
-                        
                 except Exception as e:
                     print(f"ERROR: HardwareGPIO setup failed: {e}")
-                    print("FALLBACK: Using simulation mode")
                     self.hw = HardwareGPIO(pinmap=None, mode='sim')
                     self.hw.setup()
             else:
-                print("WARN: No pinmap found, using simulation mode")
                 self.hw = HardwareGPIO(pinmap=None, mode='sim')
                 self.hw.setup()
         except Exception as e:
             print(f"CRITICAL ERROR: Hardware initialization failed: {e}")
-            import traceback
-            traceback.print_exc()
-            print("FALLBACK: Creating simulation hardware")
             self.hw = HardwareGPIO(pinmap=None, mode='sim')
             try:
                 self.hw.setup()
@@ -519,33 +502,19 @@ class KioskApp(tk.Tk):
                 pass
         
         print(f"INFO: Hardware controller status: {'Available' if self.hw else 'Not available'}")
-        
-        # Test hardware for debugging
-        if self.hw:
-            try:
-                print("DEBUG: Testing hardware relay control...")
-                # Quick test of relay control (simulation only)
-                if self.hw.mode == 'sim':
-                    self.hw.relay_on('slot1')
-                    time.sleep(0.1)
-                    self.hw.relay_off('slot1')
-                    print("DEBUG: Hardware simulation test passed")
-            except Exception as e:
-                print(f"DEBUG: Hardware test error: {e}")
 
-        # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
+        # ========== ARDUINO LISTENER INITIALIZATION ==========
         self.arduino_listener = None
         self.arduino_available = False
 
         try:
             from ArduinoListener import ArduinoListener
             
-            # Set specific port for MAIN Arduino (water/coin)
-            main_arduino_ports = ["/dev/ttyACM0"]  # Force this port
+            main_arduino_ports = ["/dev/ttyACM0"]
             
             self.arduino_listener = ArduinoListener(
-                event_callback=self._arduino_event_callback,  # This now exists
-                port_candidates=main_arduino_ports  # Force ACM0
+                event_callback=self._arduino_event_callback,
+                port_candidates=main_arduino_ports
             )
             print("INFO: ArduinoListener initialized for ACM0 (water/coin)")
             
@@ -564,30 +533,34 @@ class KioskApp(tk.Tk):
         # ========== TIMER DISPLAY ARDUINO INITIALIZATION ==========
         self.timer_serial = None
         self.timer_available = False
-        # We'll initialize it after the window is created
         
-        # Initialize ArduinoListener for water service hardware integration
+        # Initialize timer displays after a short delay
+        self.after(100, self._init_timer_displays)
+
         if not self.arduino_listener:
             print("INFO: ArduinoListener not available - using simulation mode for water service")
 
-        # session manager for per-slot sessions
+        # session manager
         try:
             self.session_manager = SessionManager(self)
         except Exception:
             self.session_manager = None
 
-        # coin counters per-uid (list of inserted coin amounts)
         self.coin_counters = {}
         
-        # Ensure the initial visible screen is the ScanScreen (raise it above others)
+        # Show initial screen
         try:
             self.show_frame(ScanScreen)
         except Exception:
             pass
-            
-        # ========== DELAYED INITIALIZATION ==========
-        # Initialize timer displays after the window is created
-        self.after(100, self.setup_timer_displays)  # FIXED: Added parentheses
+
+    def _init_timer_displays(self):
+        """Initialize timer displays after window is created"""
+        try:
+            self.setup_timer_displays()
+        except Exception as e:
+            print(f"Error initializing timer displays: {e}")
+            self.timer_available = False
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):

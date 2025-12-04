@@ -387,9 +387,10 @@ void processCommand(char* cmd) {
     else if (strcmp(modeStr, "CHARGING") == 0) setMode(MODE_CHARGING);
     else Serial.println(F("Invalid mode. Use: MODE WATER or MODE CHARGING"));
   }
-  else if (cmd.startsWith("BLOCK_COINS:")) {
+  else if (strncmp(cmd, "BLOCK_COINS:", 12) == 0) {
     // Format: BLOCK_COINS:3000 (block coins for 3000ms)
-    int blockMs = cmd.substring(12).toInt();
+    char* blockStr = cmd + 12;
+    int blockMs = atoi(blockStr);
     if (blockMs > 0) {
       blockAllCoins = true;
       coinBlockUntil = millis() + blockMs;
@@ -612,7 +613,7 @@ void testCoinPatterns() {
       if (pulses == 1) Serial.println(F("TEST: This appears to be a P1 coin"));
       else if (pulses == 5) Serial.println(F("TEST: This appears to be a P5 coin"));
       else if (pulses == 10) Serial.println(F("TEST: This appears to be a P10 coin"));
-      else Serial.println(F("TEST: Unknown coin pattern"))
+      else Serial.println(F("TEST: Unknown coin pattern"));
     }
     
     if (Serial.available()) {

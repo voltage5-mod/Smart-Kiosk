@@ -1788,7 +1788,7 @@ class SlotSelectScreen(tk.Frame):
         # Ensure all timer displays show correct status
         self._update_timer_display()
 
-# --------- Screen: Charging ----------
+
 # --------- Screen: Charging ----------
 class ChargingScreen(tk.Frame):
     def __init__(self, parent, controller):
@@ -1800,398 +1800,903 @@ class ChargingScreen(tk.Frame):
         self.user_info.pack(fill="x")
 
         body = tk.Frame(self, bg="#34495e")
-        # expand so the main content can be centered vertically between the user info above and buttons below
         body.pack(expand=True, fill='both', pady=12)
 
-        # Large centered header that shows the active charging slot (e.g. "Charging Slot 4")
+        # Large centered header that shows the active charging slot
         self.slot_lbl = tk.Label(body, text="Charging Slot -", font=("Arial", 28, "bold"), fg="white", bg="#34495e")
-        # place the header slightly above center and give breathing room before the time label
         self.slot_lbl.pack(pady=(20, 12))
 
-        # Time display (kept below the header)
+        # Time display
         self.time_var = tk.StringVar(value="0")
-        tk.Label(body, text="Time Left (sec)", font=("Arial", 14), fg="white", bg="#34495e").pack(pady=(6, 2))
+        tk.Label(body, text="Time Left", font=("Arial", 14), fg="white", bg="#34495e").pack(pady=(6, 2))
         tk.Label(body, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#34495e").pack(pady=(0, 12))
+        
+        # Progress bar
+        self.progress_bar = tk.Canvas(body, width=300, height=20, bg="#2c3e50", highlightthickness=0)
+        self.progress_bar.pack(pady=10)
+        self.progress_rect = self.progress_bar.create_rectangle(0, 0, 0, 20, fill="#27ae60", outline="")
 
+        # Status display
+        self.status_lbl = tk.Label(body, text="Ready to start charging", font=("Arial", 12), 
+                                   fg="white", bg="#34495e")
+        self.status_lbl.pack(pady=5)
+        
+        # Current reading display
+        self.current_lbl = tk.Label(body, text="Current: 0.00A", font=("Arial", 10), 
+                                    fg="#95a5a6", bg="#34495e")
+        self.current_lbl.pack(pady=2)
+
+        # Button frame
         btn_frame = tk.Frame(body, bg="#34495e")
         btn_frame.pack(pady=8)
-        # Back button: allow user to return to Main screen while charging continues
-        tk.Button(btn_frame, text="Back", font=("Arial", 12, "bold"),
-                  bg="#95a5a6", fg="white", width=10, command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
-        # Start/Stop controls: aligned in a single row for a clean layout
-        tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
-                  bg="#2980b9", fg="white", width=14, command=self.start_charging).grid(row=0, column=1, padx=6)
-        tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=2, padx=6)
+        
+        # Back button
+        tk.Button(btn_frame, text="← Back", font=("Arial", 12, "bold"),
+                  bg="#95a5a6", fg="white", width=10, 
+                  command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
+        
+        # Start Charging button
+        self.start_btn = tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
+                  bg="#27ae60", fg="white", width=14, command=self.start_charging)
+        self.start_btn.grid(row=0, column=1, padx=6)
+        
+        # Stop Session button
+        self.stop_btn = tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
+                  bg="#c0392b", fg="white", width=14, command=self.stop_session)
+        self.stop_btn.grid(row=0, column=2, padx=6)
+        self.stop_btn.config(state="disabled")
 
-        # local countdown state
+        # Debug/status label
+        self.debug_lbl = tk.Label(body, text="", font=("Arial", 9), 
+                                   fg="#f39c12", bg="#34495e")
+        self.debug_lbl.pack(pady=5)
+
+        # ========== Hardware State ==========
         self.db_acc = 0
         self.is_charging = False
+        self.is_pending = False  # Waiting for plug detection
         self.unplug_time = None
-        self.remaining = 0  # local remaining seconds for responsive countdown
+        self.remaining = 0
         self._tick_job = None
-        # hardware/monitoring
+        
+        # Hardware monitoring
         self.tm = None
         self._wait_job = None
         self._hw_monitor_job = None
         self._poll_timeout_job = None
-        # consecutive-sample counter to avoid spurious single-sample triggers
+        
+        # Current detection state
         self._charge_consecutive = 0
-        # rolling sample buffers / hit timestamps for threshold-based detection
         self._charge_samples = []
-        # timestamps when plug-threshold was observed
         self._plug_hits = []
-        # timestamps when unplug (below threshold) was observed while charging
         self._unplug_hits = []
-        # uid that started the charging session. Stored so background ticks/monitors
-        # continue even if the user logs out from the UI (controller.active_uid cleared).
+        self._baseline_current = 0
+        self._plug_threshold = 0.10  # 100mA threshold
+        self._unplug_threshold = 0.07  # 70mA threshold
+        self._confirm_samples = 3
+        self._sample_interval = 0.5  # seconds
+        
+        # Session tracking
         self.charging_uid = None
-        # the specific slot this ChargingScreen instance is currently managing.
-        # Set when start_charging() is called so timers/monitors act only on the
-        # intended slot even if controller.active_slot changes while session runs.
         self.charging_slot = None
-        # session validity flag: if False, all background timers should stop immediately
-        # This ensures old sessions stop even if timer callbacks are queued in the event loop
         self._session_valid = False
-        # unique session ID that increments on each session start
-        # Used to prevent old queued callbacks from updating display with stale data
         self._session_id = 0
         self._current_session_id = None
+        
         # Timer display state
         self._last_timer_update = 0
-        self.TIMER_UPDATE_INTERVAL = 5  # Update physical timer every 5 seconds (reduces serial traffic)
+        self.TIMER_UPDATE_INTERVAL = 5
+        
+        # Hardware reference
+        self.hw = getattr(controller, 'hw', None)
+        
+        # Update slot label immediately
+        self._update_slot_label()
 
+    def _update_slot_label(self):
+        """Update the slot label with current slot information."""
+        slot = self.controller.active_slot
+        if slot:
+            slot_num = self._get_slot_number(slot)
+            self.slot_lbl.config(text=f"Charging Slot {slot_num}")
+        else:
+            self.slot_lbl.config(text="No Slot Selected")
+
+    def _get_slot_number(self, slot):
+        """Extract slot number from slot string (e.g., 'slot1' -> 1)."""
+        try:
+            if slot and isinstance(slot, str):
+                import re
+                numbers = re.findall(r'\d+', slot)
+                if numbers:
+                    return int(numbers[0])
+            return 0
+        except Exception:
+            return 0
+
+    def _get_session_uid(self):
+        """Get the current session UID."""
+        return self.charging_uid or self.controller.active_uid
+
+    def _update_progress_bar(self, remaining, total):
+        """Update the progress bar."""
+        if total <= 0:
+            return
+        percentage = min(100, max(0, (remaining / total) * 100))
+        width = int((percentage / 100) * 300)
+        self.progress_bar.coords(self.progress_rect, 0, 0, width, 20)
+        
+        # Change color based on remaining time
+        if percentage > 50:
+            color = "#27ae60"  # Green
+        elif percentage > 20:
+            color = "#f39c12"  # Orange
+        else:
+            color = "#e74c3c"  # Red
+        self.progress_bar.itemconfig(self.progress_rect, fill=color)
+
+    def refresh(self):
+        """Refresh the charging screen display."""
+        self._update_slot_label()
+        self.user_info.refresh()
+        
+        # Update time display
+        uid = self.controller.active_uid
+        if uid:
+            user = read_user(uid)
+            if user:
+                cb = user.get("charge_balance", 0) or 0
+                self.time_var.set(self._format_time(cb))
+                
+                # Update progress bar
+                self._update_progress_bar(cb, max(cb, 3600))  # Use max of balance or 1 hour for scale
+                
+                # Update button states
+                slot = self.controller.active_slot
+                if slot:
+                    slot_data = read_slot(slot)
+                    if slot_data:
+                        status = slot_data.get("status", "inactive")
+                        if status == "active":
+                            self.start_btn.config(state="disabled", text="Charging...")
+                            self.stop_btn.config(state="normal")
+                            self.status_lbl.config(text="Charging in progress...", fg="white")
+                        elif status == "pending":
+                            self.start_btn.config(state="disabled", text="Waiting for plug...")
+                            self.stop_btn.config(state="normal")
+                            self.status_lbl.config(text="Please plug in your device", fg="#f39c12")
+                        else:
+                            self.start_btn.config(state="normal", text="Start Charging")
+                            self.stop_btn.config(state="normal")
+                            self.status_lbl.config(text="Ready to start charging", fg="white")
+                    else:
+                        self.start_btn.config(state="normal", text="Start Charging")
+                        self.stop_btn.config(state="normal")
+                        self.status_lbl.config(text="Ready to start charging", fg="white")
+                else:
+                    self.start_btn.config(state="disabled", text="Start Charging")
+                    self.stop_btn.config(state="disabled")
+                    self.status_lbl.config(text="Select a slot first", fg="yellow")
+
+    def _format_time(self, seconds):
+        """Format seconds to MM:SS or HH:MM."""
+        if seconds >= 3600:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours}:{minutes:02d}"
+        else:
+            minutes = seconds // 60
+            secs = seconds % 60
+            return f"{minutes}:{secs:02d}"
+
+    def update_balance_display(self):
+        """Update the displayed balance from database."""
+        uid = self.controller.active_uid
+        if uid:
+            user = read_user(uid)
+            if user:
+                cb = user.get("charge_balance", 0) or 0
+                self.time_var.set(self._format_time(cb))
+                
+                # Update timer display if available
+                slot = self.charging_slot or self.controller.active_slot
+                slot_num = self._get_slot_number(slot)
+                if slot_num > 0 and self.controller.timer_available:
+                    self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
+
+    # ========== HARDWARE CONTROL METHODS ==========
+    
+    def _block_coins_for_hardware(self, duration_ms=3000, reason=""):
+        """Block coins during hardware operations."""
+        if self.controller.arduino_available:
+            print(f"[COIN_BLOCK] Blocking coins for {reason} ({duration_ms}ms)")
+            success = self.controller.send_arduino_command(f"BLOCK_COINS:{duration_ms}")
+            if success:
+                print(f"[COIN_BLOCK] Successfully blocked coins for {duration_ms}ms")
+            else:
+                print(f"[COIN_BLOCK] Failed to send block command")
+            return success
+        return False
+
+    def _unblock_coins(self):
+        """Unblock coins."""
+        if self.controller.arduino_available:
+            success = self.controller.send_arduino_command("UNBLOCK_COINS")
+            if success:
+                print("[COIN_BLOCK] Coins unblocked")
+            else:
+                print("[COIN_BLOCK] Failed to unblock coins")
+            return success
+        return False
+
+    def _setup_hardware_for_slot(self, slot):
+        """Setup hardware for the given slot."""
+        if not self.hw:
+            self.debug_lbl.config(text="ERROR: No hardware controller")
+            return False
+            
+        try:
+            # Check if slot has hardware mapping
+            if hasattr(self.hw, 'pinmap'):
+                acs_channels = self.hw.pinmap.get('acs712_channels', {})
+                if slot not in acs_channels:
+                    self.debug_lbl.config(text=f"ERROR: No hardware mapping for {slot}")
+                    return False
+            
+            # Calibrate current sensor baseline
+            self.debug_lbl.config(text=f"Calibrating current sensor for {slot}...")
+            self.update_idletasks()
+            
+            # Block coins during calibration
+            self._block_coins_for_hardware(2000, "calibration")
+            
+            # Take multiple baseline readings
+            baseline_readings = []
+            for i in range(10):
+                try:
+                    current = self.hw.read_current(slot)
+                    if current is not None:
+                        baseline_readings.append(current)
+                    time.sleep(0.1)
+                except Exception as e:
+                    print(f"Calibration error: {e}")
+            
+            if baseline_readings:
+                self._baseline_current = sum(baseline_readings) / len(baseline_readings)
+                print(f"Baseline current for {slot}: {self._baseline_current:.3f}A")
+                self.debug_lbl.config(text=f"Baseline: {self._baseline_current:.3f}A")
+            else:
+                self._baseline_current = 0
+                print(f"WARN: Could not calibrate {slot}, using 0 baseline")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR setting up hardware for {slot}: {e}")
+            self.debug_lbl.config(text=f"Hardware error: {e}")
+            return False
+
+    def _unlock_slot_for_user(self, slot):
+        """Unlock the slot for user to plug in device."""
+        if not self.hw:
+            return False
+            
+        try:
+            # Block coins before solenoid operation
+            self._block_coins_for_hardware(3000, "unlock_solenoid")
+            
+            # Turn on relay power
+            self.hw.relay_on(slot)
+            print(f"[RELAY] Power ON for {slot}")
+            
+            # Unlock solenoid (engage lock - solenoid ON)
+            self.hw.lock_slot(slot, lock=True)
+            print(f"[SOLENOID] UNLOCKED (solenoid ON) for {slot}")
+            
+            self.status_lbl.config(text=f"Slot {self._get_slot_number(slot)} UNLOCKED - Plug in device (5s)", fg="#f39c12")
+            self.debug_lbl.config(text="Solenoid unlocked for 5 seconds")
+            
+            return True
+            
+        except Exception as e:
+            print(f"ERROR unlocking slot {slot}: {e}")
+            self.debug_lbl.config(text=f"Unlock error: {e}")
+            return False
+
+    def _lock_slot_after_timeout(self, slot):
+        """Lock the slot after unlock timeout."""
+        if not self.hw:
+            return
+            
+        try:
+            # Block coins before locking
+            self._block_coins_for_hardware(2000, "lock_solenoid")
+            
+            # Lock solenoid (disengage lock - solenoid OFF)
+            self.hw.lock_slot(slot, lock=False)
+            print(f"[SOLENOID] LOCKED (solenoid OFF) for {slot}")
+            
+            self.status_lbl.config(text=f"Slot {self._get_slot_number(slot)} ready - Plug in device", fg="#f39c12")
+            self.debug_lbl.config(text="Solenoid locked, waiting for device...")
+            
+            # Auto-unblock coins after 2.5 seconds
+            self.after(2500, self._unblock_coins)
+            
+        except Exception as e:
+            print(f"ERROR locking slot {slot}: {e}")
+            self.debug_lbl.config(text=f"Lock error: {e}")
+
+    def _read_current_with_baseline(self, slot):
+        """Read current and subtract baseline."""
+        if not self.hw:
+            return 0
+            
+        try:
+            raw_current = self.hw.read_current(slot)
+            if raw_current is None:
+                return 0
+                
+            # Subtract baseline and ensure positive
+            net_current = max(0, raw_current - self._baseline_current)
+            
+            # Update display
+            self.current_lbl.config(text=f"Current: {net_current:.2f}A")
+            
+            return net_current
+            
+        except Exception as e:
+            print(f"ERROR reading current: {e}")
+            return 0
+
+    # ========== PLUG DETECTION METHODS ==========
+    
+    def _poll_for_charging_start(self):
+        """Poll for device plug detection."""
+        if not self._session_valid or not self.is_pending:
+            return
+            
+        slot = self.charging_slot
+        if not slot or not self.hw:
+            return
+            
+        try:
+            # Read current
+            current = self._read_current_with_baseline(slot)
+            
+            # Add to samples buffer (keep last 5 samples)
+            self._charge_samples.append(current)
+            if len(self._charge_samples) > 5:
+                self._charge_samples.pop(0)
+            
+            # Check if current exceeds threshold
+            if current > self._plug_threshold:
+                self._plug_hits.append(time.time())
+                # Keep only recent hits (last 10 seconds)
+                self._plug_hits = [t for t in self._plug_hits if time.time() - t < 10]
+                
+                # If we have enough consecutive hits, start charging
+                if len(self._plug_hits) >= self._confirm_samples:
+                    print(f"[PLUG_DETECTED] Current: {current:.2f}A, Starting charging...")
+                    self._start_actual_charging()
+                    return
+            else:
+                # Reset hits if current drops
+                self._plug_hits = []
+            
+            # Update status
+            avg_current = sum(self._charge_samples) / len(self._charge_samples) if self._charge_samples else 0
+            self.status_lbl.config(text=f"Waiting for device... Current: {avg_current:.2f}A", fg="#f39c12")
+            
+            # Schedule next poll
+            self._wait_job = self.after(int(self._sample_interval * 1000), self._poll_for_charging_start)
+            
+        except Exception as e:
+            print(f"ERROR in plug detection: {e}")
+            self.debug_lbl.config(text=f"Detection error: {e}")
+            # Retry after error
+            self._wait_job = self.after(1000, self._poll_for_charging_start)
+
+    def _poll_no_detect_timeout(self):
+        """Timeout if no device detected within 60 seconds."""
+        if self.is_pending:
+            print("[TIMEOUT] No device detected within 60 seconds")
+            self.status_lbl.config(text="Timeout: No device detected", fg="#e74c3c")
+            self.debug_lbl.config(text="Session cancelled - no device plugged in")
+            
+            # Clean up
+            self._cleanup_pending_session()
+            
+            # Return to slot selection
+            self.after(3000, lambda: self.controller.show_frame(SlotSelectScreen))
+
+    def _start_actual_charging(self):
+        """Start actual charging after plug detection."""
+        slot = self.charging_slot
+        slot_num = self._get_slot_number(slot)
+        
+        # Update database
+        uid = self._get_session_uid()
+        if uid:
+            write_user(uid, {"charging_status": "charging"})
+            write_slot(slot, {"status": "active"})
+        
+        # Update UI
+        self.is_pending = False
+        self.is_charging = True
+        self.start_btn.config(state="disabled", text="Charging...")
+        self.stop_btn.config(state="normal")
+        self.status_lbl.config(text=f"Charging started on Slot {slot_num}!", fg="#27ae60")
+        self.debug_lbl.config(text="Device detected, charging started")
+        
+        # Cancel timeout job
+        if self._poll_timeout_job:
+            try:
+                self.after_cancel(self._poll_timeout_job)
+            except Exception:
+                pass
+            self._poll_timeout_job = None
+        
+        # Start hardware monitoring
+        self._start_hardware_monitoring()
+        
+        # Start countdown
+        self._start_countdown()
+
+    def _start_hardware_monitoring(self):
+        """Monitor hardware during charging."""
+        if not self._session_valid or not self.is_charging:
+            return
+            
+        slot = self.charging_slot
+        if not slot or not self.hw:
+            return
+            
+        try:
+            # Read current
+            current = self._read_current_with_baseline(slot)
+            
+            # Check for unplug (current drops below threshold)
+            if current < self._unplug_threshold:
+                self._unplug_hits.append(time.time())
+                # Keep only recent hits (last 30 seconds)
+                self._unplug_hits = [t for t in self._unplug_hits if time.time() - t < 30]
+                
+                # If we have enough consecutive low readings, handle unplug
+                if len(self._unplug_hits) >= self._confirm_samples:
+                    print(f"[UNPLUG_DETECTED] Current: {current:.2f}A")
+                    self._handle_unplug_detected()
+                    return
+            else:
+                # Reset unplug hits if current is good
+                self._unplug_hits = []
+            
+            # Schedule next monitor
+            self._hw_monitor_job = self.after(int(self._sample_interval * 1000), self._start_hardware_monitoring)
+            
+        except Exception as e:
+            print(f"ERROR in hardware monitoring: {e}")
+            # Retry after error
+            self._hw_monitor_job = self.after(1000, self._start_hardware_monitoring)
+
+    def _handle_unplug_detected(self):
+        """Handle device unplug detection."""
+        print("[UNPLUG] Device unplugged detected")
+        
+        # Record unplug time
+        self.unplug_time = time.time()
+        
+        # Update UI
+        self.status_lbl.config(text="Device unplugged! Plug back in within 30s...", fg="#e74c3c")
+        self.debug_lbl.config(text="Unplug detected, grace period started")
+        
+        # Start grace period countdown
+        self._start_grace_period()
+
+    def _start_grace_period(self):
+        """Start grace period after unplug."""
+        if not self._session_valid:
+            return
+            
+        elapsed = time.time() - self.unplug_time
+        
+        if elapsed >= UNPLUG_GRACE_SECONDS:
+            # Grace period expired
+            print(f"[GRACE_PERIOD] Expired after {elapsed:.0f}s")
+            self.status_lbl.config(text="Grace period expired", fg="#e74c3c")
+            self._end_session_unplug()
+        else:
+            # Update countdown
+            remaining = UNPLUG_GRACE_SECONDS - int(elapsed)
+            self.status_lbl.config(text=f"Plug back in: {remaining}s remaining", fg="#f39c12")
+            
+            # Check if device was re-plugged
+            slot = self.charging_slot
+            if slot and self.hw:
+                current = self._read_current_with_baseline(slot)
+                if current > self._plug_threshold:
+                    print("[RE-PLUG] Device re-plugged during grace period")
+                    self._handle_replug_detected()
+                    return
+            
+            # Continue grace period
+            self._hw_monitor_job = self.after(1000, self._start_grace_period)
+
+    def _handle_replug_detected(self):
+        """Handle device re-plug during grace period."""
+        print("[RE-PLUG] Device re-plugged, resuming charging")
+        
+        # Reset unplug tracking
+        self.unplug_time = None
+        self._unplug_hits = []
+        
+        # Update UI
+        self.status_lbl.config(text="Device re-plugged, charging resumed", fg="#27ae60")
+        self.debug_lbl.config(text="Charging resumed after re-plug")
+        
+        # Resume hardware monitoring
+        self._start_hardware_monitoring()
+
+    # ========== COUNTDOWN METHODS ==========
+    
+    def _start_countdown(self):
+        """Start the countdown timer."""
+        if not self._session_valid or not self.is_charging:
+            return
+        
+        if self.remaining <= 0:
+            self._end_session_timeout()
+            return
+        
+        # Decrement time
+        self.remaining -= 1
+        self.time_var.set(self._format_time(self.remaining))
+        self._update_progress_bar(self.remaining, self.remaining + self.db_acc)
+        
+        # Update database periodically
+        if self.remaining % 30 == 0:  # Every 30 seconds
+            uid = self._get_session_uid()
+            if uid:
+                write_user(uid, {"charge_balance": self.remaining})
+        
+        # Update timer display periodically
+        current_time = time.time()
+        if current_time - self._last_timer_update >= self.TIMER_UPDATE_INTERVAL:
+            slot_num = self._get_slot_number(self.charging_slot)
+            if slot_num > 0 and self.controller.timer_available:
+                self.controller.send_timer_command(f"SLOT{slot_num}:{self.remaining}")
+                self._last_timer_update = current_time
+        
+        # Schedule next tick
+        self._tick_job = self.after(1000, self._start_countdown)
+
+    # ========== SESSION CONTROL METHODS ==========
+    
     def start_charging(self):
+        """Start the charging session with full hardware integration."""
         uid = self.controller.active_uid
         if not uid:
-            print("WARN: No user; scan first.")
+            self.status_lbl.config(text="ERROR: No user logged in", fg="red")
             return
+        
         user = read_user(uid)
         cb = user.get("charge_balance", 0) if user else 0
         if (cb or 0) <= 0:
-            print("WARN: No charge balance; please add coins to charging balance.")
+            self.status_lbl.config(text="ERROR: No charge balance. Add coins first.", fg="red")
             return
         
         slot = self.controller.active_slot
+        if not slot:
+            self.status_lbl.config(text="ERROR: No slot selected.", fg="red")
+            return
+        
         slot_num = self._get_slot_number(slot)
         
-        if not slot:
-            print("WARN: No slot selected.")
+        # Check if slot is already active
+        slot_data = read_slot(slot)
+        if slot_data and slot_data.get("status") in ["active", "pending"]:
+            self.status_lbl.config(text="ERROR: Slot is already in use.", fg="red")
             return
         
-        # remember session owner so background timers continue even if UI user logs out
+        # Set session info
         self.charging_uid = uid
-        # Mark session as VALID so timer callbacks will execute
+        self.charging_slot = slot
         self._session_valid = True
-        # Generate new unique session ID to invalidate old queued callbacks
         self._session_id += 1
         self._current_session_id = self._session_id
-        # bind this charging UI instance to the selected slot
-        self.charging_slot = slot
-        
-        # Update timer display immediately
-        if self.controller.timer_available and slot_num > 0:
-            self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
-            self._last_timer_update = time.time()
-
-        # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
-        # the session must only start when current is detected. Mark 'pending' so
-        # other systems know the user requested charging.
-        hw = getattr(self.controller, 'hw', None)
-        try:
-            # if this slot has hardware mappings (ACS712 channel + relay), mark pending and wait for detection
-            hw_supported = bool(slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}))
-            if hw_supported:
-                write_user(uid, {"charging_status": "pending"})
-            else:
-                write_user(uid, {"charging_status": "charging"})
-        except Exception:
-            pass
-        
-        try:
-            append_audit_log(actor=uid, action='start_charging', meta={'slot': slot})
-        except Exception:
-            pass
-        
-        if slot:
-            if FIREBASE_AVAILABLE and users_ref:
-                users_ref.child(uid).child("slot_status").update({slot: "active"})
-            write_slot(slot, {"status": "active", "current_user": uid})
-        
-        # prepare local state
-        self.db_acc = 0
         self.remaining = cb
-        self.time_var.set(str(self.remaining))
         
-        # hw already assigned above; continue with hardware path if this slot is hardware-mapped
-        if slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
-            # BLOCK COINS BEFORE SOLENOID UNLOCK OPERATION
-            print(f"[COIN_BLOCK] Blocking coins for UNLOCK solenoid operation on {slot}")
-            if self.controller.arduino_available:
-                # Block for 3 seconds (3000ms) - covers entire solenoid sequence with buffer
-                success = self.controller.send_arduino_command("BLOCK_COINS:3000")
-                if success:
-                    print(f"[COIN_BLOCK] Successfully blocked coins for 3000ms for UNLOCK")
-                else:
-                    print(f"[COIN_BLOCK] Failed to send block command for UNLOCK")
-            
-            # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
-            try:
-                if self._tick_job is not None:
-                    try:
-                        self.after_cancel(self._tick_job)
-                    except Exception:
-                        pass
-                    self._tick_job = None
-            except Exception:
-                pass
-            
-            self.is_charging = False
-            self.unplug_time = None
-            
-            # FIX: Ensure lock is OFF before starting (solenoid should be disengaged)
-            try:
-                hw.lock_slot(slot, lock=False)  # FIXED: Start with lock OFF (solenoid disengaged)
-                print(f"[SOLENOID] Initial state: OFF (locked)")
-            except Exception as e:
-                print(f"[SOLENOID] Error setting initial lock state: {e}")
-                pass
-            
-            # power the slot so the user can plug in
-            # Ensure ACS712 baseline is calibrated
-            try:
-                if slot not in getattr(hw, '_baseline', {}):
-                    try:
-                        print(f"INFO: Calibrating current sensor for {slot}. Ensure nothing is plugged into the port.")
-                    except Exception:
-                        pass
-                    try:
-                        cal = hw.calibrate_zero(slot, samples=30, delay=0.05)
-                        print('Calibration result:', cal)
-                    except Exception as e:
-                        print('Calibration failed:', e)
-            except Exception:
-                pass
-            
-            try:
-                hw.relay_on(slot)
-                print(f"[RELAY] Power ON for {slot}")
-            except Exception as e:
-                print(f"[RELAY] Error turning relay on: {e}")
-                pass
-            
-            # UNLOCK (engage lock) for 5 seconds, then LOCK (disengage) permanently
-            try:
-                hw.lock_slot(slot, lock=True)  # Engage lock (UNLOCK slot for user - solenoid ON)
-                print(f"[SOLENOID] UNLOCKED for 5 seconds (solenoid ON)")
-            except Exception as e:
-                print(f"[SOLENOID] Error unlocking: {e}")
-                pass
-            
-            try:
-                self.slot_lbl.config(text=f"{slot} - UNLOCKED: please plug in (5s)")
-            except Exception:
-                pass
-            
-            def _end_unlock_and_start_poll():
-                # BLOCK COINS BEFORE LOCKING SOLENOID
-                print(f"[COIN_BLOCK] Blocking coins for LOCK solenoid operation on {slot}")
-                if self.controller.arduino_available:
-                    # Block for 2 seconds (2000ms) - covers lock operation
-                    success = self.controller.send_arduino_command("BLOCK_COINS:2000")
-                    if success:
-                        print(f"[COIN_BLOCK] Successfully blocked coins for 2000ms for LOCK")
-                    else:
-                        print(f"[COIN_BLOCK] Failed to send block command for LOCK")
-                
-                # LOCK slot after 5 seconds (solenoid OFF - stays off, no second pulse)
-                try:
-                    hw.lock_slot(slot, lock=False)  # Disengage lock (LOCK slot - solenoid OFF)
-                    print(f"[SOLENOID] LOCKED after 5s (solenoid OFF, staying OFF)")
-                except Exception as e:
-                    print(f"[SOLENOID] Error locking after 5s: {e}")
-                    pass
-                
-                try:
-                    self.slot_lbl.config(text=f"{slot} - Waiting for device...")
-                except Exception:
-                    pass
-                
-                # COINS WILL AUTO-UNBLOCK AFTER 2000ms (set above)
-                
-                # start polling loop to detect charging start
-                # reset consecutive-sample counter and rolling sample buffer
-                self._charge_consecutive = 0
-                try:
-                    self._charge_samples = []
-                    self._plug_hits = []
-                    self._unplug_hits = []
-                except Exception:
-                    pass
-                
-                if self._wait_job is None:
-                    try:
-                        # sample every 500ms so we can collect 4 samples within 2s as requested
-                        self._wait_job = self.after(500, self._poll_for_charging_start)
-                    except Exception:
-                        self._wait_job = None
-                
-                # start a 1-minute timeout: if no charging detected within 60s, end session
-                try:
-                    if self._poll_timeout_job is not None:
-                        try:
-                            self.after_cancel(self._poll_timeout_job)
-                        except Exception:
-                            pass
-                        self._poll_timeout_job = None
-                    self._poll_timeout_job = self.after(60000, self._poll_no_detect_timeout)
-                except Exception:
-                    self._poll_timeout_job = None
-            
-            # Schedule the unlock end after 5 seconds
-            try:
-                self.after(5000, _end_unlock_and_start_poll)
-            except Exception:
-                if self._wait_job is None:
-                    self._wait_job = self.after(1000, self._poll_for_charging_start)
+        # Setup hardware
+        if not self._setup_hardware_for_slot(slot):
+            self.status_lbl.config(text="ERROR: Hardware setup failed", fg="red")
             return
         
-        # fallback: begin charging immediately (no hardware detection)
-        self.is_charging = True
-        if self._tick_job is None:
-            self._charging_tick()
+        # Update database to pending state
+        write_user(uid, {
+            "charging_status": "pending",
+            "occupied_slot": slot
+        })
         
-        # Reset the plug start time when charging starts successfully
-        if hasattr(self, '_plug_start_time'):   
-            del self._plug_start_time
+        write_slot(slot, {
+            "status": "pending",
+            "current_user": uid
+        })
+        
+        # Update timer display
+        if self.controller.timer_available and slot_num > 0:
+            self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
+        
+        # Update UI
+        self.is_pending = True
+        self.start_btn.config(state="disabled", text="Waiting...")
+        self.stop_btn.config(state="normal")
+        self.time_var.set(self._format_time(cb))
+        self._update_progress_bar(cb, max(cb, 3600))
+        
+        # Unlock slot for user
+        if not self._unlock_slot_for_user(slot):
+            self.status_lbl.config(text="ERROR: Failed to unlock slot", fg="red")
+            self._cleanup_pending_session()
+            return
+        
+        # Schedule lock after 5 seconds
+        self.after(5000, lambda: self._lock_slot_after_timeout(slot))
+        
+        # Start plug detection polling
+        self._wait_job = self.after(6000, self._poll_for_charging_start)  # Start after unlock period
+        
+        # Start timeout for no detection
+        self._poll_timeout_job = self.after(60000, self._poll_no_detect_timeout)  # 60 second timeout
+        
+        print(f"INFO: Charging session started for {uid} on {slot}")
+
+    def _cleanup_pending_session(self):
+        """Clean up a pending session that never started charging."""
+        slot = self.charging_slot
+        uid = self._get_session_uid()
+        
+        if slot and self.hw:
+            try:
+                # Turn off relay
+                self.hw.relay_off(slot)
+                print(f"[RELAY] Power OFF for {slot}")
+                
+                # Ensure solenoid is locked
+                self.hw.lock_slot(slot, lock=False)
+                print(f"[SOLENOID] LOCKED for cleanup")
+            except Exception as e:
+                print(f"ERROR cleaning hardware: {e}")
+        
+        # Update database
+        if uid:
+            write_user(uid, {
+                "charging_status": "idle",
+                "occupied_slot": "none"
+            })
+            
+            if slot:
+                write_slot(slot, {
+                    "status": "inactive",
+                    "current_user": "none"
+                })
+        
+        # Update timer display
+        slot_num = self._get_slot_number(slot)
+        if slot_num > 0 and self.controller.timer_available:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
+        # Reset state
+        self._clear_session_state()
 
     def stop_session(self):
-        """Stop charging session and clean up all resources."""
+        """Stop the charging session with hardware cleanup."""
+        if not self.is_charging and not self.is_pending:
+            self.status_lbl.config(text="No active session to stop", fg="yellow")
+            return
         
-        # Get session info BEFORE any cleanup
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
         slot_num = self._get_slot_number(slot)
         
-        print(f"[SESSION_STOP] Stopping session - UID: {uid}, Slot: {slot}, Slot#: {slot_num}")
+        print(f"[SESSION_STOP] Stopping session for {uid} on {slot}")
         
-        # 1. BLOCK COINS BEFORE SOLENOID LOCK OPERATION
-        print(f"[COIN_BLOCK] Blocking coins for stop_session solenoid LOCK operation")
-        if self.controller.arduino_available:
-            # Block for 2 seconds (2000ms) - covers solenoid lock operation
-            success = self.controller.send_arduino_command("BLOCK_COINS:2000")
-            if success:
-                print(f"[COIN_BLOCK] Successfully blocked coins for 2000ms")
-            else:
-                print(f"[COIN_BLOCK] Failed to send block command")
-        
-        # 2. Cancel all scheduled jobs first
+        # Cancel all scheduled jobs
         self._cancel_all_jobs()
         
-        # 3. Update timer display (physical 7-segment) to show slot is available
-        if slot_num > 0 and self.controller.timer_available:
-            try:
-                self.controller.send_timer_command(f"SLOT{slot_num}:-")
-                print(f"[TIMER] Physical timer for slot {slot_num} set to available")
-            except Exception as e:
-                print(f"[TIMER] WARN: Could not update timer display: {e}")
+        # Block coins during hardware shutdown
+        self._block_coins_for_hardware(3000, "session_stop")
         
-        # 4. Update database
-        if uid:
-            try:
-                write_user(uid, {
-                    "charging_status": "idle",
-                    "occupied_slot": "none"
-                })
-                
-                if slot:
-                    write_slot(slot, {
-                        "status": "inactive", 
-                        "current_user": "none"
-                    })
-                    
-                    if FIREBASE_AVAILABLE and users_ref:
-                        users_ref.child(uid).child("slot_status").update({slot: "inactive"})
-                
-                print(f"[DB] Updated user {uid} and slot {slot} to inactive")
-            except Exception as e:
-                print(f"[DB] ERROR updating database: {e}")
-        
-        # 5. Clean hardware (including solenoid LOCKING)
+        # Clean hardware
         self._clean_hardware(slot)
         
-        # 6. Reset Arduino mode
-        if self.controller.arduino_available:
-            try:
-                self.controller.send_arduino_command('RESET')
-                print("[ARDUINO] Main Arduino reset")
-            except Exception as e:
-                print(f"[ARDUINO] WARN: Could not reset Arduino: {e}")
+        # Update database
+        if uid:
+            remaining = self.remaining if hasattr(self, 'remaining') else 0
+            write_user(uid, {
+                "charge_balance": remaining,
+                "charging_status": "idle",
+                "occupied_slot": "none"
+            })
+            
+            if slot:
+                write_slot(slot, {
+                    "status": "inactive",
+                    "current_user": "none"
+                })
         
-        # 7. Clear all session state
+        # Update timer display
+        if slot_num > 0 and self.controller.timer_available:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
+        # Reset state
         self._clear_session_state()
         
-        # 8. Force UNBLOCK coins after hardware cleanup (with delay)
-        def _unblock_coins_final():
-            if self.controller.arduino_available:
-                success = self.controller.send_arduino_command("UNBLOCK_COINS")
-                if success:
-                    print("[COIN_BLOCK] Coins unblocked after stop_session")
-                else:
-                    print("[COIN_BLOCK] Failed to unblock coins")
+        # Update UI
+        self.start_btn.config(state="normal", text="Start Charging")
+        self.stop_btn.config(state="disabled")
+        self.status_lbl.config(text="Charging session stopped", fg="white")
+        self.debug_lbl.config(text="Session stopped by user")
+        self.time_var.set("0:00")
+        self._update_progress_bar(0, 100)
+        self.current_lbl.config(text="Current: 0.00A")
         
-        # Schedule unblock after 2.5 seconds (ensuring solenoid operations are complete)
-        self.after(2500, _unblock_coins_final)
+        # Unblock coins after delay
+        self.after(3500, self._unblock_coins)
         
-        # 9. Show main screen
-        print(f"[SESSION_STOP] Charging session stopped for slot {slot_num}")
-        self.controller.show_frame(MainScreen)
+        print(f"INFO: Charging session stopped for slot {slot_num}")
+        
+        # Return to main screen after delay
+        self.after(2000, lambda: self.controller.show_frame(MainScreen))
 
     def _clean_hardware(self, slot):
-        """Clean up hardware resources with coin blocking consideration."""
+        """Clean up hardware resources."""
+        if not slot or not self.hw:
+            return
+            
         try:
-            hw = getattr(self.controller, 'hw', None)
-            if hw is not None and slot:
-                # LOCK THE SLOT (solenoid OFF) when stopping
+            # Turn off relay power
+            self.hw.relay_off(slot)
+            print(f"[RELAY_CLEAN] Power OFF for {slot}")
+            
+            # Lock solenoid
+            self.hw.lock_slot(slot, lock=False)
+            print(f"[SOLENOID_CLEAN] LOCKED (solenoid OFF) for {slot}")
+            
+        except Exception as e:
+            print(f"ERROR cleaning hardware for {slot}: {e}")
+
+    def _cancel_all_jobs(self):
+        """Cancel all scheduled jobs."""
+        jobs = ['_tick_job', '_wait_job', '_hw_monitor_job', '_poll_timeout_job']
+        for job_name in jobs:
+            job = getattr(self, job_name, None)
+            if job:
                 try:
-                    hw.lock_slot(slot, lock=False)  # LOCK position (solenoid OFF)
-                    print(f"[SOLENOID_CLEAN] Slot {slot} locked (solenoid OFF)")
-                except Exception as e:
-                    print(f"[SOLENOID_CLEAN] Error locking slot: {e}")
-                    pass
-                
-                # Turn off relay
-                try:
-                    hw.relay_off(slot)
-                    print(f"[RELAY_CLEAN] Power OFF for {slot}")
+                    self.after_cancel(job)
                 except Exception:
                     pass
-                
-                # Additional: If hardware has a dedicated cleanup method
-                if hasattr(hw, 'cleanup_slot'):
-                    try:
-                        hw.cleanup_slot(slot)
-                    except Exception:
-                        pass
+                setattr(self, job_name, None)
+
+    def _clear_session_state(self):
+        """Clear all session-related state."""
+        self.is_charging = False
+        self.is_pending = False
+        self._session_valid = False
+        self.remaining = 0
+        self.charging_uid = None
+        self.charging_slot = None
+        self._current_session_id = None
+        self.unplug_time = None
+        self._charge_samples = []
+        self._plug_hits = []
+        self._unplug_hits = []
+        self._baseline_current = 0
+
+    def _end_session_timeout(self):
+        """Handle session timeout (when time runs out)."""
+        uid = self._get_session_uid()
+        slot = self.charging_slot
+        slot_num = self._get_slot_number(slot)
+        
+        print(f"[TIME_COMPLETE] Charging time completed for {uid}")
+        
+        # Cancel all jobs
+        self._cancel_all_jobs()
+        
+        # Block coins during shutdown
+        self._block_coins_for_hardware(3000, "time_complete")
+        
+        # Clean hardware
+        self._clean_hardware(slot)
+        
+        # Update database
+        if uid:
+            write_user(uid, {
+                "charge_balance": 0,
+                "charging_status": "idle",
+                "occupied_slot": "none"
+            })
             
-            # Clear TM1637 display
-            self.tm = None
+            if slot:
+                write_slot(slot, {
+                    "status": "inactive",
+                    "current_user": "none"
+                })
+        
+        # Update timer display
+        if slot_num > 0 and self.controller.timer_available:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
+        # Update UI
+        self.start_btn.config(state="normal", text="Start Charging")
+        self.stop_btn.config(state="disabled")
+        self.status_lbl.config(text="Charging time completed!", fg="green")
+        self.debug_lbl.config(text="Session completed normally")
+        self.time_var.set("0:00")
+        self._update_progress_bar(0, 100)
+        self.current_lbl.config(text="Current: 0.00A")
+        
+        # Unblock coins after delay
+        self.after(3500, self._unblock_coins)
+        
+        # Clear state
+        self._clear_session_state()
+        
+        # Return to main screen after delay
+        self.after(3000, lambda: self.controller.show_frame(MainScreen))
+
+    def _end_session_unplug(self):
+        """Handle session end due to unplug."""
+        uid = self._get_session_uid()
+        slot = self.charging_slot
+        slot_num = self._get_slot_number(slot)
+        
+        print(f"[UNPLUG_END] Session ended due to unplug for {uid}")
+        
+        # Cancel all jobs
+        self._cancel_all_jobs()
+        
+        # Block coins during shutdown
+        self._block_coins_for_hardware(3000, "unplug_end")
+        
+        # Clean hardware
+        self._clean_hardware(slot)
+        
+        # Update database (keep remaining time)
+        if uid:
+            remaining = self.remaining if hasattr(self, 'remaining') else 0
+            write_user(uid, {
+                "charge_balance": remaining,
+                "charging_status": "idle",
+                "occupied_slot": "none"
+            })
             
-            # Reset hardware monitoring state
-            self.unplug_time = None
-            self._charge_consecutive = 0
-            
-            # Clear reading buffers if they exist
-            if hasattr(self, 'plug_readings'):
-                self.plug_readings = []
-            if hasattr(self, 'unplug_readings'):
-                self.unplug_readings = []
-            if hasattr(self, 'charging_reference'):
-                del self.charging_reference
-                
-        except Exception as e:
-            print(f"[HARDWARE_CLEAN] WARN: Error cleaning hardware: {e}")
-            
+            if slot:
+                write_slot(slot, {
+                    "status": "inactive",
+                    "current_user": "none"
+                })
+        
+        # Update timer display
+        if slot_num > 0 and self.controller.timer_available:
+            self.controller.send_timer_command(f"SLOT{slot_num}:-")
+        
+        # Update UI
+        self.start_btn.config(state="normal", text="Start Charging")
+        self.stop_btn.config(state="disabled")
+        self.status_lbl.config(text="Session ended (device unplugged)", fg="#e74c3c")
+        self.debug_lbl.config(text="Session ended due to unplug")
+        self.time_var.set(self._format_time(remaining) if hasattr(self, 'remaining') else "0:00")
+        self.current_lbl.config(text="Current: 0.00A")
+        
+        # Unblock coins after delay
+        self.after(3500, self._unblock_coins)
+        
+        # Clear state
+        self._clear_session_state()
+        
+        # Return to main screen after delay
+        self.after(3000, lambda: self.controller.show_frame(MainScreen))
+
 # --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):

@@ -1527,26 +1527,13 @@ class SlotSelectScreen(tk.Frame):
         tk.Label(self, text="Select Charging Slot", font=("Arial", 22, "bold"),
                  fg="white", bg="#34495e").pack(pady=6)
         
-        # allow adding coins before selecting slot (coins shown here per request)
-        hw = getattr(controller, 'hw', None)
-        self.coin_frame_top = tk.LabelFrame(self, 
-            text=("Coinslot - add charge before slot" if hw else "Coinslot - use physical coins"), 
-            font=("Arial", 12, "bold"),
-            fg="white", bg="#34495e", bd=2, labelanchor="n")
-        self.coin_frame_top.pack(pady=6)
-        
-        # status label to show recent coin inserts and expected time
-        self.coin_status_lbl = tk.Label(self.coin_frame_top, text="", fg="white", bg="#34495e")
-        self.coin_status_lbl.grid(row=0, column=0, columnspan=3, pady=(4, 0))
-        
-        # Instruction for physical coin acceptor
-        tk.Label(self.coin_frame_top, text="Use physical coin acceptor to add charging time", 
-                fg="white", bg="#34495e", font=("Arial", 10)).grid(row=1, column=0, columnspan=3, pady=6)
+        # Simple balance display (no coin frame)
+        self.balance_frame = tk.Frame(self, bg="#34495e")
+        self.balance_frame.pack(pady=8)
 
-        # Balance display for current user
-        self.balance_lbl = tk.Label(self.coin_frame_top, text="", fg="#f39c12", bg="#34495e", 
-                                    font=("Arial", 11, "bold"))
-        self.balance_lbl.grid(row=2, column=0, columnspan=3, pady=(0, 6))
+        self.balance_lbl = tk.Label(self.balance_frame, text="", fg="#f39c12", bg="#34495e", 
+                                   font=("Arial", 14, "bold"))
+        self.balance_lbl.pack()
 
         self.slot_buttons = {}
         grid = tk.Frame(self, bg="#34495e")
@@ -1608,18 +1595,6 @@ class SlotSelectScreen(tk.Frame):
         
         # Update timer displays
         self._update_timer_display()
-        
-        # only show the top coin frame when no slot currently assigned to this session
-        if self.controller.active_slot:
-            try:
-                self.coin_frame_top.pack_forget()
-            except Exception:
-                pass
-        else:
-            try:
-                self.coin_frame_top.pack(pady=6)
-            except Exception:
-                pass
         
         # Update each slot button based on current status
         for i in range(1, 5):
@@ -1686,7 +1661,7 @@ class SlotSelectScreen(tk.Frame):
             except Exception as e:
                 print(f"Error updating slot button {key}: {e}")
         
-        # Update coin and balance information
+        # Update balance information
         try:
             uid = self.controller.active_uid
             if uid:
@@ -1703,27 +1678,13 @@ class SlotSelectScreen(tk.Frame):
                         balance_text = f"Charging Balance: {seconds}s"
                     
                     self.balance_lbl.config(text=balance_text)
-                    
-                    # Show recent coins if any
-                    rec = self.controller.coin_counters.get(uid)
-                    if rec and rec.get('coins', 0) > 0:
-                        coin_text = f"Coins inserted: {rec.get('coins', 0)} coins"
-                        self.coin_status_lbl.config(text=coin_text)
-                    else:
-                        if cb > 0:
-                            self.coin_status_lbl.config(text="Insert more coins to add time")
-                        else:
-                            self.coin_status_lbl.config(text="Insert coins to add charging time")
                 else:
                     self.balance_lbl.config(text="")
-                    self.coin_status_lbl.config(text="")
             else:
                 self.balance_lbl.config(text="")
-                self.coin_status_lbl.config(text="")
         except Exception as e:
             print(f"Error updating balance display: {e}")
             self.balance_lbl.config(text="")
-            self.coin_status_lbl.config(text="")
 
     def select_slot(self, i):
         """Handle slot selection"""
@@ -1784,12 +1745,6 @@ class SlotSelectScreen(tk.Frame):
             
             # Update button to show it's assigned
             self.slot_buttons[slot_key].config(text=f"Slot {i}\nAssigned", bg="#f39c12")
-            
-            # Hide coin frame since slot is now assigned
-            try:
-                self.coin_frame_top.pack_forget()
-            except Exception:
-                pass
             
             print(f"INFO: You selected {slot_key}. Please plug your device and press Start Charging.")
             

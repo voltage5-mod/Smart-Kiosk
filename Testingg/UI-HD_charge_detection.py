@@ -406,18 +406,55 @@ class KioskApp(tk.Tk):
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
-        # instantiate hardware interface (available on Pi). Store on controller for screens to use.
+        # ========== HARDWARE GPIO INITIALIZATION ==========
+        # instantiate hardware interface with correct relay_active_high setting
+        # MOST RELAY MODULES ARE ACTIVE-LOW (relay_active_high=False)
+        # If your relays turn ON when GPIO is LOW, use relay_active_high=False
+        # If your relays turn ON when GPIO is HIGH, use relay_active_high=True
+        
+        self.hw = None
         try:
             if _pinmap:
-                self.hw = HardwareGPIO(pinmap=_pinmap, mode='auto')
+                # Try with relay_active_high=False first (most common)
+                print("INFO: Initializing HardwareGPIO with relay_active_high=False (active-low relays)")
+                self.hw = HardwareGPIO(pinmap=_pinmap, mode='auto', relay_active_high=False)
                 try:
                     self.hw.setup()
-                except Exception:
-                    pass
+                    print("INFO: HardwareGPIO initialized successfully with relay_active_high=False")
+                    
+                    # Quick test of hardware
+                    print("INFO: Testing hardware relays...")
+                    # Test slot1 lock relay
+                    try:
+                        lock_pins = _pinmap.get('lock_relay', {})
+                        if 'slot1' in lock_pins:
+                            print(f"INFO: Slot1 lock relay on pin {lock_pins['slot1']}")
+                            # Quick pulse test
+                            self.hw.lock_slot('slot1', lock=True)
+                            time.sleep(0.5)
+                            self.hw.lock_slot('slot1', lock=False)
+                            print("INFO: Hardware test pulse complete")
+                    except Exception as hw_test_error:
+                        print(f"WARN: Hardware test failed: {hw_test_error}")
+                        
+                except Exception as setup_error:
+                    print(f"ERROR: Hardware setup failed with relay_active_high=False: {setup_error}")
+                    # Try with relay_active_high=True
+                    print("INFO: Trying relay_active_high=True...")
+                    try:
+                        self.hw = HardwareGPIO(pinmap=_pinmap, mode='auto', relay_active_high=True)
+                        self.hw.setup()
+                        print("INFO: HardwareGPIO initialized successfully with relay_active_high=True")
+                    except Exception:
+                        print("WARN: Falling back to simulation mode")
+                        self.hw = HardwareGPIO(pinmap=None, mode='sim')
+                        self.hw.setup()
             else:
+                print("WARN: No pinmap found, using simulation mode")
                 self.hw = HardwareGPIO(pinmap=None, mode='sim')
                 self.hw.setup()
-        except Exception:
+        except Exception as e:
+            print(f"ERROR: Hardware initialization failed: {e}")
             # fallback to simulation
             self.hw = HardwareGPIO(pinmap=None, mode='sim')
             try:
@@ -426,9 +463,9 @@ class KioskApp(tk.Tk):
                 pass
 
         # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
-        # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
         self.arduino_listener = None
         self.arduino_available = False
+        self._last_arduino_mode = None  # Track Arduino mode state
 
         try:
             from ArduinoListener import ArduinoListener
@@ -447,6 +484,12 @@ class KioskApp(tk.Tk):
                     self.arduino_listener.start()
                     self.arduino_available = True
                     print("INFO: ArduinoListener started successfully on ACM0")
+                    
+                    # Send initial reset and status
+                    self.send_arduino_command('RESET')
+                    time.sleep(0.5)
+                    self.send_arduino_command('STATUS')
+                    
                 except Exception as start_error:
                     print(f"WARN: ArduinoListener start() failed: {start_error}")
                     self.arduino_available = False
@@ -471,6 +514,7 @@ class KioskApp(tk.Tk):
 
         # coin counters per-uid (list of inserted coin amounts)
         self.coin_counters = {}
+        
         # Ensure the initial visible screen is the ScanScreen (raise it above others)
         try:
             self.show_frame(ScanScreen)

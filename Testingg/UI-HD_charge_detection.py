@@ -1810,6 +1810,7 @@ class SlotSelectScreen(tk.Frame):
         self._update_timer_display()
 
 # --------- Screen: Charging ----------
+# --------- Screen: Charging ----------
 class ChargingScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#34495e")
@@ -1820,73 +1821,56 @@ class ChargingScreen(tk.Frame):
         self.user_info.pack(fill="x")
 
         body = tk.Frame(self, bg="#34495e")
-        # expand so the main content can be centered vertically between the user info above and buttons below
         body.pack(expand=True, fill='both', pady=12)
 
-        # Large centered header that shows the active charging slot (e.g. "Charging Slot 4")
+        # Large centered header
         self.slot_lbl = tk.Label(body, text="Charging Slot -", font=("Arial", 28, "bold"), fg="white", bg="#34495e")
-        # place the header slightly above center and give breathing room before the time label
         self.slot_lbl.pack(pady=(20, 12))
 
-        # Time display (kept below the header)
+        # Time display
         self.time_var = tk.StringVar(value="0")
         tk.Label(body, text="Time Left (sec)", font=("Arial", 14), fg="white", bg="#34495e").pack(pady=(6, 2))
         tk.Label(body, textvariable=self.time_var, font=("Arial", 28, "bold"), fg="white", bg="#34495e").pack(pady=(0, 12))
 
         btn_frame = tk.Frame(body, bg="#34495e")
         btn_frame.pack(pady=8)
-        # Back button: allow user to return to Main screen while charging continues
+        # Only 3 buttons: Back, Start Charging, Stop Session (Unlock Slot removed)
         tk.Button(btn_frame, text="Back", font=("Arial", 12, "bold"),
                   bg="#95a5a6", fg="white", width=10, command=lambda: controller.show_frame(MainScreen)).grid(row=0, column=0, padx=6)
-        # Start/Unlock/Stop controls: aligned in a single row for a clean layout
         tk.Button(btn_frame, text="Start Charging", font=("Arial", 14, "bold"),
                   bg="#2980b9", fg="white", width=14, command=self.start_charging).grid(row=0, column=1, padx=6)
-        tk.Button(btn_frame, text="Unlock Slot", font=("Arial", 14, "bold"),
-                  bg="#f39c12", fg="white", width=14, command=self.unlock_slot).grid(row=0, column=2, padx=6)
         tk.Button(btn_frame, text="Stop Session", font=("Arial", 12, "bold"),
-                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=3, padx=6)
+                  bg="#c0392b", fg="white", width=14, command=self.stop_session).grid(row=0, column=2, padx=6)
 
         # local countdown state
         self.db_acc = 0
         self.is_charging = False
         self.unplug_time = None
-        self.remaining = 0  # local remaining seconds for responsive countdown
+        self.remaining = 0
         self._tick_job = None
         # hardware/monitoring
         self.tm = None
         self._wait_job = None
         self._hw_monitor_job = None
         self._poll_timeout_job = None
-        # consecutive-sample counter to avoid spurious single-sample triggers
+        # consecutive-sample counter
         self._charge_consecutive = 0
-        # rolling sample buffers / hit timestamps for threshold-based detection
+        # rolling sample buffers
         self._charge_samples = []
-        # timestamps when plug-threshold was observed
         self._plug_hits = []
-        # timestamps when unplug (below threshold) was observed while charging
         self._unplug_hits = []
-        # uid that started the charging session. Stored so background ticks/monitors
-        # continue even if the user logs out from the UI (controller.active_uid cleared).
+        # session tracking
         self.charging_uid = None
-        # the specific slot this ChargingScreen instance is currently managing.
-        # Set when start_charging() is called so timers/monitors act only on the
-        # intended slot even if controller.active_slot changes while session runs.
         self.charging_slot = None
-        # session validity flag: if False, all background timers should stop immediately
-        # This ensures old sessions stop even if timer callbacks are queued in the event loop
         self._session_valid = False
-        # unique session ID that increments on each session start
-        # Used to prevent old queued callbacks from updating display with stale data
         self._session_id = 0
         self._current_session_id = None
         # Timer display state
         self._last_timer_update = 0
-        self.TIMER_UPDATE_INTERVAL = 5  # Update physical timer every 5 seconds (reduces serial traffic)
+        self.TIMER_UPDATE_INTERVAL = 5
 
     def _get_session_uid(self):
-        """Return the uid owning the active charging session.
-        Priority: explicit charging_uid set at start_charging -> controller.active_uid -> slot.current_user in DB.
-        """
+        """Return the uid owning the active charging session."""
         uid = getattr(self, 'charging_uid', None) or getattr(self.controller, 'active_uid', None)
         if uid:
             return uid
@@ -1908,7 +1892,7 @@ class ChargingScreen(tk.Frame):
         
         if slot_name and slot_name.startswith("slot"):
             try:
-                return int(slot_name[4:])  # Extract number from "slotX"
+                return int(slot_name[4:])
             except ValueError:
                 pass
         return 0
@@ -1922,7 +1906,6 @@ class ChargingScreen(tk.Frame):
         if slot_num <= 0:
             return False
         
-        # Only update every TIMER_UPDATE_INTERVAL seconds to reduce serial traffic
         current_time = time.time()
         if not force and (current_time - self._last_timer_update) < self.TIMER_UPDATE_INTERVAL:
             return True
@@ -1943,11 +1926,9 @@ class ChargingScreen(tk.Frame):
         uid = self.controller.active_uid
         slot = self.controller.active_slot or "none"
         
-        # CRITICAL: If the active user has changed (different from the session owner),
-        # IMMEDIATELY INVALIDATE THE SESSION to stop all background timers
+        # CRITICAL: If the active user has changed, invalidate the session
         if uid and self.charging_uid and uid != self.charging_uid:
-            print(f"[CHARGING] User changed: was {self.charging_uid}, now {uid}. Invalidating session and resetting ChargingScreen state.")
-            # Mark session as invalid so any running callbacks will exit immediately
+            print(f"[CHARGING] User changed: was {self.charging_uid}, now {uid}. Invalidating session.")
             self._session_valid = False
             # Cancel all running timers
             try:
@@ -1967,7 +1948,7 @@ class ChargingScreen(tk.Frame):
                     self.after_cancel(self._hw_monitor_job)
                     self._hw_monitor_job = None
             except Exception:
-                pass
+                 pass
             try:
                 if self._poll_timeout_job is not None:
                     self.after_cancel(self._poll_timeout_job)
@@ -1986,68 +1967,54 @@ class ChargingScreen(tk.Frame):
             self._charge_samples = []
             self._plug_hits = []
             self._unplug_hits = []
-            # CRITICAL: Immediately clear the time display to prevent showing old session's remaining time
+            # Clear time display
             try:
                 self.time_var.set("0")
             except Exception:
                 pass
         
-        # Display a concise charging label. Show "Charging Slot X" instead of 'In use' or 'Occupied'.
+        # Display slot info
         display_text = f"Charging Slot {slot[4:] if slot and slot.startswith('slot') else slot}"
         display_bg = self.cget('bg')
         self.slot_lbl.config(text=display_text, bg=display_bg)
-        # ensure top user details update when charging screen appears
+        
         try:
             self.user_info.refresh()
         except Exception:
             pass
-        
-        # Initialize session totals if not already
-        if not hasattr(self, 'total_coins'):
-            self.total_coins = 0
-        if not hasattr(self, 'total_credit'):
-            self.total_credit = 0
             
         if uid:
             user = read_user(uid)
             cb = user.get("charge_balance", 0) or 0
             self.time_var.set(str(cb))
             
-            # Update timer display if we have a timer and this is our session
+            # Update timer display
             slot_num = self._get_slot_number()
             if slot_num > 0 and self.controller.timer_available:
                 if self.charging_uid == uid and self.is_charging:
-                    # Our active session - update timer with current time
                     self.controller.send_timer_command(f"SLOT{slot_num}:{self.remaining}")
                 elif user.get("charging_status") == "charging":
-                    # Someone else is charging this slot
                     self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
                 else:
-                    # Slot available/waiting
                     self.controller.send_timer_command(f"SLOT{slot_num}:-")
             
-            # keep local remaining in sync when not actively charging
-            # If DB reports charging_status == 'charging' AND this is OUR session, ensure local tick loop is running
+            # Sync local state with DB
             if user.get("charging_status") == "charging" and self.charging_uid == uid:
-                # if we are not currently running a local tick, start one so time continues while user navigates
                 if not self.is_charging:
-                    self._session_valid = True  # Mark session as valid before starting
+                    self._session_valid = True
                     self.is_charging = True
                     self.remaining = cb
                     self.db_acc = 0
                     if self._tick_job is None:
                         self._charging_tick()
                 else:
-                    # already charging locally; keep remaining in sync when tick isn't running
                     if self._tick_job is None:
                         self.remaining = cb
             else:
                 if not self.is_charging and self._tick_job is None:
-                    # sync remaining only if no active tick loop
                     self.remaining = cb
         else:
             self.time_var.set("0")
-            # If no user, clear timer displays
             if self.controller.timer_available:
                 for slot_num in range(1, 5):
                     self.controller.send_timer_command(f"SLOT{slot_num}:-")
@@ -2070,27 +2037,21 @@ class ChargingScreen(tk.Frame):
             print("WARN: No slot selected.")
             return
         
-        # remember session owner so background timers continue even if UI user logs out
+        # Set session tracking
         self.charging_uid = uid
-        # Mark session as VALID so timer callbacks will execute
         self._session_valid = True
-        # Generate new unique session ID to invalidate old queued callbacks
         self._session_id += 1
         self._current_session_id = self._session_id
-        # bind this charging UI instance to the selected slot
         self.charging_slot = slot
         
-        # Update timer display immediately
+        # Update timer display
         if self.controller.timer_available and slot_num > 0:
             self.controller.send_timer_command(f"SLOT{slot_num}:{cb}")
             self._last_timer_update = time.time()
 
-        # For hardware-driven slots (slot1), do not mark DB as 'charging' yet because
-        # the session must only start when current is detected. Mark 'pending' so
-        # other systems know the user requested charging.
+        # Update DB status
         hw = getattr(self.controller, 'hw', None)
         try:
-            # if this slot has hardware mappings (ACS712 channel + relay), mark pending and wait for detection
             hw_supported = bool(slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}))
             if hw_supported:
                 write_user(uid, {"charging_status": "pending"})
@@ -2109,24 +2070,23 @@ class ChargingScreen(tk.Frame):
                 users_ref.child(uid).child("slot_status").update({slot: "active"})
             write_slot(slot, {"status": "active", "current_user": uid})
         
-        # prepare local state
+        # Prepare local state
         self.db_acc = 0
         self.remaining = cb
         self.time_var.set(str(self.remaining))
         
-        # hw already assigned above; continue with hardware path if this slot is hardware-mapped
+        # Handle hardware path
         if slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
-            # BLOCK COINS BEFORE SOLENOID OPERATION TO PREVENT FALSE PULSES
-            print(f"[COIN_BLOCK] Blocking coins for solenoid operation on {slot}")
+            # BLOCK COINS BEFORE FIRST SOLENOID UNLOCK
+            print(f"[COIN_BLOCK] Blocking coins for initial solenoid unlock on {slot}")
             if self.controller.arduino_available:
-                # Block for 3 seconds (3000ms) - covers entire solenoid sequence with buffer
-                success = self.controller.send_arduino_command("BLOCK_COINS:3000")
+                success = self.controller.send_arduino_command("BLOCK_COINS:4000")
                 if success:
-                    print(f"[COIN_BLOCK] Successfully blocked coins for 3000ms")
+                    print(f"[COIN_BLOCK] Successfully blocked coins for initial unlock (4000ms)")
                 else:
-                    print(f"[COIN_BLOCK] Failed to send block command")
+                    print(f"[COIN_BLOCK] Failed to send initial block command")
             
-            # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
+            # Cancel any running timers
             try:
                 if self._tick_job is not None:
                     try:
@@ -2140,20 +2100,25 @@ class ChargingScreen(tk.Frame):
             self.is_charging = False
             self.unplug_time = None
             
-            # FIX: Ensure lock is OFF before starting (solenoid should be disengaged)
+            # Initial state: Lock OFF (locked)
             try:
-                hw.lock_slot(slot, lock=False)  # FIXED: Start with lock OFF (solenoid disengaged)
+                hw.lock_slot(slot, lock=False)
                 print(f"[SOLENOID] Initial state: OFF (locked)")
             except Exception as e:
                 print(f"[SOLENOID] Error setting initial lock state: {e}")
-                pass
             
-            # power the slot so the user can plug in
-            # Ensure ACS712 baseline is calibrated
+            # Power the slot relay ON
+            try:
+                hw.relay_on(slot)
+                print(f"[RELAY] Power ON for {slot}")
+            except Exception as e:
+                print(f"[RELAY] Error turning relay on: {e}")
+            
+            # Calibrate current sensor if needed
             try:
                 if slot not in getattr(hw, '_baseline', {}):
                     try:
-                        print(f"INFO: Calibrating current sensor for {slot}. Ensure nothing is plugged into the port.")
+                        print(f"INFO: Calibrating current sensor for {slot}.")
                     except Exception:
                         pass
                     try:
@@ -2164,19 +2129,11 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 pass
             
-            try:
-                hw.relay_on(slot)
-                print(f"[RELAY] Power ON for {slot}")
-            except Exception as e:
-                print(f"[RELAY] Error turning relay on: {e}")
-                pass
-            
-            # init TM1637 display for countdown (if present)
+            # Initialize display
             try:
                 if hasattr(hw, 'tm1637_init_slot'):
                     self.tm = hw.tm1637_init_slot(slot)
                 else:
-                    # fallback for older hardware_gpio without per-slot init
                     self.tm = hw.tm1637_init()
                 if hasattr(self.tm, 'set_brightness'):
                     try:
@@ -2186,38 +2143,37 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 self.tm = None
             
-            # UNLOCK (engage lock) for 5 seconds, then LOCK (disengage) permanently
+            # UNLOCK (solenoid ON) for 5 seconds
             try:
-                hw.lock_slot(slot, lock=True)  # Engage lock (UNLOCK slot for user - solenoid ON)
+                hw.lock_slot(slot, lock=True)
                 print(f"[SOLENOID] UNLOCKED for 5 seconds (solenoid ON)")
             except Exception as e:
                 print(f"[SOLENOID] Error unlocking: {e}")
-                pass
             
             try:
                 self.slot_lbl.config(text=f"{slot} - UNLOCKED: please plug in (5s)")
             except Exception:
                 pass
             
-            def _end_unlock_and_start_poll():
-                # LOCK slot after 5 seconds (solenoid OFF - stays off, no second pulse)
+            def _end_unlock_and_lock():
+                # BLOCK COINS BEFORE LOCK SOLENOID
+                print(f"[COIN_BLOCK] Blocking coins for lock solenoid operation on {slot}")
+                if self.controller.arduino_available:
+                    self.controller.send_arduino_command("BLOCK_COINS:4000")
+                
+                # LOCK slot (solenoid OFF)
                 try:
-                    hw.lock_slot(slot, lock=False)  # Disengage lock (LOCK slot - solenoid OFF)
-                    print(f"[SOLENOID] LOCKED after 5s (solenoid OFF, staying OFF)")
+                    hw.lock_slot(slot, lock=False)
+                    print(f"[SOLENOID] LOCKED after 5s (solenoid OFF)")
                 except Exception as e:
                     print(f"[SOLENOID] Error locking after 5s: {e}")
-                    pass
                 
                 try:
                     self.slot_lbl.config(text=f"{slot} - Waiting for device...")
                 except Exception:
                     pass
                 
-                # COINS WILL AUTO-UNBLOCK AFTER 3000ms (set earlier)
-                # No need to send UNBLOCK_COINS command
-                
-                # start polling loop to detect charging start
-                # reset consecutive-sample counter and rolling sample buffer
+                # Reset detection state
                 self._charge_consecutive = 0
                 try:
                     self._charge_samples = []
@@ -2226,14 +2182,14 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 
+                # Start polling for charging
                 if self._wait_job is None:
                     try:
-                        # sample every 500ms so we can collect 4 samples within 2s as requested
                         self._wait_job = self.after(500, self._poll_for_charging_start)
                     except Exception:
                         self._wait_job = None
                 
-                # start a 1-minute timeout: if no charging detected within 60s, end session
+                # Start 1-minute timeout
                 try:
                     if self._poll_timeout_job is not None:
                         try:
@@ -2245,28 +2201,26 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     self._poll_timeout_job = None
             
-            # Schedule the unlock end after 5 seconds
+            # Schedule lock after 5 seconds
             try:
-                self.after(5000, _end_unlock_and_start_poll)
+                self.after(5000, _end_unlock_and_lock)
             except Exception:
                 if self._wait_job is None:
                     self._wait_job = self.after(1000, self._poll_for_charging_start)
             return
         
-        # fallback: begin charging immediately (no hardware detection)
+        # Fallback: begin charging immediately (no hardware detection)
         self.is_charging = True
         if self._tick_job is None:
             self._charging_tick()
         
-        # Reset the plug start time when charging starts successfully
         if hasattr(self, '_plug_start_time'):   
             del self._plug_start_time
 
     def _charging_tick(self):
-        """Improved charging tick with better state management"""
+        """Main charging countdown loop"""
         self._tick_job = None
         
-        # Enhanced safety checks
         if not getattr(self, '_session_valid', False):
             print("[TICK] Session invalid, stopping")
             return
@@ -2285,13 +2239,13 @@ class ChargingScreen(tk.Frame):
             print("[TICK] No UID, stopping")
             return
 
-        # Check if we should be charging (device plugged)
+        # Check unplug timeout
         if self.unplug_time and (time.time() - self.unplug_time) >= UNPLUG_GRACE_SECONDS:
             print("[TICK] Unplug timeout reached in tick, stopping")
             self.stop_session()
             return
             
-        # Only count down if actually charging (not in unplug grace period)
+        # Count down if actually charging
         if not self.unplug_time:
             t = self.remaining
             if t <= 0:
@@ -2299,7 +2253,6 @@ class ChargingScreen(tk.Frame):
                 self._end_charging_due_to_time()
                 return
                 
-            # Decrement only if actually charging
             self.remaining = max(0, t - 1)
             self.time_var.set(str(self.remaining))
             print(f"[TICK] Time remaining: {self.remaining}s")
@@ -2311,7 +2264,7 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 pass
                 
-            # Update physical timer display (but not every second to reduce serial traffic)
+            # Update physical timer
             self._update_timer_display()
                 
             # Periodic DB update
@@ -2347,7 +2300,7 @@ class ChargingScreen(tk.Frame):
         except Exception as e:
             print(f"Error updating DB: {e}")
         
-        # Update timer display to show slot is available
+        # Update timer display
         if self.controller.timer_available and slot_num > 0:
             self.controller.send_timer_command(f"SLOT{slot_num}:-")
         
@@ -2368,10 +2321,9 @@ class ChargingScreen(tk.Frame):
         self.controller.show_frame(MainScreen)
 
     def _poll_for_charging_start(self):
-        """Robust plug detection with filtering for noisy sensors"""
+        """Plug detection with filtering"""
         self._wait_job = None
         
-        # Safety checks
         if not getattr(self, '_session_valid', False):
             return
             
@@ -2390,26 +2342,25 @@ class ChargingScreen(tk.Frame):
             cur = hw.read_current(slot)
             amps = float(cur.get('amps', 0) or 0)
             
-            # MOVING AVERAGE FILTER - reduce noise
+            # Moving average filter
             if not hasattr(self, 'plug_readings'):
                 self.plug_readings = []
             
             self.plug_readings.append(amps)
-            if len(self.plug_readings) > 3:  # Smaller buffer for faster response
+            if len(self.plug_readings) > 3:
                 self.plug_readings.pop(0)
             
             filtered_amps = sum(self.plug_readings) / len(self.plug_readings)
             
             print(f"[PLUG DETECT] Raw: {amps:.3f}A, Filtered: {filtered_amps:.3f}A, Threshold: {PLUG_THRESHOLD}A")
             
-            # FASTER DETECTION: Use filtered reading
             if filtered_amps >= PLUG_THRESHOLD:
                 self._charge_consecutive += 1
                 print(f"[PLUG DETECT] Above threshold - consecutive: {self._charge_consecutive}")
             else:
                 self._charge_consecutive = 0
                 
-            # Only require 2 consecutive filtered samples for faster detection
+            # Require 2 consecutive filtered samples
             if self._charge_consecutive >= 2 and not self.is_charging:
                 print(f"[PLUG DETECT] Starting charging - detected {self._charge_consecutive} filtered samples")
                 self._start_charging_confirmed(uid, slot, filtered_amps)
@@ -2428,15 +2379,13 @@ class ChargingScreen(tk.Frame):
         
         if remaining > 0:
             print(f"[PLUG DETECT] Auto-start in {remaining}s if no detection...")
-            # Continue polling with normal interval
             try:
                 self._wait_job = self.after(1000, self._poll_for_charging_start)
             except Exception:
                 self._wait_job = None
         else:
-            # 30-second timeout reached - auto-start
             print(f"[PLUG DETECT] Auto-start after 30s timeout")
-            self._start_charging_confirmed(uid, slot, PLUG_THRESHOLD)  # Use threshold value
+            self._start_charging_confirmed(uid, slot, PLUG_THRESHOLD)
             
     def _start_charging_confirmed(self, uid, slot, amps):
         """Start charging once detection is confirmed"""
@@ -2447,9 +2396,8 @@ class ChargingScreen(tk.Frame):
         except Exception as e:
             print(f"Error updating charging status: {e}")
         
-        # Start charging state
         self.is_charging = True
-        self._charge_consecutive = 0  # Reset for unplug detection
+        self._charge_consecutive = 0
         
         try:
             user = read_user(uid)
@@ -2478,10 +2426,9 @@ class ChargingScreen(tk.Frame):
             pass
 
     def _hardware_unplug_monitor(self):
-        """Robust unplug detection with filtering for noisy sensors"""
+        """Unplug detection with filtering"""
         self._hw_monitor_job = None
         
-        # Safety checks
         if not getattr(self, '_session_valid', False):
             return
             
@@ -2504,35 +2451,34 @@ class ChargingScreen(tk.Frame):
             cur = hw.read_current(slot)
             amps = float(cur.get('amps', 0) or 0)
             
-            # MOVING AVERAGE FILTER - reduce noise
+            # Moving average filter
             if not hasattr(self, 'unplug_readings'):
                 self.unplug_readings = []
             
             self.unplug_readings.append(amps)
-            if len(self.unplug_readings) > 5:  # Keep last 5 readings
+            if len(self.unplug_readings) > 5:
                 self.unplug_readings.pop(0)
             
             filtered_amps = sum(self.unplug_readings) / len(self.unplug_readings)
             
-            # Store charging reference when we first detect proper charging
+            # Store charging reference
             if not hasattr(self, 'charging_reference') and filtered_amps >= PLUG_THRESHOLD:
                 self.charging_reference = filtered_amps
                 print(f"[UNPLUG MON] Set charging reference: {filtered_amps:.3f}A")
             
             print(f"[UNPLUG MON] Raw: {amps:.3f}A, Filtered: {filtered_amps:.3f}A, Plug: {PLUG_THRESHOLD}A, Unplug: {UNPLUG_THRESHOLD}A")
             
-            # DUAL DETECTION: Absolute threshold + percentage drop
+            # Dual detection
             current_below_threshold = filtered_amps < UNPLUG_THRESHOLD
             significant_drop = False
             
             if hasattr(self, 'charging_reference') and self.charging_reference > 0:
                 current_ratio = filtered_amps / self.charging_reference
-                significant_drop = current_ratio < 0.6  # 40% drop = likely unplugged
+                significant_drop = current_ratio < 0.6
                 print(f"[UNPLUG MON] Current ratio: {current_ratio:.1%}")
             
-            # UNPLUG DETECTION: Require BOTH conditions for reliability
+            # Unplug detection
             if current_below_threshold and significant_drop:
-                # Confirmed unplug - current is low AND dropped significantly
                 if not self.unplug_time:
                     self.unplug_time = time.time()
                     print(f"[UNPLUG MON] Confirmed unplug (low + drop), starting {UNPLUG_GRACE_SECONDS}s grace")
@@ -2541,34 +2487,29 @@ class ChargingScreen(tk.Frame):
                     if idle_time >= UNPLUG_GRACE_SECONDS:
                         print(f"[UNPLUG MON] Grace period expired ({idle_time:.0f}s), stopping session")
                         self.stop_session()
-                        # DON'T RETURN HERE - let the method continue to schedule next monitor
                     else:
                         print(f"[UNPLUG MON] Still unplugged - {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
             
-            # RE-PLUG DETECTION: Current must be clearly above threshold
-            elif filtered_amps > (PLUG_THRESHOLD + 0.02):  # 0.02A buffer above plug threshold
-                # Confirmed re-plug - current is clearly above threshold
+            # Re-plug detection
+            elif filtered_amps > (PLUG_THRESHOLD + 0.02):
                 if self.unplug_time:
                     print(f"[UNPLUG MON] Confirmed re-plug (above {PLUG_THRESHOLD + 0.02:.3f}A), resuming charging")
-                    # Update charging reference
                     self.charging_reference = filtered_amps
                 self.unplug_time = None
                 
-            # GRAY ZONE: Maintain current state, don't trigger false events
+            # Gray zone
             else:
                 if self.unplug_time:
                     idle_time = time.time() - self.unplug_time
                     print(f"[UNPLUG MON] Gray zone ({filtered_amps:.3f}A) - maintaining state, {UNPLUG_GRACE_SECONDS - int(idle_time)}s remaining")
-                # Don't change unplug_time in gray zone
                     
         except Exception as e:
             print(f"[UNPLUG MON] Error: {e}")
             self.unplug_time = None
-            # Reset readings on error
             if hasattr(self, 'unplug_readings'):
                 self.unplug_readings = []
 
-        # Continue monitoring - THIS MUST ALWAYS EXECUTE
+        # Continue monitoring
         try:
             self._hw_monitor_job = self.after(1000, self._hardware_unplug_monitor)
         except Exception:
@@ -2577,12 +2518,9 @@ class ChargingScreen(tk.Frame):
     def _poll_no_detect_timeout(self):
         """Called when no device is detected within the allowed window after unlock."""
         self._poll_timeout_job = None
-        # Capture session ID at start; exit silently if stale
         my_session_id = getattr(self, '_current_session_id', None)
-        # SAFETY: If session has been invalidated (user changed), exit immediately
         if not getattr(self, '_session_valid', False):
             return
-        # Only proceed if this callback belongs to current session
         if my_session_id != self._current_session_id:
             return
         
@@ -2598,7 +2536,6 @@ class ChargingScreen(tk.Frame):
                 uid = None
         
         try:
-            # ensure DB cleanup
             if uid:
                 write_user(uid, {"charging_status": "idle", "occupied_slot": "none"})
         except Exception:
@@ -2610,7 +2547,7 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 pass
         
-        # Update timer display to show slot is available
+        # Update timer display
         if self.controller.timer_available and slot_num > 0:
             self.controller.send_timer_command(f"SLOT{slot_num}:-")
         
@@ -2621,7 +2558,7 @@ class ChargingScreen(tk.Frame):
         
         print("INFO: No device detected within the allowed time. Session ended.")
         
-        # ensure hardware relays off
+        # Hardware cleanup
         try:
             hw = getattr(self.controller, 'hw', None)
             if hw is not None:
@@ -2636,13 +2573,11 @@ class ChargingScreen(tk.Frame):
         except Exception:
             pass
         
-        # clear any accumulated consecutive-sample counter
         try:
             self._charge_consecutive = 0
         except Exception:
             pass
         
-        # clear UI state (only if it refers to this session's slot)
         try:
             if self.controller.active_slot == slot:
                 self.controller.active_slot = None
@@ -2654,57 +2589,33 @@ class ChargingScreen(tk.Frame):
         
         self.controller.show_frame(MainScreen)
 
-    def unlock_slot(self):
-        uid = self._get_session_uid()
-        slot = self.charging_slot or self.controller.active_slot
-        slot_num = self._get_slot_number(slot)
-        
-        if not uid or not slot:
-            print("WARN: No slot assigned.")
-            return
-            
-        # Update timer display to show slot is unlocked
-        if self.controller.timer_available and slot_num > 0:
-            self.controller.send_timer_command(f"SLOT{slot_num}:-")
-        
-        # Update database
-        if FIREBASE_AVAILABLE and users_ref:
-            try:
-                users_ref.child(uid).child("slot_status").update({slot: "inactive"})
-                print(f"INFO: {slot} unlocked. Please unplug your device when ready.")
-            except Exception as e:
-                print(f"ERROR unlocking slot: {e}")
-        else:
-            print("INFO: Offline mode - slot unlocked locally")
-            
-        # update header info but do not stop charging; unlocking does not equal unplug
-        try:
-            self.user_info.refresh()
-        except Exception:
-            pass
-
     def stop_session(self):
         """Stop charging session and clean up all resources."""
         
-        # Get session info BEFORE any cleanup
+        # Get session info
         uid = self._get_session_uid()
         slot = self.charging_slot or self.controller.active_slot
         slot_num = self._get_slot_number(slot)
         
-        print(f"DEBUG: Stopping session - UID: {uid}, Slot: {slot}, Slot#: {slot_num}")
+        print(f"[SESSION_STOP] Stopping session - UID: {uid}, Slot: {slot}, Slot#: {slot_num}")
         
-        # 1. Cancel all scheduled jobs first
+        # 1. BLOCK COINS BEFORE UNLOCK SOLENOID
+        print(f"[COIN_BLOCK] Blocking coins for stop_session unlock solenoid operation")
+        if self.controller.arduino_available:
+            self.controller.send_arduino_command("BLOCK_COINS:4000")
+        
+        # 2. Cancel all scheduled jobs
         self._cancel_all_jobs()
         
-        # 2. Update timer display (physical 7-segment) to show slot is available
+        # 3. Update timer display
         if slot_num > 0 and self.controller.timer_available:
             try:
                 self.controller.send_timer_command(f"SLOT{slot_num}:-")
-                print(f"INFO: Physical timer for slot {slot_num} set to available")
+                print(f"[TIMER] Physical timer for slot {slot_num} set to available")
             except Exception as e:
-                print(f"WARN: Could not update timer display: {e}")
+                print(f"[TIMER] WARN: Could not update timer display: {e}")
         
-        # 3. Update database
+        # 4. Update database
         if uid:
             try:
                 write_user(uid, {
@@ -2723,23 +2634,60 @@ class ChargingScreen(tk.Frame):
             except Exception as e:
                 print(f"ERROR updating database: {e}")
         
-        # 4. Clean hardware
-        self._clean_hardware(slot)
-        
-        # 5. Reset Arduino mode
-        if self.controller.arduino_available:
+        # 5. UNLOCK slot for 5 seconds (solenoid ON)
+        hw = getattr(self.controller, 'hw', None)
+        if hw is not None and slot:
             try:
-                self.controller.send_arduino_command('RESET')
-                print("INFO: Main Arduino reset")
+                hw.lock_slot(slot, lock=True)
+                print(f"[SOLENOID_STOP] UNLOCKED for 5 seconds (solenoid ON)")
             except Exception as e:
-                print(f"WARN: Could not reset Arduino: {e}")
+                print(f"[SOLENOID_STOP] Error unlocking: {e}")
+            
+            try:
+                self.slot_lbl.config(text=f"{slot} - UNLOCKED for device removal (5s)")
+            except Exception:
+                pass
         
-        # 6. Clear all session state
-        self._clear_session_state()
+        # 6. Schedule re-locking after 5 seconds with pulse blocking
+        def _relock_after_5s():
+            # BLOCK COINS BEFORE LOCK SOLENOID
+            print(f"[COIN_BLOCK] Blocking coins for stop_session lock solenoid operation")
+            if self.controller.arduino_available:
+                self.controller.send_arduino_command("BLOCK_COINS:4000")
+            
+            # LOCK slot (solenoid OFF)
+            if hw is not None and slot:
+                try:
+                    hw.lock_slot(slot, lock=False)
+                    print(f"[SOLENOID_STOP] LOCKED after 5s (solenoid OFF)")
+                except Exception as e:
+                    print(f"[SOLENOID_STOP] Error locking after 5s: {e}")
+            
+            # Turn off relay
+            if hw is not None and slot:
+                try:
+                    hw.relay_off(slot)
+                    print(f"[RELAY_STOP] Power OFF for {slot}")
+                except Exception:
+                    pass
+            
+            # Clear all session state
+            self._clear_session_state()
+            
+            # Reset Arduino mode
+            if self.controller.arduino_available:
+                try:
+                    self.controller.send_arduino_command('RESET')
+                    print("[ARDUINO] Main Arduino reset")
+                except Exception as e:
+                    print(f"[ARDUINO] WARN: Could not reset Arduino: {e}")
+            
+            # Show main screen
+            print(f"[SESSION_STOP] Charging session stopped for slot {slot_num}")
+            self.controller.show_frame(MainScreen)
         
-        # 7. Show main screen
-        print(f"INFO: Charging session stopped for slot {slot_num}")
-        self.controller.show_frame(MainScreen)
+        # Schedule re-locking
+        self.after(5000, _relock_after_5s)
 
     def _cancel_all_jobs(self):
         """Cancel all scheduled jobs."""
@@ -2760,17 +2708,16 @@ class ChargingScreen(tk.Frame):
                     pass
 
     def _clean_hardware(self, slot):
-        """Clean up hardware resources with coin blocking consideration."""
+        """Clean up hardware resources."""
         try:
             hw = getattr(self.controller, 'hw', None)
             if hw is not None and slot:
-                # Ensure slot is locked (solenoid OFF) when stopping
+                # Ensure slot is locked (solenoid OFF)
                 try:
-                    hw.lock_slot(slot, lock=False)  # LOCK position (solenoid OFF)
+                    hw.lock_slot(slot, lock=False)
                     print(f"[SOLENOID_CLEAN] Slot {slot} locked (solenoid OFF)")
                 except Exception as e:
                     print(f"[SOLENOID_CLEAN] Error locking slot: {e}")
-                    pass
                 
                 # Turn off relay
                 try:
@@ -2779,7 +2726,6 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     pass
                 
-                # Additional: If hardware has a dedicated cleanup method
                 if hasattr(hw, 'cleanup_slot'):
                     try:
                         hw.cleanup_slot(slot)
@@ -2793,7 +2739,7 @@ class ChargingScreen(tk.Frame):
             self.unplug_time = None
             self._charge_consecutive = 0
             
-            # Clear reading buffers if they exist
+            # Clear reading buffers
             if hasattr(self, 'plug_readings'):
                 self.plug_readings = []
             if hasattr(self, 'unplug_readings'):
@@ -2813,14 +2759,11 @@ class ChargingScreen(tk.Frame):
             self.remaining = 0
             self.db_acc = 0
             
-            # Clear controller's active slot if it matches our slot
             if hasattr(self.controller, 'active_slot'):
                 self.controller.active_slot = None
             
-            # Mark session as invalid
             self._session_valid = False
             
-            # Increment session ID to invalidate old callbacks
             if hasattr(self, '_session_id'):
                 self._session_id += 1
                 

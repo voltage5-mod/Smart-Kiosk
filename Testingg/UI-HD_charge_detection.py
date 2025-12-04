@@ -1955,7 +1955,7 @@ class ChargingScreen(tk.Frame):
                     self._poll_timeout_job = None
             except Exception:
                 pass
-            # Reset all state variables
+            # Reset alls state variables
             self.is_charging = False
             self.charging_uid = None
             self.charging_slot = None

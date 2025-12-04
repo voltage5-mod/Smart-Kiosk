@@ -949,7 +949,7 @@ class KioskApp(tk.Tk):
         # FIXED: Set Arduino mode based on current screen
         if self.arduino_available:
             try:
-                desired_mode = 'WATER' if cls.__name__ == 'WaterScreen' else 'CHARGING'
+                self.send_arduino_command(desired_mode)
                 
                 # Check if we're already in this mode
                 if not hasattr(self, '_last_arduino_mode'):
@@ -1384,7 +1384,7 @@ class MainScreen(tk.Frame):
         # Ensure Arduino is in CHARGING mode for slot selection
         try:
             if hasattr(self.controller, 'arduino_available') and self.controller.arduino_available:
-                self.controller.send_arduino_command('MODE CHARGING')
+                self.controller.send_arduino_command('CHARGING')
         except Exception as e:
             print(f"WARN: Could not set Arduino mode: {e}")
         
@@ -3235,7 +3235,7 @@ class WaterScreen(tk.Frame):
             # Set Arduino to WATER mode when this screen is shown
             try:
                 if hasattr(self.controller, 'arduino_available') and self.controller.arduino_available:
-                    if self.controller.send_arduino_command('MODE WATER'):
+                    if self.controller.send_arduino_command('WATER'):
                         print('INFO: WaterScreen - Arduino set to WATER mode')
                         self.debug_var.set("Arduino: WATER mode - Ready")
                     else:

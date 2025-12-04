@@ -384,6 +384,77 @@ class KioskApp(tk.Tk):
         self.water_task = None
         self._last_arduino_mode = None  # Add this line
 
+        # ========== DEFINE ARDUINO CALLBACK FIRST ==========
+        def arduino_event_callback(event, value):
+            """Clean event handler - Arduino sends only coin value, Python decides usage."""
+            print(f"DEBUG ARDUINO EVENT: {event} = {value} (type: {type(value)})")
+            
+            current_frame = getattr(self, 'current_frame', None)
+            print(f"Current frame: {current_frame}")
+            print(f"Active UID: {self.active_uid}")
+
+            try:
+                # Handle COIN events centrally
+                if event == 'coin' and isinstance(value, int):
+                    print(f"COIN DETECTED: P{value}")
+                    uid = self.active_uid
+                    
+                    if not uid:
+                        print("WARN: No active user - please scan RFID first")
+                        return
+                        
+                    print(f"INFO: User: {uid}, Screen: {current_frame}")
+                    
+                    # Apply coin based on current screen
+                    if current_frame == 'WaterScreen':
+                        water_ml_map = {1: 50, 5: 250, 10: 500}
+                        added_ml = water_ml_map.get(value, 0)
+                        
+                        if added_ml > 0:
+                            print(f"INFO: Adding {added_ml}mL water for user {uid}")
+                            self._handle_water_coin(uid, value, added_ml)
+                        else:
+                            print(f"ERROR: Invalid coin value for water: {value}")
+                            
+                    elif current_frame in ['SlotSelectScreen', 'ChargingScreen']:
+                        charging_seconds_map = {1: 120, 5: 600, 10: 1200}
+                        added_seconds = charging_seconds_map.get(value, 0)
+                        
+                        if added_seconds > 0:
+                            print(f"INFO: Adding {added_seconds}s charging for user {uid}")
+                            self._handle_charging_coin(uid, value, added_seconds)
+                        else:
+                            print(f"ERROR: Invalid coin value for charging: {value}")
+                            
+                    else:
+                        print(f"INFO: Coin P{value} received but user is in {current_frame}")
+                        print("WARN: Switch to Water or Charging screen to use coins")
+                        
+                    # Refresh all user info
+                    self.refresh_all_user_info()
+                    
+                # Route water-specific events to WaterScreen
+                elif event in ['animation_start', 'countdown', 'countdown_end', 'cup_detected', 'dispense_start', 'dispense_done']:
+                    if self.current_frame == 'WaterScreen':
+                        ws = self.frames.get(WaterScreen)
+                        if ws and hasattr(ws, 'handle_arduino_event'):
+                            try:
+                                ws.handle_arduino_event(event, value)
+                            except Exception as e:
+                                print(f"ERROR in WaterScreen event handler: {e}")
+                        else:
+                            print(f"WARN: WaterScreen not available for event: {event}")
+                    else:
+                        print(f"INFO: Water event '{event}' ignored - not in WaterScreen")
+                        
+                else:
+                    print(f"INFO: Unhandled Arduino event: {event} = {value}")
+                    
+            except Exception as e:
+                print(f"ERROR in Arduino event dispatcher: {e}")
+        
+        self._arduino_event_callback = arduino_event_callback
+
         container = tk.Frame(self)
         # pack container so it expands with window
         container.pack(fill="both", expand=True)
@@ -473,7 +544,7 @@ class KioskApp(tk.Tk):
             main_arduino_ports = ["/dev/ttyACM0"]  # Force this port
             
             self.arduino_listener = ArduinoListener(
-                event_callback=self._arduino_event_callback,
+                event_callback=self._arduino_event_callback,  # This now exists
                 port_candidates=main_arduino_ports  # Force ACM0
             )
             print("INFO: ArduinoListener initialized for ACM0 (water/coin)")
@@ -493,7 +564,6 @@ class KioskApp(tk.Tk):
         # ========== TIMER DISPLAY ARDUINO INITIALIZATION ==========
         self.timer_serial = None
         self.timer_available = False
-        # Don't call setup_timer_displays() here - it causes the error
         # We'll initialize it after the window is created
         
         # Initialize ArduinoListener for water service hardware integration
@@ -517,7 +587,7 @@ class KioskApp(tk.Tk):
             
         # ========== DELAYED INITIALIZATION ==========
         # Initialize timer displays after the window is created
-        self.after(100, self.setup_timer_displays)
+        self.after(100, self.setup_timer_displays)  # FIXED: Added parentheses
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):
@@ -2282,7 +2352,7 @@ class ChargingScreen(tk.Frame):
         
         # Return to main screen after delay
         self.after(3000, lambda: self.controller.show_frame(MainScreen))
-
+        
 # --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):

@@ -382,6 +382,7 @@ class KioskApp(tk.Tk):
         self.active_slot = None
         self.charging_task = None
         self.water_task = None
+        self._last_arduino_mode = None  # Add this line
 
         container = tk.Frame(self)
         # pack container so it expands with window
@@ -411,7 +412,7 @@ class KioskApp(tk.Tk):
         try:
             if _pinmap:
                 print(f"INFO: Using pinmap from {PINMAP_PATH}")
-                # Initialize with active-high relays (adjust based on your wiring)
+                # Initialize with active-low relays by default (common for relay modules)
                 self.hw = HardwareGPIO(pinmap=_pinmap, mode='auto', relay_active_high=False)
                 try:
                     self.hw.setup()
@@ -492,8 +493,9 @@ class KioskApp(tk.Tk):
         # ========== TIMER DISPLAY ARDUINO INITIALIZATION ==========
         self.timer_serial = None
         self.timer_available = False
-        self.setup_timer_displays()
-
+        # Don't call setup_timer_displays() here - it causes the error
+        # We'll initialize it after the window is created
+        
         # Initialize ArduinoListener for water service hardware integration
         if not self.arduino_listener:
             print("INFO: ArduinoListener not available - using simulation mode for water service")
@@ -506,11 +508,16 @@ class KioskApp(tk.Tk):
 
         # coin counters per-uid (list of inserted coin amounts)
         self.coin_counters = {}
+        
         # Ensure the initial visible screen is the ScanScreen (raise it above others)
         try:
             self.show_frame(ScanScreen)
         except Exception:
             pass
+            
+        # ========== DELAYED INITIALIZATION ==========
+        # Initialize timer displays after the window is created
+        self.after(100, self.setup_timer_displays)
 
 # --------- Screen: Scan (manual UID input) ----------
 class ScanScreen(tk.Frame):
@@ -2275,7 +2282,7 @@ class ChargingScreen(tk.Frame):
         
         # Return to main screen after delay
         self.after(3000, lambda: self.controller.show_frame(MainScreen))
-        
+
 # --------- Screen: Water ----------
 class WaterScreen(tk.Frame):
     def __init__(self, parent, controller):

@@ -495,7 +495,7 @@ class KioskApp(tk.Tk):
             
             # Try to find timer Arduino (different from main Arduino)
             timer_ports = [
-                '/dev/ttyUSB2', '/dev/ttyUSB3', 
+                '/dev/ttyUSB0', '/dev/ttyUSB1', 
                 '/dev/ttyACM2', '/dev/ttyACM3',
                 'COM7', 'COM8', 'COM9', 'COM10'
             ]

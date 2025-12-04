@@ -426,43 +426,32 @@ class KioskApp(tk.Tk):
                 pass
 
         # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
+        # ========== FIXED ARDUINO LISTENER INITIALIZATION ==========
         self.arduino_listener = None
         self.arduino_available = False
-        
+
         try:
-            # Try multiple possible import paths
-            try:
-                from ArduinoListener import ArduinoListener
-                ARDUINO_MODULE = "ArduinoListener"
-            except ImportError as e:
-                print(f"WARN: ArduinoListener import failed: {e}")
-                ARDUINO_MODULE = None
+            from ArduinoListener import ArduinoListener
             
-            if ARDUINO_MODULE:
-                print(f"INFO: Found ArduinoListener module: {ARDUINO_MODULE}")
-                
+            # Set specific port for MAIN Arduino (water/coin)
+            main_arduino_ports = ["/dev/ttyACM0"]  # Force this port
+            
+            self.arduino_listener = ArduinoListener(
+                event_callback=self._arduino_event_callback,
+                port_candidates=main_arduino_ports  # Force ACM0
+            )
+            print("INFO: ArduinoListener initialized for ACM0 (water/coin)")
+            
+            if hasattr(self.arduino_listener, 'start'):
                 try:
-                    # Use the correct parameter name 'event_callback'
-                    self.arduino_listener = ArduinoListener(event_callback=self._arduino_event_callback)
-                    print("INFO: ArduinoListener initialized with event_callback")
-                    
-                    if hasattr(self.arduino_listener, 'start'):
-                        try:
-                            self.arduino_listener.start()
-                            self.arduino_available = True
-                            print("INFO: ArduinoListener started successfully")
-                        except Exception as start_error:
-                            print(f"WARN: ArduinoListener start() failed: {start_error}")
-                            self.arduino_available = False
-                except Exception as e:
-                    print(f"ERROR: ArduinoListener initialization failed: {e}")
-                    self.arduino_listener = None
-                    
-            else:
-                print("WARN: ArduinoListener module not found in any location")
-                
+                    self.arduino_listener.start()
+                    self.arduino_available = True
+                    print("INFO: ArduinoListener started successfully on ACM0")
+                except Exception as start_error:
+                    print(f"WARN: ArduinoListener start() failed: {start_error}")
+                    self.arduino_available = False
         except Exception as e:
-            print(f"ERROR: Unexpected error during ArduinoListener initialization: {e}")
+            print(f"ERROR: ArduinoListener initialization failed: {e}")
             self.arduino_listener = None
 
         # ========== TIMER DISPLAY ARDUINO INITIALIZATION ==========
@@ -493,11 +482,12 @@ class KioskApp(tk.Tk):
         try:
             import serial
             
-            # Try to find timer Arduino (different from main Arduino)
+            # Timer Arduino is on /dev/ttyUSB1
             timer_ports = [
-                '/dev/ttyUSB0', '/dev/ttyUSB1', 
-                '/dev/ttyACM2', '/dev/ttyACM3',
-                'COM7', 'COM8', 'COM9', 'COM10'
+                '/dev/ttyUSB1',  # YOUR TIMER ARDUINO
+                '/dev/ttyUSB0',  # Backup
+                '/dev/ttyACM1',  # Alternative
+                'COM7', 'COM8'
             ]
             
             for port in timer_ports:

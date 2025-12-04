@@ -8,16 +8,13 @@ import re
 
 # ----------------- CONFIGURATION -----------------
 # Common Arduino ports - will try each in order
+# Change ARDUINO_PORTS to prioritize ACM ports
 ARDUINO_PORTS = [
-    "/dev/ttyUSB0",    # Most common for USB-serial adapters
-    "/dev/ttyUSB1", 
-    "/dev/ttyACM0",    # Common for genuine Arduino Uno
-    "/dev/ttyACM1",
-    "/dev/ttyS0",      # Raspberry Pi GPIO serial
+    "/dev/ttyACM0",    # Main Arduino (water/coin) - YOUR ARDUINO
+    "/dev/ttyACM1",    # Backup if multiple ACM ports
+    "/dev/ttyUSB0",    # Alternative
+    "/dev/ttyUSB1",    # Timer Arduino - DON'T USE THIS
     "COM3",            # Windows
-    "COM4",
-    "COM5",
-    "COM6"
 ]
 ARDUINO_BAUD = 115200
 READ_INTERVAL = 0.05  # seconds between read cycles

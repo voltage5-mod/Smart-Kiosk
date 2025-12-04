@@ -1794,6 +1794,8 @@ class ChargingScreen(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg="#34495e")
         self.controller = controller
+
+        self.hw = controller.hw  # DIRECT ACCESS TO HARDWARE
         
         # user info visible while charging
         self.user_info = UserInfoFrame(self, controller)

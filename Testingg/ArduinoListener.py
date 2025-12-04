@@ -43,6 +43,8 @@ class ArduinoListener:
         self._last_coin_time = 0    # Last coin processing time
         self._last_coin_value = 0   # Last coin value processed
         
+        # ... rest of initialization ...
+
         # Enhanced coin validation state
         self.last_coin_time = 0
         self.coin_debounce_delay = 1.0  # 1 second between coin events
@@ -272,38 +274,7 @@ class ArduinoListener:
                 self.logger.warning(f"Failed to parse animation: {e}")
             return
         
-        # 3. COIN BLOCKING/UNBLOCKING STATUS MESSAGES
-        elif "COINS_BLOCKED:" in line_stripped:
-            try:
-                block_ms = int(line_stripped.split("COINS_BLOCKED:")[1])
-                self.logger.info(f"COINS BLOCKED for {block_ms}ms")
-                # You could dispatch this as an event if needed
-                # self._dispatch_event("coins_blocked", block_ms, line_stripped)
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Failed to parse COINS_BLOCKED: {e}")
-            return
-        
-        elif line_stripped == "COINS_AUTO_UNBLOCKED":
-            self.logger.info("COINS AUTO-UNBLOCKED")
-            # self._dispatch_event("coins_unblocked", None, line_stripped)
-            return
-        
-        elif line_stripped == "COINS_UNBLOCKED":
-            self.logger.info("COINS UNBLOCKED")
-            # self._dispatch_event("coins_unblocked", None, line_stripped)
-            return
-        
-        elif line_stripped == "COINS_TEMP_BLOCKED":
-            self.logger.info("COINS TEMPORARILY BLOCKED (solenoid operation)")
-            # self._dispatch_event("coins_temp_blocked", None, line_stripped)
-            return
-        
-        elif line_stripped == "COINS_TEMP_UNBLOCKED":
-            self.logger.info("COINS TEMPORARY BLOCK RELEASED")
-            # self._dispatch_event("coins_temp_unblocked", None, line_stripped)
-            return
-        
-        # 4. IGNORE ALL COIN-RELATED DEBUG MESSAGES
+        # 3. IGNORE ALL COIN-RELATED DEBUG MESSAGES
         coin_debug_keywords = [
             "Coin accepted:",
             "DEBUG: Received",
@@ -321,7 +292,7 @@ class ArduinoListener:
                 self.logger.debug(f"Ignoring coin debug: {line_stripped[:50]}...")
                 return
         
-        # 5. Log other messages
+        # 4. Log other messages
         if "DEBUG:" in line_stripped:
             self.logger.debug(f"[Arduino Debug] {line_stripped}")
         elif "ERROR:" in line_stripped:
@@ -377,10 +348,6 @@ class ArduinoListener:
             send_command("MODE WATER")
             send_command("RESET")
             send_command("STATUS")
-            send_command("BLOCK_COINS:3000")
-            send_command("TEMP_BLOCK_ON")
-            send_command("TEMP_BLOCK_OFF")
-            send_command("UNBLOCK_COINS")
         """
         if not self.ser or not self.ser.is_open:
             self.logger.warning("WARNING: Cannot send command - serial not connected.")
@@ -437,30 +404,6 @@ class ArduinoListener:
         self.coin_event_count = 0
         self.logger.info("Coin debounce timer reset")
 
-    def block_coins(self, milliseconds):
-        """Block coins for specified milliseconds."""
-        if milliseconds > 0:
-            cmd = f"BLOCK_COINS:{milliseconds}"
-            return self.send_command(cmd)
-        return False
-
-    def unblock_coins(self):
-        """Unblock coins immediately."""
-        return self.send_command("UNBLOCK_COINS")
-
-    def temp_block_coins(self, enable=True):
-        """Enable/disable temporary blocking for solenoid operations."""
-        if enable:
-            return self.send_command("TEMP_BLOCK_ON")
-        else:
-            return self.send_command("TEMP_BLOCK_OFF")
-
-    def set_mode(self, mode):
-        """Set Arduino mode (WATER or CHARGING)."""
-        if mode.upper() in ["WATER", "CHARGING"]:
-            return self.send_command(mode.upper())
-        return False
-
 
 # -------------------------------------------------
 # TEST FUNCTION
@@ -486,28 +429,11 @@ def test_arduino_listener():
             
             # Test sending commands
             listener.send_command("STATUS")
-            time.sleep(0.5)
-            
-            # Test coin blocking commands
-            print("Testing coin blocking...")
-            listener.send_command("BLOCK_COINS:3000")
-            time.sleep(0.5)
-            
-            listener.send_command("TEMP_BLOCK_ON")
-            time.sleep(0.5)
-            
-            listener.send_command("TEMP_BLOCK_OFF")
-            time.sleep(0.5)
-            
-            listener.send_command("UNBLOCK_COINS")
-            time.sleep(0.5)
-            
-            # Test mode switching
-            listener.send_command("MODE WATER")
-            time.sleep(0.5)
-            
-            listener.send_command("MODE CHARGING")
-            time.sleep(0.5)
+            listener.send_command("TEST_COIN_1")
+            time.sleep(1)
+            listener.send_command("TEST_COIN_5")
+            time.sleep(1)
+            listener.send_command("TEST_COIN_10")
             
             # Run for 30 seconds to capture events
             print("LISTENING: Listening for Arduino events for 30 seconds...")

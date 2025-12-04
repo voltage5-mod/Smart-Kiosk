@@ -26,6 +26,8 @@ uint8_t coin1P_pulses = 1;    // P1 = 1 pulse
 uint8_t coin5P_pulses = 5;    // P5 = 5 pulses
 uint8_t coin10P_pulses = 10;  // P10 = 10 pulses
 
+
+
 // ---------------- SYSTEM STATE ----------------
 uint8_t currentMode = MODE_WATER;  // 0=WATER, 1=CHARGING
 
@@ -38,7 +40,6 @@ volatile unsigned long flowPulseCount = 0;
 // ---------------- COIN BLOCKING ----------------
 volatile bool blockAllCoins = false;
 volatile unsigned long coinBlockUntil = 0;
-volatile bool temporaryBlock = false;  // For solenoid operations
 
 // ---------------- SYSTEM STATE ----------------
 bool dispensing = false;
@@ -68,16 +69,10 @@ void coinISR() {
       // Blocking period expired, auto-unblock
       blockAllCoins = false;
       coinBlockUntil = 0;
-      Serial.println(F("COINS_AUTO_UNBLOCKED"));
     } else {
       // Still in blocking period, ignore pulse
       return;
     }
-  }
-  
-  // Check for temporary blocking (for solenoid operations)
-  if (temporaryBlock) {
-    return;  // Ignore all coins during solenoid operations
   }
   
   if (!coinInputEnabled) return;
@@ -167,12 +162,6 @@ void handleCoin() {
     }
   }
   
-  // Check for temporary blocking
-  if (temporaryBlock) {
-    coinPulseCount = 0;
-    return;
-  }
-  
   if (!coinInputEnabled) {
     coinPulseCount = 0;
     return;
@@ -245,7 +234,9 @@ void handleCoin() {
   }
 }
 
+
 // ---------------- CUP HANDLER ----------------
+// In arduinocode.ino, update the handleCup() function:
 void handleCup() {
   // Only detect cup if in WATER mode with credit
   if (currentMode != MODE_WATER) {
@@ -254,7 +245,7 @@ void handleCup() {
   
   if (creditML <= 0) {
     // Optional debug message
-    // Serial.println(F("DEBUG: Cup detected but no credit"))
+    // Serial.println(F("DEBUG: Cup detected but no credit"));
     return;
   }
   
@@ -263,6 +254,7 @@ void handleCup() {
     startDispense(creditML);
   }
 }
+
 
 // ---------------- DISaPENSING ----------------
 void startDispense(uint16_t ml) {
@@ -411,16 +403,8 @@ void processCommand(char* cmd) {
     coinBlockUntil = 0;
     Serial.println(F("COINS_UNBLOCKED"));
   }
-  else if (strcmp(cmd, "TEMP_BLOCK_ON") == 0) {
-    temporaryBlock = true;
-    Serial.println(F("COINS_TEMP_BLOCKED"));
-  }
-  else if (strcmp(cmd, "TEMP_BLOCK_OFF") == 0) {
-    temporaryBlock = false;
-    Serial.println(F("COINS_TEMP_UNBLOCKED"));
-  }
   else {
-    Serial.println(F("Unknown command. Use: CAL, FLOWCAL, STATUS, RESET, TEST, MODE [WATER|CHARGING], WATER, CHARGING, CLEAR, BLOCK_COINS:ms, UNBLOCK_COINS, TEMP_BLOCK_ON, TEMP_BLOCK_OFF"));
+    Serial.println(F("Unknown command. Use: CAL, FLOWCAL, STATUS, RESET, TEST, MODE [WATER|CHARGING], WATER, CHARGING, CLEAR, BLOCK_COINS:ms, UNBLOCK_COINS"));
   }
 }
 
@@ -466,8 +450,6 @@ void reportStatus() {
     Serial.println(flowPulseCount);
     Serial.print(F("COINS_BLOCKED:"));
     Serial.println(blockAllCoins ? "YES" : "NO");
-    Serial.print(F("TEMP_BLOCKED:"));
-    Serial.println(temporaryBlock ? "YES" : "NO");
     
     last_creditML = creditML;
     last_chargeSeconds = chargeSeconds;
@@ -496,7 +478,6 @@ void showStatus() {
     Serial.print(coinBlockUntil > millis() ? coinBlockUntil - millis() : 0);
     Serial.println(F(" ms remaining)"));
   }
-  Serial.print(F("Temporary block: ")); Serial.println(temporaryBlock ? "YES" : "NO");
   Serial.println(F("===================="));
 }
 
@@ -657,7 +638,6 @@ void resetSystem() {
   // Clear coin blocking
   blockAllCoins = false;
   coinBlockUntil = 0;
-  temporaryBlock = false;
 
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);

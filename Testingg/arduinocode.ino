@@ -37,6 +37,10 @@ volatile unsigned long lastCoinMicros = 0;
 volatile uint8_t coinPulseCount = 0;
 volatile unsigned long flowPulseCount = 0;
 
+// ---------------- COIN BLOCKING ----------------
+volatile bool blockAllCoins = false;
+volatile unsigned long coinBlockUntil = 0;
+
 // ---------------- SYSTEM STATE ----------------
 bool dispensing = false;
 bool coinInputEnabled = true;
@@ -59,6 +63,18 @@ uint8_t cmdIndex = 0;
 
 // ---------------- INTERRUPTS ----------------
 void coinISR() {
+  // Check if coins are globally blocked
+  if (blockAllCoins) {
+    if (millis() >= coinBlockUntil) {
+      // Blocking period expired, auto-unblock
+      blockAllCoins = false;
+      coinBlockUntil = 0;
+    } else {
+      // Still in blocking period, ignore pulse
+      return;
+    }
+  }
+  
   if (!coinInputEnabled) return;
 
   unsigned long nowMicros = micros();
@@ -132,6 +148,20 @@ void loop() {
 
 // ---------------- COIN HANDLER ----------------
 void handleCoin() {
+  // Check if coins are blocked
+  if (blockAllCoins) {
+    if (millis() >= coinBlockUntil) {
+      // Blocking period expired, auto-unblock
+      blockAllCoins = false;
+      coinBlockUntil = 0;
+      Serial.println(F("COINS_AUTO_UNBLOCKED"));
+    } else {
+      // Still in blocking period, discard any accumulated pulses
+      coinPulseCount = 0;
+      return;
+    }
+  }
+  
   if (!coinInputEnabled) {
     coinPulseCount = 0;
     return;
@@ -357,8 +387,23 @@ void processCommand(char* cmd) {
     else if (strcmp(modeStr, "CHARGING") == 0) setMode(MODE_CHARGING);
     else Serial.println(F("Invalid mode. Use: MODE WATER or MODE CHARGING"));
   }
+  else if (cmd.startsWith("BLOCK_COINS:")) {
+    // Format: BLOCK_COINS:3000 (block coins for 3000ms)
+    int blockMs = cmd.substring(12).toInt();
+    if (blockMs > 0) {
+      blockAllCoins = true;
+      coinBlockUntil = millis() + blockMs;
+      Serial.print(F("COINS_BLOCKED:"));
+      Serial.println(blockMs);
+    }
+  }
+  else if (strcmp(cmd, "UNBLOCK_COINS") == 0) {
+    blockAllCoins = false;
+    coinBlockUntil = 0;
+    Serial.println(F("COINS_UNBLOCKED"));
+  }
   else {
-    Serial.println(F("Unknown command. Use: CAL, FLOWCAL, STATUS, RESET, TEST, MODE [WATER|CHARGING], WATER, CHARGING, CLEAR"));
+    Serial.println(F("Unknown command. Use: CAL, FLOWCAL, STATUS, RESET, TEST, MODE [WATER|CHARGING], WATER, CHARGING, CLEAR, BLOCK_COINS:ms, UNBLOCK_COINS"));
   }
 }
 
@@ -402,6 +447,8 @@ void reportStatus() {
     Serial.println(dispensing ? "YES" : "NO");
     Serial.print(F("FLOW_PULSES:"));
     Serial.println(flowPulseCount);
+    Serial.print(F("COINS_BLOCKED:"));
+    Serial.println(blockAllCoins ? "YES" : "NO");
     
     last_creditML = creditML;
     last_chargeSeconds = chargeSeconds;
@@ -423,6 +470,13 @@ void showStatus() {
   Serial.print(F("Coin patterns - P1: ")); Serial.print(coin1P_pulses);
   Serial.print(F(", P5: ")); Serial.print(coin5P_pulses);
   Serial.print(F(", P10: ")); Serial.println(coin10P_pulses);
+  Serial.print(F("Coins blocked: ")); Serial.println(blockAllCoins ? "YES" : "NO");
+  if (blockAllCoins) {
+    Serial.print(F("Block until: ")); Serial.print(coinBlockUntil);
+    Serial.print(F(" ("));
+    Serial.print(coinBlockUntil > millis() ? coinBlockUntil - millis() : 0);
+    Serial.println(F(" ms remaining)"));
+  }
   Serial.println(F("===================="));
 }
 
@@ -558,7 +612,7 @@ void testCoinPatterns() {
       if (pulses == 1) Serial.println(F("TEST: This appears to be a P1 coin"));
       else if (pulses == 5) Serial.println(F("TEST: This appears to be a P5 coin"));
       else if (pulses == 10) Serial.println(F("TEST: This appears to be a P10 coin"));
-      else Serial.println(F("TEST: Unknown coin pattern"));
+      else Serial.println(F("TEST: Unknown coin pattern"))
     }
     
     if (Serial.available()) {
@@ -579,6 +633,10 @@ void resetSystem() {
 
   coinInputEnabled = true;
   coinPulseCount = 0;
+  
+  // Clear coin blocking
+  blockAllCoins = false;
+  coinBlockUntil = 0;
 
   digitalWrite(PUMP_PIN, LOW);
   digitalWrite(VALVE_PIN, LOW);

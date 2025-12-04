@@ -2072,6 +2072,16 @@ class ChargingScreen(tk.Frame):
         
         # hw already assigned above; continue with hardware path if this slot is hardware-mapped
         if slot and hw is not None and slot in (hw.pinmap.get('acs712_channels') or {}):
+            # BLOCK COINS BEFORE SOLENOID OPERATION TO PREVENT FALSE PULSES
+            print(f"[COIN_BLOCK] Blocking coins for solenoid operation on {slot}")
+            if self.controller.arduino_available:
+                # Block for 3 seconds (3000ms) - covers entire solenoid sequence with buffer
+                success = self.controller.send_arduino_command("BLOCK_COINS:3000")
+                if success:
+                    print(f"[COIN_BLOCK] Successfully blocked coins for 3000ms")
+                else:
+                    print(f"[COIN_BLOCK] Failed to send block command")
+            
             # Cancel any running countdown/ticks so timer doesn't run while waiting for plug
             try:
                 if self._tick_job is not None:
@@ -2085,6 +2095,14 @@ class ChargingScreen(tk.Frame):
             
             self.is_charging = False
             self.unplug_time = None
+            
+            # FIX: Ensure lock is OFF before starting (solenoid should be disengaged)
+            try:
+                hw.lock_slot(slot, lock=False)  # FIXED: Start with lock OFF (solenoid disengaged)
+                print(f"[SOLENOID] Initial state: OFF (locked)")
+            except Exception as e:
+                print(f"[SOLENOID] Error setting initial lock state: {e}")
+                pass
             
             # power the slot so the user can plug in
             # Ensure ACS712 baseline is calibrated
@@ -2104,7 +2122,9 @@ class ChargingScreen(tk.Frame):
             
             try:
                 hw.relay_on(slot)
-            except Exception:
+                print(f"[RELAY] Power ON for {slot}")
+            except Exception as e:
+                print(f"[RELAY] Error turning relay on: {e}")
                 pass
             
             # init TM1637 display for countdown (if present)
@@ -2122,10 +2142,12 @@ class ChargingScreen(tk.Frame):
             except Exception:
                 self.tm = None
             
-            # Unlock slot for a short window (5 seconds) to allow plugging
+            # UNLOCK (engage lock) for 5 seconds, then LOCK (disengage) permanently
             try:
-                hw.lock_slot(slot, lock=True)
-            except Exception:
+                hw.lock_slot(slot, lock=True)  # Engage lock (UNLOCK slot for user - solenoid ON)
+                print(f"[SOLENOID] UNLOCKED for 5 seconds (solenoid ON)")
+            except Exception as e:
+                print(f"[SOLENOID] Error unlocking: {e}")
                 pass
             
             try:
@@ -2134,14 +2156,22 @@ class ChargingScreen(tk.Frame):
                 pass
             
             def _end_unlock_and_start_poll():
+                # LOCK slot after 5 seconds (solenoid OFF - stays off, no second pulse)
                 try:
-                    hw.lock_slot(slot, lock=False)
-                except Exception:
+                    hw.lock_slot(slot, lock=False)  # Disengage lock (LOCK slot - solenoid OFF)
+                    print(f"[SOLENOID] LOCKED after 5s (solenoid OFF, staying OFF)")
+                except Exception as e:
+                    print(f"[SOLENOID] Error locking after 5s: {e}")
                     pass
+                
                 try:
                     self.slot_lbl.config(text=f"{slot} - Waiting for device...")
                 except Exception:
                     pass
+                
+                # COINS WILL AUTO-UNBLOCK AFTER 3000ms (set earlier)
+                # No need to send UNBLOCK_COINS command
+                
                 # start polling loop to detect charging start
                 # reset consecutive-sample counter and rolling sample buffer
                 self._charge_consecutive = 0
@@ -2151,12 +2181,14 @@ class ChargingScreen(tk.Frame):
                     self._unplug_hits = []
                 except Exception:
                     pass
+                
                 if self._wait_job is None:
                     try:
                         # sample every 500ms so we can collect 4 samples within 2s as requested
                         self._wait_job = self.after(500, self._poll_for_charging_start)
                     except Exception:
                         self._wait_job = None
+                
                 # start a 1-minute timeout: if no charging detected within 60s, end session
                 try:
                     if self._poll_timeout_job is not None:
@@ -2169,6 +2201,7 @@ class ChargingScreen(tk.Frame):
                 except Exception:
                     self._poll_timeout_job = None
             
+            # Schedule the unlock end after 5 seconds
             try:
                 self.after(5000, _end_unlock_and_start_poll)
             except Exception:
@@ -2683,21 +2716,31 @@ class ChargingScreen(tk.Frame):
                     pass
 
     def _clean_hardware(self, slot):
-        """Clean up hardware resources."""
+        """Clean up hardware resources with coin blocking consideration."""
         try:
             hw = getattr(self.controller, 'hw', None)
             if hw is not None and slot:
+                # Ensure slot is locked (solenoid OFF) when stopping
+                try:
+                    hw.lock_slot(slot, lock=False)  # LOCK position (solenoid OFF)
+                    print(f"[SOLENOID_CLEAN] Slot {slot} locked (solenoid OFF)")
+                except Exception as e:
+                    print(f"[SOLENOID_CLEAN] Error locking slot: {e}")
+                    pass
+                
                 # Turn off relay
                 try:
                     hw.relay_off(slot)
+                    print(f"[RELAY_CLEAN] Power OFF for {slot}")
                 except Exception:
                     pass
                 
-                # Unlock slot
-                try:
-                    hw.lock_slot(slot, lock=False)
-                except Exception:
-                    pass
+                # Additional: If hardware has a dedicated cleanup method
+                if hasattr(hw, 'cleanup_slot'):
+                    try:
+                        hw.cleanup_slot(slot)
+                    except Exception:
+                        pass
             
             # Clear TM1637 display
             self.tm = None
@@ -2715,7 +2758,7 @@ class ChargingScreen(tk.Frame):
                 del self.charging_reference
                 
         except Exception as e:
-            print(f"WARN: Error cleaning hardware: {e}")
+            print(f"[HARDWARE_CLEAN] WARN: Error cleaning hardware: {e}")
 
     def _clear_session_state(self):
         """Clear all session-related state."""
@@ -3221,37 +3264,81 @@ class WaterScreen(tk.Frame):
 
 
     def stop_session(self):
-        """Manually stop the water session and reset guest balance."""
-        self.is_dispensing = False
-        self.cup_present = False
+        """Stop charging session and clean up all resources."""
         
-        # Stop any running animation
-        self._stop_animation()
+        # Get session info BEFORE any cleanup
+        uid = self._get_session_uid()
+        slot = self.charging_slot or self.controller.active_slot
+        slot_num = self._get_slot_number(slot)
         
-        # Reset guest balance to zero
-        uid = self.controller.active_uid
+        print(f"[SESSION_STOP] Stopping session - UID: {uid}, Slot: {slot}, Slot#: {slot_num}")
+        
+        # 1. BLOCK COINS BEFORE SOLENOID OPERATION
+        print(f"[COIN_BLOCK] Blocking coins for stop_session solenoid operations")
+        if self.controller.arduino_available:
+            # Block for 2 seconds (2000ms) - covers solenoid deactivation
+            self.controller.send_arduino_command("BLOCK_COINS:2000")
+        
+        # 2. Cancel all scheduled jobs first
+        self._cancel_all_jobs()
+        
+        # 3. Update timer display (physical 7-segment) to show slot is available
+        if slot_num > 0 and self.controller.timer_available:
+            try:
+                self.controller.send_timer_command(f"SLOT{slot_num}:-")
+                print(f"[TIMER] Physical timer for slot {slot_num} set to available")
+            except Exception as e:
+                print(f"[TIMER] WARN: Could not update timer display: {e}")
+        
+        # 4. Update database
         if uid:
-            user = read_user(uid)
-            if user and user.get("type") == "nonmember":
-                write_user(uid, {"temp_water_time": 0})
-                self.temp_water_time = 0
-                print(f"INFO: Guest account water balance reset to zero (manual stop) for UID: {uid}")
+            try:
+                write_user(uid, {
+                    "charging_status": "idle",
+                    "occupied_slot": "none"
+                })
+                
+                if slot:
+                    write_slot(slot, {
+                        "status": "inactive", 
+                        "current_user": "none"
+                    })
+                    
+                    if FIREBASE_AVAILABLE and users_ref:
+                        users_ref.child(uid).child("slot_status").update({slot: "inactive"})
+                
+                print(f"[DB] Updated user {uid} and slot {slot} to inactive")
+            except Exception as e:
+                print(f"[DB] ERROR updating database: {e}")
         
-        # Cancel all jobs
-        if self._water_job:
+        # 5. Clean hardware (including solenoid deactivation)
+        self._clean_hardware(slot)
+        
+        # 6. Reset Arduino mode
+        if self.controller.arduino_available:
             try:
-                self.after_cancel(self._water_job)
-            except Exception:
-                pass
-            self._water_job = None
-        if self._water_nocup_job:
-            try:
-                self.after_cancel(self._water_nocup_job)
-            except Exception:
-                pass
-            self._water_nocup_job = None
-            
-        self.debug_var.set("Session stopped manually - Guest balance reset")
+                self.controller.send_arduino_command('RESET')
+                print("[ARDUINO] Main Arduino reset")
+            except Exception as e:
+                print(f"[ARDUINO] WARN: Could not reset Arduino: {e}")
+        
+        # 7. Clear all session state
+        self._clear_session_state()
+        
+        # 8. Force UNBLOCK coins after hardware cleanup (with delay)
+        def _unblock_coins_final():
+            if self.controller.arduino_available:
+                success = self.controller.send_arduino_command("UNBLOCK_COINS")
+                if success:
+                    print("[COIN_BLOCK] Coins unblocked after stop_session")
+                else:
+                    print("[COIN_BLOCK] Failed to unblock coins")
+        
+        # Schedule unblock after 2.5 seconds (ensuring solenoid operations are complete)
+        self.after(2500, _unblock_coins_final)
+        
+        # 9. Show main screen
+        print(f"[SESSION_STOP] Charging session stopped for slot {slot_num}")
         self.controller.show_frame(MainScreen)
 
 

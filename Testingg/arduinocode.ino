@@ -282,7 +282,7 @@ void startDispense(uint16_t ml) {
   // Calculate exact animation time based on 41.70 mL/second flow rate
   float baseFlowRateMLperSecond = 41.70;
   float estimatedSeconds = ml / baseFlowRateMLperSecond;
-  estimatedSeconds += 1.0; // Add buffer for system delay
+   // Add buffer for system delay
   
   uint16_t animationSeconds = (uint16_t)(estimatedSeconds + 0.5f); 
   
